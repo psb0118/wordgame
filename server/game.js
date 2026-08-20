@@ -1,4 +1,3 @@
-```javascript
 const fs = require('fs');
 const path = require('path');
 
@@ -12,7 +11,7 @@ const ATTACK_FILE = path.join(__dirname, '..', 'data', 'attack.txt');
 ========================================================= */
 
 const DUEUM = {
-  /* ㄴ → ㅇ */
+  // ㄴ → ㅇ
   '녀': ['녀', '여'],
   '년': ['년', '연'],
   '념': ['념', '염'],
@@ -23,8 +22,11 @@ const DUEUM = {
   '녑': ['녑', '엽'],
   '녁': ['녁', '역'],
   '뇰': ['뇰', '욜'],
+  '닐': ['닐', '일'],
+  '닉': ['닉', '익'],
+  '뉵': ['뉵', '육'],
 
-  /* ㄹ → ㄴ */
+  // ㄹ → ㄴ
   '라': ['라', '나'],
   '락': ['락', '낙'],
   '란': ['란', '난'],
@@ -38,7 +40,7 @@ const DUEUM = {
   '루': ['루', '누'],
   '뢰': ['뢰', '뇌'],
 
-  /* ㄹ → ㅇ */
+  // ㄹ → ㅇ
   '랴': ['랴', '야'],
   '려': ['려', '여'],
   '례': ['례', '예'],
@@ -60,13 +62,12 @@ const DUEUM = {
   '륭': ['륭', '융'],
   '렵': ['렵', '엽'],
 
-  /* 추가 게임용 규칙 */
+  // 게임에서 허용하는 추가 규칙
   '레': ['레', '에'],
-  '름': ['름', '음'],
-  '님': ['님', '임'],
   '륨': ['륨', '윰'],
   '늄': ['늄', '윰'],
   '릉': ['릉', '능'],
+  '름': ['름', '늠'],
   '릅': ['릅', '늡'],
   '른': ['른', '는'],
   '릎': ['릎', '늪'],
@@ -82,7 +83,18 @@ function allowedFirstChars(lastChar) {
     return [];
   }
 
-  return DUEUM[lastChar] || [lastChar];
+  const result = [lastChar];
+  const extra = DUEUM[lastChar];
+
+  if (extra) {
+    for (const char of extra) {
+      if (!result.includes(char)) {
+        result.push(char);
+      }
+    }
+  }
+
+  return result;
 }
 
 function canStartWith(word, lastChar) {
@@ -99,21 +111,35 @@ function canStartWith(word, lastChar) {
 
 console.log('game.js: word.txt 읽는 중...');
 
-const words = [
-  ...new Set(
-    fs
-      .readFileSync(WORD_FILE, 'utf8')
-      .split(/\r?\n/)
-      .map(x => x.trim())
-      .filter(x => x && /^[가-힣]+$/.test(x))
-  )
-];
+const rawWords = fs
+  .readFileSync(WORD_FILE, 'utf8')
+  .split(/\r?\n/);
 
 console.log(
-  `game.js: word.txt 읽기 완료 (${words.length}개)`
+  `game.js: word.txt 읽기 완료 (${rawWords.length}개)`
 );
 
-const wordSet = new Set(words);
+const wordSet = new Set();
+const words = [];
+
+for (const raw of rawWords) {
+  const word = raw.trim();
+
+  if (!word) {
+    continue;
+  }
+
+  if (!/^[가-힣]+$/.test(word)) {
+    continue;
+  }
+
+  if (wordSet.has(word)) {
+    continue;
+  }
+
+  wordSet.add(word);
+  words.push(word);
+}
 
 console.log(
   `game.js: 단어 정리 완료 (${words.length}개)`
@@ -212,44 +238,6 @@ console.log(
 );
 
 /* =========================================================
-   후보 수 계산
-   실제 후보 배열을 만들지 않고 숫자만 계산해서
-   AI 계산 속도를 높인다.
-========================================================= */
-
-function countCandidates(lastChar, used = new Set()) {
-  if (!lastChar) {
-    return 0;
-  }
-
-  const allowed = allowedFirstChars(lastChar);
-
-  let count = 0;
-
-  for (const first of allowed) {
-    const list = byFirst.get(first);
-
-    if (list) {
-      count += list.length;
-    }
-  }
-
-  /*
-   * 사용된 단어는 전체 단어를 다시 훑지 않고
-   * used만 확인해서 제외한다.
-   */
-  if (used && used.size) {
-    for (const word of used) {
-      if (allowed.includes(word[0])) {
-        count--;
-      }
-    }
-  }
-
-  return Math.max(0, count);
-}
-
-/* =========================================================
    후보 검색
 ========================================================= */
 
@@ -259,9 +247,8 @@ function candidates(lastChar, used = new Set()) {
   }
 
   const result = [];
-  const allowed = allowedFirstChars(lastChar);
 
-  for (const firstChar of allowed) {
+  for (const firstChar of allowedFirstChars(lastChar)) {
     const list = byFirst.get(firstChar);
 
     if (!list) {
@@ -276,6 +263,34 @@ function candidates(lastChar, used = new Set()) {
   }
 
   return result;
+}
+
+/* =========================================================
+   후보 개수
+========================================================= */
+
+function countCandidates(lastChar, used = new Set()) {
+  if (!lastChar) {
+    return 0;
+  }
+
+  let count = 0;
+
+  for (const firstChar of allowedFirstChars(lastChar)) {
+    const list = byFirst.get(firstChar);
+
+    if (!list) {
+      continue;
+    }
+
+    for (const word of list) {
+      if (!used.has(word)) {
+        count++;
+      }
+    }
+  }
+
+  return count;
 }
 
 /* =========================================================
@@ -311,6 +326,20 @@ const START_FIRST = [
   '시'
 ];
 
+/*
+ * 이제 시작 단어를 미리 고르지 않는다.
+ *
+ * 예:
+ * 시작 음절 = "가"
+ *
+ * 플레이어:
+ * 가...
+ *
+ * AI:
+ * 가...
+ *
+ * 이런 방식으로 첫 단어를 직접 선택한다.
+ */
 function randomStart() {
   return START_FIRST[
     Math.floor(
@@ -320,7 +349,7 @@ function randomStart() {
 }
 
 /* =========================================================
-   첫 단어 검사
+   첫 단어 검증
 ========================================================= */
 
 function validateFirstWord(word, startChar) {
@@ -337,11 +366,13 @@ function validateFirstWord(word, startChar) {
   }
 
   if (!word.startsWith(startChar)) {
-    return `'${startChar}'으로 시작하는 단어를 입력해야 합니다.`;
+    return (
+      `'${startChar}'으로 시작하는 단어를 입력해야 합니다.`
+    );
   }
 
   /*
-   * 첫 단어는 공격 단어 금지
+   * 첫 단어 공격 금지
    */
   if (attackDepth.has(word)) {
     return '첫 단어에서는 공격 단어를 사용할 수 없습니다.';
@@ -355,7 +386,7 @@ function validateFirstWord(word, startChar) {
   }
 
   /*
-   * 다음 선택지가 너무 적은 단어 방지
+   * 첫 단어는 어느 정도 선택지가 있어야 함
    */
   const nextCount = countCandidates(
     word.at(-1),
@@ -363,7 +394,9 @@ function validateFirstWord(word, startChar) {
   );
 
   if (nextCount < 5) {
-    return '첫 단어로는 선택지가 너무 적은 단어를 사용할 수 없습니다.';
+    return (
+      '첫 단어로는 선택지가 너무 적은 단어를 사용할 수 없습니다.'
+    );
   }
 
   return null;
@@ -398,6 +431,7 @@ function validateWord(
     )
   ) {
     const last = current.at(-1);
+
     const accepted =
       allowedFirstChars(last);
 
@@ -427,7 +461,9 @@ function getAttackDepth(word) {
     return null;
   }
 
-  return attackDepth.get(word) ?? null;
+  return attackDepth.has(word)
+    ? attackDepth.get(word)
+    : null;
 }
 
 /* =========================================================
@@ -435,11 +471,28 @@ function getAttackDepth(word) {
 ========================================================= */
 
 function publicData() {
+  const byFirstObject = {};
+
+  for (const [first, list] of byFirst.entries()) {
+    byFirstObject[first] = list;
+  }
+
   return {
-    words,
-    attackDepth: Object.fromEntries(attackDepth),
-    startPool: [],
+    /*
+     * words 전체를 다시 보내지 않는다.
+     *
+     * byFirst 안에 모든 단어가 있기 때문에
+     * 클라이언트에서 Set을 만들 수 있다.
+     */
+    byFirst: byFirstObject,
+
+    attackDepth:
+      Object.fromEntries(
+        attackDepth
+      ),
+
     startFirst: START_FIRST,
+
     dueum: DUEUM
   };
 }
@@ -453,8 +506,15 @@ const DATA = {
   wordSet,
   byFirst,
   attackDepth,
+
+  /*
+   * 기존 호환용.
+   * 이제 실제 시작 단어 목록은 사용하지 않는다.
+   */
   startPool: [],
+
   startFirst: START_FIRST,
+
   dueum: DUEUM
 };
 
@@ -468,15 +528,24 @@ console.log(
 
 module.exports = {
   DATA,
+
   candidates,
+
   countCandidates,
+
   randomStart,
+
   validateWord,
+
   validateFirstWord,
+
   publicData,
+
   canStartWith,
+
   allowedFirstChars,
+
   isOneShot,
+
   getAttackDepth
 };
-```
