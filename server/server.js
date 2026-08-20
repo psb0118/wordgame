@@ -3,12 +3,16 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 
+console.log('서버 시작: game.js 로딩 전');
+
 const {
   DATA,
   candidates,
   randomStart,
   validateWord
 } = require('./game');
+
+console.log('서버 시작: game.js 로딩 완료');
 
 const app = express();
 const server = http.createServer(app);
