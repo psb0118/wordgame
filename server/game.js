@@ -12,7 +12,6 @@ const ATTACK_FILE = path.join(__dirname, '..', 'data', 'attack.txt');
 ========================================================= */
 
 const DUEUM = {
-
   /* ㄴ → ㅇ */
 
   '녀': ['녀', '여'],
@@ -30,7 +29,6 @@ const DUEUM = {
   '닉': ['닉', '익'],
   '뉵': ['뉵', '육'],
 
-
   /* ㄹ → ㄴ */
 
   '라': ['라', '나'],
@@ -47,15 +45,13 @@ const DUEUM = {
   '론': ['론', '논'],
   '루': ['루', '누'],
 
+  '륵': ['륵', '늑'],
   '릉': ['릉', '능'],
   '름': ['름', '늠'],
   '릅': ['릅', '늡'],
   '른': ['른', '는'],
   '릎': ['릎', '늪'],
   '릇': ['릇', '늣'],
-
-  '륵': ['륵', '늑'],
-
 
   /* ㄹ → ㅇ */
 
@@ -81,8 +77,7 @@ const DUEUM = {
   '륭': ['륭', '융'],
   '렵': ['렵', '엽'],
 
-
-  /* 추가 두음 허용 */
+  /* 추가 */
 
   '님': ['님', '임'],
 
@@ -99,23 +94,10 @@ const DUEUM = {
 
 
 /* =========================================================
-   두음법칙 처리
+   두음법칙
 ========================================================= */
 
-/*
- * 마지막 글자에서 다음 단어의 첫 글자로
- * 인정되는 모든 글자를 반환한다.
- *
- * 예:
- *
- * 리 → 리, 이
- * 님 → 님, 임
- * 늄 → 늄, 윰
- * 륨 → 륨, 윰
- */
-
 function allowedFirstChars(lastChar) {
-
   if (!lastChar) {
     return [];
   }
@@ -125,41 +107,28 @@ function allowedFirstChars(lastChar) {
   const extra = DUEUM[lastChar];
 
   if (extra) {
-
     for (const char of extra) {
-
       if (!result.includes(char)) {
         result.push(char);
       }
-
     }
-
   }
 
   return result;
 }
 
 
-/*
- * 단어가 마지막 글자에 맞는지 검사
- */
-
 function canStartWith(word, lastChar) {
-
   if (!word || !lastChar) {
     return false;
   }
 
-  return allowedFirstChars(lastChar)
-    .includes(word[0]);
+  return allowedFirstChars(lastChar).includes(word[0]);
 }
 
 
 /*
- * 호환용 이름
- *
- * 기존 server.js에서 canConnect를 사용하더라도
- * 정상적으로 작동하게 한다.
+ * server.js 호환용
  */
 
 function canConnect(word, lastChar) {
@@ -184,10 +153,6 @@ console.log(
 );
 
 
-/*
- * 한글 단어만 사용
- */
-
 const words = [
   ...new Set(
     rawWords.filter(
@@ -210,14 +175,16 @@ console.log(
 const byFirst = new Map();
 
 for (const word of words) {
-
   const first = word[0];
 
-  if (!byFirst.has(first)) {
-    byFirst.set(first, []);
+  let list = byFirst.get(first);
+
+  if (!list) {
+    list = [];
+    byFirst.set(first, list);
   }
 
-  byFirst.get(first).push(word);
+  list.push(word);
 }
 
 console.log(
@@ -226,7 +193,44 @@ console.log(
 
 
 /* =========================================================
-   공격 단어 데이터
+   마지막 글자별 후보 수
+========================================================= */
+
+/*
+ * 여기서 중요한 최적화.
+ *
+ * 기존에는 시작 단어 하나마다 candidates()를 호출하고
+ * 그 안에서 배열을 계속 만들었음.
+ *
+ * 이제 마지막 글자별 후보 개수를 미리 계산한다.
+ */
+
+const nextCountByLast = new Map();
+
+for (const lastChar of byFirst.keys()) {
+  let count = 0;
+
+  const allowed =
+    allowedFirstChars(lastChar);
+
+  for (const firstChar of allowed) {
+    const list =
+      byFirst.get(firstChar);
+
+    if (list) {
+      count += list.length;
+    }
+  }
+
+  nextCountByLast.set(
+    lastChar,
+    count
+  );
+}
+
+
+/* =========================================================
+   공격 단어
 ========================================================= */
 
 console.log('game.js: attack.txt 읽는 중...');
@@ -254,40 +258,30 @@ if (fs.existsSync(ATTACK_FILE)) {
     }
 
 
-    /*
-     * [가]
-     * [나]
-     * 같은 그룹
-     */
-
-    const group = s.match(/^\[(.+)\]$/);
+    const group =
+      s.match(/^\[(.+)\]$/);
 
     if (group) {
-
       currentGroup = group[1];
-
       continue;
     }
 
 
-    /*
-     * 깊이 1 : 단어1, 단어2
-     */
-
-    const match = s.match(
-      /^깊이\s+(\d+)\s*:\s*(.+)$/
-    );
+    const match =
+      s.match(/^깊이\s+(\d+)\s*:\s*(.+)$/);
 
     if (!match || !currentGroup) {
       continue;
     }
 
-    const depth = Number(match[1]);
+    const depth =
+      Number(match[1]);
 
-    const attackWords = match[2]
-      .split(',')
-      .map(x => x.trim())
-      .filter(Boolean);
+    const attackWords =
+      match[2]
+        .split(',')
+        .map(x => x.trim())
+        .filter(Boolean);
 
 
     for (const word of attackWords) {
@@ -303,18 +297,13 @@ if (fs.existsSync(ATTACK_FILE)) {
         oldDepth == null ||
         depth < oldDepth
       ) {
-
         attackDepth.set(
           word,
           depth
         );
-
       }
-
     }
-
   }
-
 }
 
 console.log(
@@ -323,7 +312,7 @@ console.log(
 
 
 /* =========================================================
-   공격 깊이 가져오기
+   공격 깊이
 ========================================================= */
 
 function getAttackDepth(word) {
@@ -345,17 +334,6 @@ function getAttackDepth(word) {
    후보 검색
 ========================================================= */
 
-/*
- * 마지막 글자에서 실제로 갈 수 있는 모든 단어.
- *
- * 두음법칙 적용:
- *
- * 리 → 리 / 이
- * 님 → 님 / 임
- * 늄 → 늄 / 윰
- * 륨 → 륨 / 윰
- */
-
 function candidates(
   lastChar,
   used = new Set()
@@ -363,11 +341,11 @@ function candidates(
 
   const result = [];
 
-  const firstChars =
+  const allowed =
     allowedFirstChars(lastChar);
 
 
-  for (const firstChar of firstChars) {
+  for (const firstChar of allowed) {
 
     const list =
       byFirst.get(firstChar) || [];
@@ -376,16 +354,57 @@ function candidates(
     for (const word of list) {
 
       if (!used.has(word)) {
-
         result.push(word);
-
       }
 
     }
-
   }
 
   return result;
+}
+
+
+/* =========================================================
+   후보 개수
+========================================================= */
+
+function candidateCount(
+  lastChar,
+  used = new Set()
+) {
+
+  let count = 0;
+
+  const allowed =
+    allowedFirstChars(lastChar);
+
+
+  for (const firstChar of allowed) {
+
+    const list =
+      byFirst.get(firstChar);
+
+    if (!list) {
+      continue;
+    }
+
+
+    if (!used.size) {
+      count += list.length;
+      continue;
+    }
+
+
+    for (const word of list) {
+
+      if (!used.has(word)) {
+        count++;
+      }
+
+    }
+  }
+
+  return count;
 }
 
 
@@ -408,10 +427,10 @@ function isOneShot(
   nextUsed.add(word);
 
   return (
-    candidates(
+    candidateCount(
       word.at(-1),
       nextUsed
-    ).length === 0
+    ) === 0
   );
 }
 
@@ -433,178 +452,198 @@ const START_FIRST = [
 
 
 /*
- * 시작 단어 검사
+ * 시작 단어용 빠른 검사.
  *
- * 시작부터:
+ * 기존 버전:
  *
- * - 공격 깊이가 있는 단어
- * - 한방 단어
- * - 선택지가 너무 적은 단어
- * - 공격 루트로 강하게 연결되는 단어
+ * 54만 단어
+ * × candidates()
+ * × 여러 번 isOneShot()
  *
- * 를 제외한다.
+ * 을 수행해서 매우 느렸음.
+ *
+ * 현재 버전:
+ *
+ * 1. 첫 글자
+ * 2. 공격 단어 여부
+ * 3. 마지막 글자의 후보 수
+ *
+ * 를 먼저 확인하고,
+ * 필요한 경우에만 일부 후보를 확인한다.
  */
 
 function isBadStart(word) {
 
-  /*
-   * 1.
-   * 반드시 지정된 첫 글자로 시작해야 함.
-   */
+  /* 지정된 첫 글자만 허용 */
 
-  if (!START_FIRST.includes(word[0])) {
+  if (
+    !START_FIRST.includes(
+      word[0]
+    )
+  ) {
+    return true;
+  }
+
+
+  /* 시작 단어 자체가 공격 단어면 제외 */
+
+  if (
+    attackDepth.has(word)
+  ) {
     return true;
   }
 
 
   /*
-   * 2.
-   * 시작 단어 자체가 공격 단어면 제외.
-   */
-
-  if (attackDepth.has(word)) {
-    return true;
-  }
-
-
-  /*
-   * 3.
-   * 시작 단어를 사용했다고 가정.
-   */
-
-  const used =
-    new Set([word]);
-
-
-  /*
-   * 4.
-   * 다음 후보 확인.
+   * 마지막 글자에서 갈 수 있는
+   * 전체 후보 수.
    *
-   * 여기에도 두음법칙 적용.
+   * 두음법칙 적용.
    */
 
-  const next =
-    candidates(
-      word.at(-1),
-      used
-    );
+  const last =
+    word.at(-1);
+
+  const totalNext =
+    nextCountByLast.get(last) || 0;
 
 
   /*
-   * 5.
    * 시작하자마자 선택지가 너무 적으면 제외.
    */
 
-  if (next.length < 8) {
+  if (totalNext < 8) {
     return true;
   }
 
 
   /*
-   * 6.
-   * 다음 후보 중 공격 단어 / 한방 단어 비율 확인.
+   * 여기부터는 정말 필요한 경우만
+   * 후보 일부를 검사한다.
+   *
+   * 전체 후보를 매번 검사하지 않는다.
    */
 
-  let attackCount = 0;
+  const allowed =
+    allowedFirstChars(last);
 
+
+  let attackCount = 0;
   let oneShotCount = 0;
+  let checked = 0;
 
 
   /*
-   * 너무 많은 계산을 방지하면서도
-   * 충분히 판단할 수 있도록 최대 100개 검사.
+   * 최대 30개만 검사.
+   *
+   * 시작 단어 3만 개 이상을 검사할 때
+   * 속도 차이가 매우 큼.
    */
 
-  const sampleSize =
-    Math.min(
-      next.length,
-      100
-    );
+  const MAX_SAMPLE = 30;
 
 
   for (
-    let i = 0;
-    i < sampleSize;
-    i++
+    const firstChar of allowed
   ) {
 
-    const nextWord =
-      next[i];
+    const list =
+      byFirst.get(firstChar);
+
+    if (!list) {
+      continue;
+    }
 
 
-    /*
-     * 공격 단어
-     */
-
-    if (
-      attackDepth.has(nextWord)
+    for (
+      const nextWord of list
     ) {
 
-      attackCount++;
+      if (
+        nextWord === word
+      ) {
+        continue;
+      }
+
+
+      if (
+        attackDepth.has(nextWord)
+      ) {
+        attackCount++;
+      }
+
+
+      /*
+       * 한방 검사는 비싼 작업이므로
+       * 최대 30개 샘플에서만 검사.
+       */
+
+      const nextLast =
+        nextWord.at(-1);
+
+      const nextCount =
+        nextCountByLast.get(
+          nextLast
+        ) || 0;
+
+
+      if (nextCount <= 1) {
+        oneShotCount++;
+      }
+
+
+      checked++;
+
+
+      if (
+        checked >= MAX_SAMPLE
+      ) {
+        break;
+      }
 
     }
 
 
-    /*
-     * 한방 단어
-     */
-
     if (
-      isOneShot(
-        nextWord,
-        used
-      )
+      checked >= MAX_SAMPLE
     ) {
-
-      oneShotCount++;
-
+      break;
     }
-
   }
 
 
   /*
-   * 7.
-   * 다음 후보의 35% 이상이 공격 단어라면
-   * 시작부터 공격 루트로 몰릴 가능성이 높음.
+   * 공격 단어가 샘플의 35% 이상이면
+   * 시작 단어로 부적합.
    */
 
   if (
-    sampleSize >= 10 &&
-    attackCount / sampleSize > 0.35
+    checked >= 10 &&
+    attackCount / checked > 0.35
   ) {
-
     return true;
-
   }
 
 
   /*
-   * 8.
-   * 다음 후보의 45% 이상이 한방이면 제외.
+   * 한방으로 이어질 가능성이 높은 단어가
+   * 샘플의 45% 이상이면 제외.
    */
 
   if (
-    sampleSize >= 10 &&
-    oneShotCount / sampleSize > 0.45
+    checked >= 10 &&
+    oneShotCount / checked > 0.45
   ) {
-
     return true;
-
   }
 
-
-  /*
-   * 9.
-   * 정상적인 시작 단어.
-   */
 
   return false;
 }
 
 
 /*
- * 실제 시작 단어 목록 생성
+ * 시작 단어 생성
  */
 
 const startPool =
@@ -625,13 +664,10 @@ console.log(
 function randomStart() {
 
   if (!startPool.length) {
-
     throw new Error(
       '사용할 수 있는 시작 단어가 없습니다.'
     );
-
   }
-
 
   return startPool[
     Math.floor(
@@ -652,43 +688,20 @@ function validateWord(
   used = new Set()
 ) {
 
-  /*
-   * 빈 단어
-   */
-
   if (!word) {
-
     return '단어를 입력해주세요.';
-
   }
 
-
-  /*
-   * 사전에 존재하는지
-   */
 
   if (!wordSet.has(word)) {
-
     return '목록에 없는 단어입니다.';
-
   }
 
-
-  /*
-   * 이미 사용했는지
-   */
 
   if (used.has(word)) {
-
     return '이미 사용한 단어입니다.';
-
   }
 
-
-  /*
-   * 현재 단어가 있다면
-   * 두음법칙까지 적용해서 검사.
-   */
 
   if (
     current &&
@@ -701,19 +714,19 @@ function validateWord(
     const last =
       current.at(-1);
 
-
     const accepted =
       allowedFirstChars(last);
 
 
-    if (accepted.length > 1) {
+    if (
+      accepted.length > 1
+    ) {
 
       return (
         `'${last}' 다음에는 ` +
         `${accepted.join(', ')}으로 ` +
         `시작하는 단어가 필요합니다.`
       );
-
     }
 
 
@@ -721,7 +734,6 @@ function validateWord(
       `'${last}'으로 시작하는 ` +
       `단어가 필요합니다.`
     );
-
   }
 
 
@@ -736,7 +748,6 @@ function validateWord(
 function publicData() {
 
   return {
-
     words,
 
     attackDepth:
@@ -747,9 +758,7 @@ function publicData() {
     startPool,
 
     dueum: DUEUM
-
   };
-
 }
 
 
