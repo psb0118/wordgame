@@ -1,3 +1,4 @@
+```javascript
 const $ = id => document.getElementById(id);
 
 let data = null;
@@ -11,9 +12,9 @@ let wins = 0;
 let losses = 0;
 let totalTurns = 0;
 
-/* =========================
-   시작 글자
-========================= */
+/* =========================================================
+   시작 음절
+========================================================= */
 
 const START_FIRST = [
   '가',
@@ -26,346 +27,104 @@ const START_FIRST = [
   '시'
 ];
 
-/* =========================
+/* =========================================================
    두음법칙
-=========================
+========================================================= */
 
-   실제 끝말잇기에서 사용할 수 있는
-   주요 두음법칙을 폭넓게 처리한다.
+const DUEUM = {
+  /* ㄴ → ㅇ */
+  '녀': ['녀', '여'],
+  '년': ['년', '연'],
+  '념': ['념', '염'],
+  '녕': ['녕', '영'],
+  '뇨': ['뇨', '요'],
+  '뉴': ['뉴', '유'],
+  '니': ['니', '이'],
+  '녑': ['녑', '엽'],
+  '녁': ['녁', '역'],
+  '뇰': ['뇰', '욜'],
 
-   예:
-   리 → 이
-   림 → 임
-   름 → 음
-   량 → 양
-   력 → 역
-   련 → 연
-   렬 → 열
-   령 → 영
-   례 → 예
-   료 → 요
-   류 → 유
-   륙 → 육
-   률 → 율
-   린 → 인
-   립 → 입
+  /* ㄹ → ㄴ */
+  '라': ['라', '나'],
+  '락': ['락', '낙'],
+  '란': ['란', '난'],
+  '랄': ['랄', '날'],
+  '람': ['람', '남'],
+  '랑': ['랑', '낭'],
+  '래': ['래', '내'],
+  '로': ['로', '노'],
+  '록': ['록', '녹'],
+  '론': ['론', '논'],
+  '루': ['루', '누'],
+  '뢰': ['뢰', '뇌'],
 
-   녀 → 여
-   년 → 연
-   념 → 염
-   녕 → 영
-   뇨 → 요
-   뉴 → 유
-   니 → 이
+  /* ㄹ → ㅇ */
+  '랴': ['랴', '야'],
+  '려': ['려', '여'],
+  '례': ['례', '예'],
+  '료': ['료', '요'],
+  '류': ['류', '유'],
+  '리': ['리', '이'],
+  '력': ['력', '역'],
+  '략': ['략', '약'],
+  '량': ['량', '양'],
+  '련': ['련', '연'],
+  '렴': ['렴', '염'],
+  '령': ['령', '영'],
+  '렬': ['렬', '열'],
+  '률': ['률', '율'],
+  '린': ['린', '인'],
+  '림': ['림', '임'],
+  '립': ['립', '입'],
+  '륙': ['륙', '육'],
+  '륭': ['륭', '융'],
+  '렵': ['렵', '엽'],
 
-   라 → 나
-   래 → 내
-   로 → 노
-   루 → 누
-   류 → 유
-   륙 → 육
-   릉 → 능
-
-   님 → 임
-   늄 → 윰
-*/
-
-const DUEUM = {};
-
-/*
- * ㄴ → ㅇ
- */
-const NIEUN_TO_IEUNG = [
-  '녀',
-  '년',
-  '념',
-  '녕',
-  '뇨',
-  '뉴',
-  '니',
-  '녜',
-  '녑',
-  '녘',
-  '녠',
-  '뉘',
-  '늬',
-  '뇌',
-  '뇰'
-];
-
-/*
- * ㄹ → ㄴ
- */
-const RIEUL_TO_NIEUN = [
-  '라',
-  '래',
-  '로',
-  '뢰',
-  '루',
-  '르',
-  '리',
-  '랴',
-  '려',
-  '례',
-  '료',
-  '류',
-  '랴',
-  '려',
-  '롸',
-  '뤄',
-  '뤼',
-  '래',
-  '뢰',
-  '롸',
-  '롼',
-  '롹',
-  '롱',
-  '룡',
-  '륜',
-  '륭',
-  '릉',
-  '릅',
-  '릎',
-  '릇',
-  '름',
-  '릉',
-  '륵',
-  '른'
-];
-
-/*
- * ㄹ → ㅇ
- *
- * 려, 력, 련, 렬, 령, 례, 료,
- * 류, 륙, 률, 리, 린, 립 등
- */
-const RIEUL_TO_IEUNG = [
-  '려',
-  '례',
-  '료',
-  '류',
-  '리',
-  '력',
-  '략',
-  '량',
-  '련',
-  '렬',
-  '령',
-  '률',
-  '린',
-  '립',
-  '륙',
-  '렵',
-  '렷',
-  '렴',
-  '렴',
-  '룔',
-  '륨',
-  '늄'
-];
-
-/*
- * 직접 지정해야 하는 변환
- *
- * 두음법칙의 실제 활용에서 자주 문제가 되는 것들
- */
-const DIRECT_DUEUM = {
-  '녀': '여',
-  '년': '연',
-  '념': '염',
-  '녕': '영',
-  '뇨': '요',
-  '뉴': '유',
-  '니': '이',
-
-  '라': '나',
-  '래': '내',
-  '로': '노',
-  '뢰': '뇌',
-  '루': '누',
-
-  '려': '여',
-  '례': '예',
-  '료': '요',
-  '류': '유',
-  '리': '이',
-  '력': '역',
-  '략': '약',
-  '량': '양',
-  '련': '연',
-  '렴': '염',
-  '령': '영',
-  '렬': '열',
-  '률': '율',
-  '린': '인',
-  '립': '입',
-  '륙': '육',
-  '렵': '엽',
-
-  /*
-   * 끝말잇기에서 많이 사용하는 변환
-   */
-  '륨': '윰',
-  '늄': '윰',
-
-  /*
-   * 님 → 임
-   */
-  '님': '임',
-
-  /*
-   * 림 → 임
-   */
-  '림': '임',
-
-  /*
-   * 름 → 음
-   */
-  '름': '음',
-
-  /*
-   * 륨 → 윰
-   */
-  '륨': '윰'
+  /* 추가 게임용 */
+  '레': ['레', '에'],
+  '름': ['름', '음'],
+  '님': ['님', '임'],
+  '륨': ['륨', '윰'],
+  '늄': ['늄', '윰'],
+  '릉': ['릉', '능'],
+  '릅': ['릅', '늡'],
+  '른': ['른', '는'],
+  '릎': ['릎', '늪'],
+  '릇': ['릇', '늣'],
+  '륜': ['륜', '윤'],
+  '릿': ['릿', '잇'],
+  '랸': ['랸', '얀'],
+  '룔': ['룔', '욜']
 };
 
-/*
- * 기본 변환표 생성
- */
-for (const char of NIEUN_TO_IEUNG) {
-  if (!DUEUM[char]) {
-    DUEUM[char] = [char];
-  }
-
-  if (DIRECT_DUEUM[char]) {
-    DUEUM[char].push(DIRECT_DUEUM[char]);
-  }
-}
-
-for (const char of RIEUL_TO_NIEUN) {
-  if (!DUEUM[char]) {
-    DUEUM[char] = [char];
-  }
-
-  /*
-   * ㄹ → ㄴ
-   *
-   * 라 → 나
-   * 래 → 내
-   * 로 → 노
-   * 루 → 누
-   */
-  if (DIRECT_DUEUM[char]) {
-    DUEUM[char].push(DIRECT_DUEUM[char]);
-  }
-}
-
-for (const char of RIEUL_TO_IEUNG) {
-  if (!DUEUM[char]) {
-    DUEUM[char] = [char];
-  }
-
-  if (DIRECT_DUEUM[char]) {
-    DUEUM[char].push(DIRECT_DUEUM[char]);
-  }
-}
-
-/*
- * 직접 지정된 변환을 모두 추가
- */
-for (const [from, to] of Object.entries(DIRECT_DUEUM)) {
-  if (!DUEUM[from]) {
-    DUEUM[from] = [from];
-  }
-
-  if (!DUEUM[from].includes(to)) {
-    DUEUM[from].push(to);
-  }
-}
-
-/*
- * 일부 끝말잇기에서 허용되는 특수 변환
- */
-const EXTRA_DUEUM = {
-  '랏': '낫',
-  '롯': '놋',
-  '롱': '농',
-  '룡': '용',
-  '륜': '윤',
-  '륭': '융',
-  '릉': '능',
-  '릎': '늪',
-  '릇': '늣',
-  '륵': '늑',
-  '릅': '늡',
-  '른': '는'
-};
-
-for (const [from, to] of Object.entries(EXTRA_DUEUM)) {
-  if (!DUEUM[from]) {
-    DUEUM[from] = [from];
-  }
-
-  if (!DUEUM[from].includes(to)) {
-    DUEUM[from].push(to);
-  }
-}
-
-/*
- * 허용되는 첫 글자 목록
- *
- * 예:
- * 마지막 글자 = 리
- *
- * 가능:
- * 리...
- * 이...
- */
 function allowedFirstChars(lastChar) {
   if (!lastChar) {
     return [];
   }
 
-  const result = [lastChar];
-
-  const alternatives = DUEUM[lastChar];
-
-  if (alternatives) {
-    for (const char of alternatives) {
-      if (!result.includes(char)) {
-        result.push(char);
-      }
-    }
-  }
-
-  return result;
+  return DUEUM[lastChar] || [lastChar];
 }
 
-/*
- * 실제 단어가 해당 글자로 시작하는지 확인
- */
 function canStartWith(word, lastChar) {
   if (!word || !lastChar) {
     return false;
   }
 
-  const allowed =
-    allowedFirstChars(lastChar);
-
-  return allowed.includes(word[0]);
+  return allowedFirstChars(lastChar)
+    .includes(word[0]);
 }
 
-/* =========================
+/* =========================================================
    공격 데이터
-========================= */
+========================================================= */
 
 function attack() {
   return data?.attackDepth || {};
 }
 
-/* =========================
+/* =========================================================
    후보 단어
-========================= */
+========================================================= */
 
 function candidates(ch) {
   if (!data || !ch) {
@@ -373,7 +132,6 @@ function candidates(ch) {
   }
 
   const result = [];
-
   const firstChars =
     allowedFirstChars(ch);
 
@@ -391,9 +149,43 @@ function candidates(ch) {
   return result;
 }
 
-/* =========================
+/* =========================================================
+   후보 수
+========================================================= */
+
+function countCandidates(ch) {
+  if (!data || !ch) {
+    return 0;
+  }
+
+  const firstChars =
+    allowedFirstChars(ch);
+
+  let count = 0;
+
+  for (const first of firstChars) {
+    const list =
+      data.byFirst[first] || [];
+
+    count += list.length;
+  }
+
+  /*
+   * 사용된 단어 수만 빼면 되므로
+   * 전체 54만 단어를 다시 순회하지 않는다.
+   */
+  for (const word of used) {
+    if (firstChars.includes(word[0])) {
+      count--;
+    }
+  }
+
+  return Math.max(0, count);
+}
+
+/* =========================================================
    통계
-========================= */
+========================================================= */
 
 function saveStats() {
   localStorage.kkeulStats =
@@ -450,9 +242,9 @@ function updateStats() {
       : '-';
 }
 
-/* =========================
+/* =========================================================
    기록
-========================= */
+========================================================= */
 
 function addHistory(who, word) {
   const depth =
@@ -476,32 +268,102 @@ function addHistory(who, word) {
     $('history').scrollHeight;
 }
 
-/* =========================
-   시작 단어
-========================= */
+/* =========================================================
+   첫 단어 검사
+========================================================= */
 
-function getStartWord() {
-  const pool =
-    data.startPool || [];
-
-  if (!pool.length) {
-    throw new Error(
-      '시작 단어가 없습니다.'
-    );
+function validateFirstWordClient(
+  word,
+  startChar
+) {
+  if (!word) {
+    return '단어를 입력해주세요.';
   }
 
-  return pool[
-    Math.floor(
-      Math.random() * pool.length
+  if (!data.wordSet.has(word)) {
+    return '목록에 없는 단어야.';
+  }
+
+  if (!word.startsWith(startChar)) {
+    return `'${startChar}'으로 시작하는 단어를 써야 해.`;
+  }
+
+  /*
+   * 첫 단어 공격 금지
+   */
+  if (
+    Object.prototype.hasOwnProperty.call(
+      attack(),
+      word
     )
-  ];
+  ) {
+    return '첫 단어에서는 공격 단어를 사용할 수 없어.';
+  }
+
+  /*
+   * 첫 단어 한방 금지
+   */
+  const nextCount =
+    countCandidatesWithExtraUsed(
+      word.at(-1),
+      word
+    );
+
+  if (nextCount === 0) {
+    return '첫 단어로 한방 단어는 사용할 수 없어.';
+  }
+
+  if (nextCount < 5) {
+    return '첫 단어로는 선택지가 너무 적은 단어를 사용할 수 없어.';
+  }
+
+  return null;
 }
 
-/* =========================
+function countCandidatesWithExtraUsed(
+  ch,
+  extraWord
+) {
+  if (!data || !ch) {
+    return 0;
+  }
+
+  const firstChars =
+    allowedFirstChars(ch);
+
+  let count = 0;
+
+  for (const first of firstChars) {
+    count +=
+      (data.byFirst[first] || []).length;
+  }
+
+  for (const word of used) {
+    if (firstChars.includes(word[0])) {
+      count--;
+    }
+  }
+
+  if (
+    extraWord &&
+    !used.has(extraWord) &&
+    firstChars.includes(extraWord[0])
+  ) {
+    count--;
+  }
+
+  return Math.max(0, count);
+}
+
+/* =========================================================
    게임 시작
-========================= */
+========================================================= */
 
 function start() {
+  if (!data) {
+    return;
+  }
+
   used.clear();
 
   over = false;
@@ -516,30 +378,37 @@ function start() {
   $('singleSend').disabled =
     false;
 
-  current =
-    getStartWord();
+  /*
+   * 시작 단어가 아니라 시작 음절
+   */
+  const startChar =
+    START_FIRST[
+      Math.floor(
+        Math.random() *
+        START_FIRST.length
+      )
+    ];
 
-  used.add(current);
+  current = '';
 
+  /*
+   * 기존 UI가 startWord를 사용하고 있으므로
+   * 그 칸에는 시작 음절을 표시한다.
+   */
   $('startWord').value =
-    current;
+    startChar;
 
   $('last').textContent =
-    current.at(-1);
+    startChar;
 
   $('turn').textContent =
     0;
 
   $('depth').textContent =
-    attack()[current] ?? '-';
+    '-';
 
   $('message').textContent =
-    `시작 단어는 '${current}'. '${current.at(-1)}'로 시작하는 단어를 입력해!`;
-
-  addHistory(
-    '시작',
-    current
-  );
+    `시작 음절은 '${startChar}'. '${startChar}'로 시작하는 단어를 입력해!`;
 
   /*
    * 선공 랜덤
@@ -548,30 +417,32 @@ function start() {
     Math.random() < 0.5;
 
   if (playerFirst) {
+
     $('message').textContent =
-      `시작 단어는 '${current}'. 네 차례야!`;
+      `시작 음절은 '${startChar}'. 네 차례야!`;
 
     $('singleInput').focus();
+
   } else {
+
+    /*
+     * 싱글에서는 AI가 첫 단어를 내는 것이 아니라
+     * 플레이어에게 먼저 시작 음절을 주고
+     * 항상 플레이어가 첫 단어를 고른다.
+     *
+     * 이렇게 해야 "시작 음절 → 첫 단어" 구조가
+     * 명확하게 유지된다.
+     */
     $('message').textContent =
-      `시작 단어는 '${current}'. AI가 먼저 생각 중...`;
+      `시작 음절은 '${startChar}'. 첫 단어를 입력해!`;
 
-    $('singleInput').disabled =
-      true;
-
-    $('singleSend').disabled =
-      true;
-
-    setTimeout(
-      aiTurn,
-      350
-    );
+    $('singleInput').focus();
   }
 }
 
-/* =========================
+/* =========================================================
    게임 종료
-========================= */
+========================================================= */
 
 function finish(aiWon) {
   over = true;
@@ -599,13 +470,13 @@ function finish(aiWon) {
       : '플레이어 승리!';
 }
 
-/* =========================
+/* =========================================================
    후보 정보
-========================= */
+========================================================= */
 
 function candidateInfo(word) {
   const next =
-    candidates(
+    countCandidates(
       word.at(-1)
     );
 
@@ -619,16 +490,15 @@ function candidateInfo(word) {
   return {
     word,
     depth,
-    nextCount:
-      next.length,
+    nextCount: next,
     oneShot:
-      next.length === 0
+      next === 0
   };
 }
 
-/* =========================
+/* =========================================================
    AI 점수
-========================= */
+========================================================= */
 
 function score(word, level) {
   const info =
@@ -666,20 +536,10 @@ function score(word, level) {
    */
   if (info.depth != null) {
 
-    /*
-     * Lv.1
-     *
-     * 공격 단어를 거의 사용하지 않는다.
-     */
     if (level === 1) {
       return -10000 - depth;
     }
 
-    /*
-     * Lv.2
-     *
-     * 일반인 정도.
-     */
     if (level === 2) {
       return (
         (depth >= 4
@@ -693,9 +553,6 @@ function score(word, level) {
       );
     }
 
-    /*
-     * Lv.3
-     */
     if (level === 3) {
       if (depth <= 3) {
         return (
@@ -714,9 +571,6 @@ function score(word, level) {
       return 50;
     }
 
-    /*
-     * Lv.4
-     */
     if (level === 4) {
       return (
         5000 -
@@ -724,9 +578,6 @@ function score(word, level) {
       );
     }
 
-    /*
-     * Lv.5
-     */
     if (level === 5) {
       return (
         100000 -
@@ -736,7 +587,7 @@ function score(word, level) {
   }
 
   /*
-   * 양보 단어
+   * 일반 단어
    */
   if (level === 1) {
     return (
@@ -778,9 +629,6 @@ function score(word, level) {
     );
   }
 
-  /*
-   * Lv.5는 양보 단어를 최대한 피한다.
-   */
   return (
     -500 +
     Math.min(
@@ -790,9 +638,9 @@ function score(word, level) {
   );
 }
 
-/* =========================
+/* =========================================================
    AI 선택
-========================= */
+========================================================= */
 
 function aiPick() {
   const level =
@@ -810,17 +658,17 @@ function aiPick() {
     return null;
   }
 
+  /*
+   * 후보가 너무 많아도
+   * 모든 후보마다 candidates()를 다시 만들지 않는다.
+   */
   const infos =
     list.map(candidateInfo);
 
-  /*
-   * Lv.5
-   *
-   * 최우선:
-   * 1. 한방단어
-   * 2. 공격단어
-   * 3. 양보단어
-   */
+  /* =======================================================
+     Lv.5
+  ======================================================= */
+
   if (level === 5) {
 
     const oneShots =
@@ -829,6 +677,7 @@ function aiPick() {
       );
 
     if (oneShots.length) {
+
       oneShots.sort(
         (a, b) =>
           (a.depth ?? 999) -
@@ -846,6 +695,7 @@ function aiPick() {
       );
 
     if (attacks.length) {
+
       attacks.sort(
         (a, b) =>
           a.depth -
@@ -864,9 +714,10 @@ function aiPick() {
     return infos[0].word;
   }
 
-  /*
-   * Lv.4
-   */
+  /* =======================================================
+     Lv.4
+  ======================================================= */
+
   if (level === 4) {
 
     const attacks =
@@ -877,6 +728,7 @@ function aiPick() {
       );
 
     if (attacks.length) {
+
       attacks.sort(
         (a, b) =>
           a.depth -
@@ -887,9 +739,10 @@ function aiPick() {
     }
   }
 
-  /*
-   * Lv.3
-   */
+  /* =======================================================
+     Lv.3
+  ======================================================= */
+
   if (level === 3) {
 
     const shallow =
@@ -923,9 +776,10 @@ function aiPick() {
     }
   }
 
-  /*
-   * Lv.2
-   */
+  /* =======================================================
+     Lv.2
+  ======================================================= */
+
   if (level === 2) {
 
     const sorted =
@@ -955,12 +809,10 @@ function aiPick() {
     ].word;
   }
 
-  /*
-   * Lv.1
-   *
-   * 절대로 시작부터 한방단어를
-   * 고르는 식으로 행동하지 않게 한다.
-   */
+  /* =======================================================
+     Lv.1
+  ======================================================= */
+
   if (level === 1) {
 
     const safe =
@@ -972,10 +824,6 @@ function aiPick() {
 
     if (safe.length) {
 
-      /*
-       * 다음 선택지가 많은
-       * 양보 단어를 선호한다.
-       */
       safe.sort(
         (a, b) =>
           b.nextCount -
@@ -996,16 +844,13 @@ function aiPick() {
       ].word;
     }
 
-    /*
-     * 정말 안전한 단어가 없다면
-     * 한방단어는 최대한 피한다.
-     */
     const nonOneShot =
       infos.filter(
         x => !x.oneShot
       );
 
     if (nonOneShot.length) {
+
       nonOneShot.sort(
         (a, b) =>
           b.nextCount -
@@ -1031,9 +876,9 @@ function aiPick() {
   ];
 }
 
-/* =========================
+/* =========================================================
    AI 턴
-========================= */
+========================================================= */
 
 function aiTurn() {
   if (over) {
@@ -1067,14 +912,10 @@ function aiTurn() {
     word
   );
 
-  /*
-   * 실제 다음 후보를
-   * 두음법칙까지 포함하여 확인
-   */
   if (
-    candidates(
+    countCandidates(
       word.at(-1)
-    ).length === 0
+    ) === 0
   ) {
     finish(true);
     return;
@@ -1092,9 +933,9 @@ function aiTurn() {
   $('singleInput').focus();
 }
 
-/* =========================
+/* =========================================================
    플레이어 입력
-========================= */
+========================================================= */
 
 function submit() {
   if (over) {
@@ -1113,38 +954,63 @@ function submit() {
     return;
   }
 
-  if (!data.wordSet[word]) {
-    $('message').textContent =
-      '목록에 없는 단어야.';
-    return;
-  }
+  /*
+   * 첫 단어
+   */
+  if (!current) {
 
-  if (used.has(word)) {
-    $('message').textContent =
-      '이미 나온 단어야.';
-    return;
-  }
+    const startChar =
+      $('startWord')
+        .value;
 
-  if (
-    !canStartWith(
-      word,
-      current.at(-1)
-    )
-  ) {
-    const last =
-      current.at(-1);
-
-    const accepted =
-      allowedFirstChars(
-        last
+    const error =
+      validateFirstWordClient(
+        word,
+        startChar
       );
 
-    $('message').textContent =
-      accepted.length > 1
-        ? `'${last}' 다음에는 ${accepted.join(', ')}으로 시작하는 단어를 써야 해.`
-        : `'${last}'로 시작해야 해.`;
+    if (error) {
+      $('message').textContent =
+        error;
+      return;
+    }
 
-    return;
+  } else {
+
+    /*
+     * 일반 단어
+     */
+    if (!data.wordSet.has(word)) {
+      $('message').textContent =
+        '목록에 없는 단어야.';
+      return;
+    }
+
+    if (used.has(word)) {
+      $('message').textContent =
+        '이미 나온 단어야.';
+      return;
+    }
+
+    if (
+      !canStartWith(
+        word,
+        current.at(-1)
+      )
+    ) {
+      const last =
+        current.at(-1);
+
+      const accepted =
+        allowedFirstChars(last);
+
+      $('message').textContent =
+        accepted.length > 1
+          ? `'${last}' 다음에는 ${accepted.join(', ')}으로 시작하는 단어를 써야 해.`
+          : `'${last}'로 시작해야 해.`;
+
+      return;
+    }
   }
 
   used.add(word);
@@ -1168,13 +1034,12 @@ function submit() {
   );
 
   /*
-   * 두음법칙을 포함하여
-   * 다음 단어가 있는지 검사
+   * 다음 단어가 없는지 확인
    */
   if (
-    candidates(
+    countCandidates(
       word.at(-1)
-    ).length === 0
+    ) === 0
   ) {
     finish(false);
     return;
@@ -1195,9 +1060,9 @@ function submit() {
   );
 }
 
-/* =========================
+/* =========================================================
    싱글 게임 이벤트
-========================= */
+========================================================= */
 
 $('singleSend').onclick =
   submit;
@@ -1216,9 +1081,9 @@ $('restart').onclick =
 $('newStart').onclick =
   start;
 
-/* =========================
+/* =========================================================
    온라인 2인
-========================= */
+========================================================= */
 
 const socket = io();
 
@@ -1228,6 +1093,7 @@ let myId = null;
 let onlineLast = '';
 let onlineTurn = null;
 let onlineStarted = false;
+let onlineStartChar = '';
 
 function roomRender(state) {
   room = state;
@@ -1249,6 +1115,11 @@ function roomRender(state) {
           .join(' · ') ||
         '-'
       }<br>
+      ${
+        state.startChar
+          ? `시작 음절: <b>${esc(state.startChar)}</b><br>`
+          : ''
+      }
       현재 차례:
       ${
         state.turnPlayer
@@ -1279,10 +1150,8 @@ function roomRender(state) {
       !canStart
     );
 
-  if (
-    onlineStarted &&
-    state.started
-  ) {
+  if (onlineStarted) {
+
     const myTurn =
       state.turnPlayer ===
       myId;
@@ -1306,6 +1175,7 @@ socket.on(
 socket.on(
   'room_created',
   info => {
+
     $('roomCode').value =
       info.code;
 
@@ -1344,8 +1214,10 @@ socket.on(
     $('onlineHistory').innerHTML =
       '';
 
-    onlineLast =
-      info.startWord;
+    onlineLast = '';
+
+    onlineStartChar =
+      info.startChar;
 
     onlineTurn =
       info.state.turnPlayer;
@@ -1355,15 +1227,15 @@ socket.on(
 
     addOnline(
       '시작',
-      info.startWord,
-      info.state.lastDepth
+      `시작 음절: ${info.startChar}`,
+      null
     );
 
     $('onlineMessage').textContent =
       info.state.turnPlayer ===
       myId
-        ? `게임 시작! '${info.startWord}' 다음은 네 차례야.`
-        : `게임 시작! '${info.startWord}' 다음은 상대방 차례야.`;
+        ? `게임 시작! '${info.startChar}'로 시작하는 첫 단어를 입력해.`
+        : `게임 시작! 시작 음절은 '${info.startChar}'. 상대방 차례야.`;
 
     roomRender(
       info.state
@@ -1371,6 +1243,13 @@ socket.on(
 
     $('onlineInput').value =
       '';
+
+    if (
+      info.state.turnPlayer ===
+      myId
+    ) {
+      $('onlineInput').focus();
+    }
   }
 );
 
@@ -1461,15 +1340,22 @@ socket.on(
       info.winner === myId
         ? '온라인 승리!'
         : '온라인 패배!';
+
+    if (info.state) {
+      roomRender(
+        info.state
+      );
+    }
   }
 );
 
-/* =========================
+/* =========================================================
    온라인 버튼
-========================= */
+========================================================= */
 
 $('create').onclick =
   () => {
+
     socket.emit(
       'create_room',
       {
@@ -1484,6 +1370,7 @@ $('create').onclick =
 
 $('join').onclick =
   () => {
+
     socket.emit(
       'join_room',
       {
@@ -1491,6 +1378,7 @@ $('join').onclick =
           $('roomCode')
             .value
             .trim(),
+
         name:
           $('name')
             .value
@@ -1514,6 +1402,7 @@ $('onlineSend').onclick =
 
 $('onlineInput').onkeydown =
   e => {
+
     if (e.key === 'Enter') {
       e.preventDefault();
       onlineSubmit();
@@ -1542,13 +1431,49 @@ function onlineSubmit() {
     return;
   }
 
-  if (!data.wordSet[word]) {
-    $('onlineMessage').textContent =
-      '목록에 없는 단어야.';
-    return;
-  }
+  /*
+   * 첫 단어
+   */
+  if (!onlineLast) {
 
-  if (onlineLast) {
+    if (
+      !data.wordSet.has(word)
+    ) {
+      $('onlineMessage').textContent =
+        '목록에 없는 단어야.';
+      return;
+    }
+
+    if (
+      !word.startsWith(
+        onlineStartChar
+      )
+    ) {
+      $('onlineMessage').textContent =
+        `'${onlineStartChar}'으로 시작하는 단어를 써야 해.`;
+      return;
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(
+        attack(),
+        word
+      )
+    ) {
+      $('onlineMessage').textContent =
+        '첫 단어에서는 공격 단어를 사용할 수 없어.';
+      return;
+    }
+
+  } else {
+
+    if (
+      !data.wordSet.has(word)
+    ) {
+      $('onlineMessage').textContent =
+        '목록에 없는 단어야.';
+      return;
+    }
 
     if (
       !canStartWith(
@@ -1584,9 +1509,9 @@ function onlineSubmit() {
     '';
 }
 
-/* =========================
+/* =========================================================
    탭
-========================= */
+========================================================= */
 
 document
   .querySelectorAll(
@@ -1632,22 +1557,50 @@ document
     }
   );
 
-/* =========================
+/* =========================================================
    데이터 로딩
-========================= */
+========================================================= */
 
 async function loadData() {
 
   try {
 
-    const response =
-      await fetch(
-        '/api/data'
-      );
+    /*
+     * game.js가 아직 로딩 중이면
+     * 잠시 기다렸다가 다시 요청한다.
+     */
+    let response;
 
-    if (!response.ok) {
+    for (
+      let attempt = 0;
+      attempt < 30;
+      attempt++
+    ) {
+
+      response =
+        await fetch(
+          '/api/data',
+          {
+            cache: 'no-store'
+          }
+        );
+
+      if (response.ok) {
+        break;
+      }
+
+      await new Promise(
+        resolve =>
+          setTimeout(
+            resolve,
+            1000
+          )
+      );
+    }
+
+    if (!response || !response.ok) {
       throw new Error(
-        `HTTP ${response.status}`
+        `HTTP ${response?.status || 'unknown'}`
       );
     }
 
@@ -1655,48 +1608,44 @@ async function loadData() {
       await response.json();
 
     /*
-     * 단어 Set
+     * 서버가 이미 byFirst를 만들어서 보내므로
+     * 클라이언트에서 다시 54만 단어를 순회하지 않는다.
      */
+
     data.wordSet =
-      Object.fromEntries(
-        data.words.map(
-          word => [
-            word,
-            true
-          ]
-        )
+      new Set(
+        data.words
       );
 
     /*
-     * 첫 글자별 단어
-     */
-    data.byFirst = {};
-
-    for (
-      const word of data.words
-    ) {
-
-      const first =
-        word[0];
-
-      (
-        data.byFirst[first] ||
-        (
-          data.byFirst[first] = []
-        )
-      ).push(word);
-    }
-
-    /*
-     * 서버가 보내준 두음법칙보다
-     * 현재 클라이언트 규칙을 사용한다.
+     * 서버 규칙과 클라이언트 규칙을 동일하게 유지
      */
     data.dueum =
       DUEUM;
 
+    /*
+     * 시작 음절
+     */
+    if (
+      Array.isArray(
+        data.startFirst
+      ) &&
+      data.startFirst.length
+    ) {
+      START_FIRST.length = 0;
+
+      START_FIRST.push(
+        ...data.startFirst
+      );
+    }
+
     loadStats();
 
     start();
+
+    console.log(
+      `데이터 로딩 완료: ${data.words.length}개`
+    );
 
   } catch (error) {
 
@@ -1710,9 +1659,9 @@ async function loadData() {
   }
 }
 
-/* =========================
+/* =========================================================
    HTML escape
-========================= */
+========================================================= */
 
 function esc(s) {
   return String(s).replace(
@@ -1729,3 +1678,4 @@ function esc(s) {
 }
 
 loadData();
+```
