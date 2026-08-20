@@ -40,12 +40,8 @@ function allowedFirstChars(lastChar) {
     DUEUM[lastChar];
 
   if (alternatives) {
-    for (
-      const char of alternatives
-    ) {
-      if (
-        !result.includes(char)
-      ) {
+    for (const char of alternatives) {
+      if (!result.includes(char)) {
         result.push(char);
       }
     }
@@ -54,19 +50,13 @@ function allowedFirstChars(lastChar) {
   return result;
 }
 
-function canStartWith(
-  word,
-  lastChar
-) {
+function canStartWith(word, lastChar) {
   if (!word || !lastChar) {
     return false;
   }
 
-  return allowedFirstChars(
-    lastChar
-  ).includes(
-    word[0]
-  );
+  return allowedFirstChars(lastChar)
+    .includes(word[0]);
 }
 
 /* =========================================================
@@ -74,9 +64,7 @@ function canStartWith(
 ========================================================= */
 
 function attack() {
-  return (
-    data?.attackDepth || {}
-  );
+  return data?.attackDepth || {};
 }
 
 /* =========================================================
@@ -84,10 +72,7 @@ function attack() {
 ========================================================= */
 
 function hasWord(word) {
-  if (
-    !data ||
-    !data.wordSet
-  ) {
+  if (!data || !data.wordSet) {
     return false;
   }
 
@@ -98,14 +83,8 @@ function hasWord(word) {
    후보
 ========================================================= */
 
-function candidates(
-  ch,
-  usedSet = used
-) {
-  if (
-    !data ||
-    !ch
-  ) {
+function candidates(ch, usedSet = used) {
+  if (!data || !ch) {
     return [];
   }
 
@@ -114,11 +93,7 @@ function candidates(
   const firstChars =
     allowedFirstChars(ch);
 
-  for (
-    const first
-    of firstChars
-  ) {
-
+  for (const first of firstChars) {
     const list =
       data.byFirst[first];
 
@@ -126,14 +101,8 @@ function candidates(
       continue;
     }
 
-    for (
-      const word
-      of list
-    ) {
-
-      if (
-        !usedSet.has(word)
-      ) {
+    for (const word of list) {
+      if (!usedSet.has(word)) {
         result.push(word);
       }
     }
@@ -146,14 +115,8 @@ function candidates(
    후보 개수
 ========================================================= */
 
-function countCandidates(
-  ch,
-  usedSet = used
-) {
-  if (
-    !data ||
-    !ch
-  ) {
+function countCandidates(ch, usedSet = used) {
+  if (!data || !ch) {
     return 0;
   }
 
@@ -162,11 +125,7 @@ function countCandidates(
   const firstChars =
     allowedFirstChars(ch);
 
-  for (
-    const first
-    of firstChars
-  ) {
-
+  for (const first of firstChars) {
     const list =
       data.byFirst[first];
 
@@ -174,14 +133,8 @@ function countCandidates(
       continue;
     }
 
-    for (
-      const word
-      of list
-    ) {
-
-      if (
-        !usedSet.has(word)
-      ) {
+    for (const word of list) {
+      if (!usedSet.has(word)) {
         count++;
       }
     }
@@ -194,10 +147,7 @@ function countCandidates(
    한방단어
 ========================================================= */
 
-function isOneShot(
-  word,
-  usedSet = used
-) {
+function isOneShot(word, usedSet = used) {
   if (!word) {
     return true;
   }
@@ -230,30 +180,21 @@ function saveStats() {
 
 function loadStats() {
   try {
-
     const saved =
       JSON.parse(
-        localStorage.kkeulStats ||
-        '{}'
+        localStorage.kkeulStats || '{}'
       );
 
     wins =
-      Number(
-        saved.wins || 0
-      );
+      Number(saved.wins || 0);
 
     losses =
-      Number(
-        saved.losses || 0
-      );
+      Number(saved.losses || 0);
 
     totalTurns =
-      Number(
-        saved.totalTurns || 0
-      );
+      Number(saved.totalTurns || 0);
 
   } catch {
-
     wins = 0;
     losses = 0;
     totalTurns = 0;
@@ -278,19 +219,15 @@ function updateStats() {
   $('winrate').textContent =
     games
       ? Math.round(
-          wins /
-          games *
-          100
+          wins / games * 100
         ) + '%'
       : '0%';
 
   $('avg').textContent =
     games
       ? (
-          totalTurns /
-          games
-        ).toFixed(1) +
-        '턴'
+          totalTurns / games
+        ).toFixed(1) + '턴'
       : '-';
 }
 
@@ -298,10 +235,7 @@ function updateStats() {
    기록
 ========================================================= */
 
-function addHistory(
-  who,
-  word
-) {
+function addHistory(who, word) {
   const depth =
     attack()[word];
 
@@ -375,14 +309,12 @@ function start() {
   );
 
   if (playerTurn) {
-
     $('message').textContent =
       `시작 음절은 '${startChar}'. ${startChar}으로 시작하는 단어를 입력해!`;
 
     $('singleInput').focus();
 
   } else {
-
     $('message').textContent =
       `시작 음절은 '${startChar}'. AI가 먼저 생각 중...`;
 
@@ -404,35 +336,39 @@ function aiFirstCandidates() {
       new Set()
     );
 
-  return list.filter(
-    word => {
+  return list.filter(word => {
 
-      if (
-        attack()[word] != null
-      ) {
-        return false;
-      }
-
-      if (
-        isOneShot(
-          word,
-          new Set()
-        )
-      ) {
-        return false;
-      }
-
-      const nextUsed =
-        new Set([word]);
-
-      return (
-        countCandidates(
-          word.at(-1),
-          nextUsed
-        ) >= 5
-      );
+    /*
+     * 첫 단어에서는 공격 단어 금지
+     */
+    if (
+      attack()[word] != null
+    ) {
+      return false;
     }
-  );
+
+    /*
+     * 한방 단어 금지
+     */
+    if (
+      isOneShot(
+        word,
+        new Set()
+      )
+    ) {
+      return false;
+    }
+
+    const nextUsed =
+      new Set([word]);
+
+    return (
+      countCandidates(
+        word.at(-1),
+        nextUsed
+      ) >= 5
+    );
+  });
 }
 
 function aiFirstTurn() {
@@ -446,7 +382,6 @@ function aiFirstTurn() {
   let word = null;
 
   if (safe.length) {
-
     word =
       safe[
         Math.floor(
@@ -457,10 +392,6 @@ function aiFirstTurn() {
 
   } else {
 
-    /*
-     * 안전한 첫 단어가 없을 경우
-     * 가능한 일반 단어 중에서 선택.
-     */
     const list =
       candidates(
         startChar,
@@ -472,6 +403,10 @@ function aiFirstTurn() {
       return;
     }
 
+    /*
+     * 안전한 첫 단어가 없으면
+     * 실제 존재하는 후보 중 선택
+     */
     word =
       list[
         Math.floor(
@@ -481,18 +416,18 @@ function aiFirstTurn() {
       ];
   }
 
-  playAiWord(
-    word
-  );
+  playAiWord(word);
 }
 
 /* =========================================================
    AI 종료
 ========================================================= */
 
-function finish(
-  aiWon
-) {
+function finish(aiWon) {
+  if (over) {
+    return;
+  }
+
   over = true;
 
   $('singleInput').disabled =
@@ -520,16 +455,17 @@ function finish(
 }
 
 /* =========================================================
-   AI 후보 정보
+   후보 정보
 ========================================================= */
 
 function candidateInfo(
-  word
+  word,
+  usedSet = used
 ) {
-  const nextCount =
-    countCandidates(
-      word.at(-1)
-    );
+  const nextUsed =
+    new Set(usedSet);
+
+  nextUsed.add(word);
 
   const depth =
     attack()[word] != null
@@ -538,14 +474,327 @@ function candidateInfo(
         )
       : null;
 
+  const nextCount =
+    countCandidates(
+      word.at(-1),
+      nextUsed
+    );
+
   return {
     word,
     depth,
     nextCount,
-
     oneShot:
       nextCount === 0
   };
+}
+
+/* =========================================================
+   Lv.5 공격 후보 캐시
+========================================================= */
+
+/*
+ * 같은 글자에서 공격 후보를 계속 계산하지 않도록
+ * 캐시한다.
+ *
+ * 단, 사용 여부는 호출할 때 다시 검사한다.
+ */
+
+const attackCandidateCache =
+  new Map();
+
+function getAllAttackCandidates(ch) {
+  if (!data || !ch) {
+    return [];
+  }
+
+  if (
+    attackCandidateCache.has(ch)
+  ) {
+    return attackCandidateCache.get(ch);
+  }
+
+  const result = [];
+
+  const firstChars =
+    allowedFirstChars(ch);
+
+  const attackData =
+    attack();
+
+  for (const first of firstChars) {
+
+    const list =
+      data.byFirst[first] || [];
+
+    for (const word of list) {
+
+      /*
+       * 실제 단어 데이터에 있고
+       * 공격 데이터에도 있는 단어만 인정
+       */
+      if (
+        !hasWord(word)
+      ) {
+        continue;
+      }
+
+      if (
+        attackData[word] == null
+      ) {
+        continue;
+      }
+
+      result.push(word);
+    }
+  }
+
+  attackCandidateCache.set(
+    ch,
+    result
+  );
+
+  return result;
+}
+
+/* =========================================================
+   공격 후보
+========================================================= */
+
+function attackCandidates(
+  ch,
+  usedSet = used
+) {
+  const list =
+    getAllAttackCandidates(ch);
+
+  if (!list.length) {
+    return [];
+  }
+
+  return list.filter(
+    word =>
+      !usedSet.has(word)
+  );
+}
+
+/* =========================================================
+   공격 루트 계산
+========================================================= */
+
+/*
+ * 특정 공격 단어에서 시작해서
+ *
+ * 공격 → 공격 → 공격 → ...
+ *
+ * 형태로 최대 몇 단계 이어지는지 계산한다.
+ *
+ * 일반 공룰 단어는 절대로 탐색하지 않는다.
+ */
+
+function attackChainLength(
+  word,
+  localUsed = new Set(),
+  depthLimit = 30
+) {
+  if (
+    !word ||
+    depthLimit <= 0 ||
+    localUsed.has(word)
+  ) {
+    return 0;
+  }
+
+  const nextUsed =
+    new Set(localUsed);
+
+  nextUsed.add(word);
+
+  const nextCandidates =
+    attackCandidates(
+      word.at(-1),
+      nextUsed
+    );
+
+  if (
+    !nextCandidates.length
+  ) {
+    return 0;
+  }
+
+  /*
+   * 더 이상 볼 필요가 없는 경우
+   */
+  if (depthLimit === 1) {
+    return 1;
+  }
+
+  /*
+   * 공격 깊이가 높은 단어부터 먼저
+   * 탐색하면 좋은 루트를 빨리 찾을 수 있다.
+   */
+  nextCandidates.sort(
+    (a, b) =>
+      Number(attack()[b]) -
+      Number(attack()[a])
+  );
+
+  let best = 0;
+
+  for (
+    const nextWord
+    of nextCandidates
+  ) {
+
+    const length =
+      1 +
+      attackChainLength(
+        nextWord,
+        nextUsed,
+        depthLimit - 1
+      );
+
+    if (
+      length > best
+    ) {
+      best = length;
+    }
+
+    /*
+     * 제한 깊이에 도달하면
+     * 더 탐색할 필요가 없다.
+     */
+    if (
+      best >= depthLimit
+    ) {
+      break;
+    }
+  }
+
+  return best;
+}
+
+/* =========================================================
+   Lv.5 공격 선택
+========================================================= */
+
+function pickLv5Attack(list) {
+
+  const attackData =
+    attack();
+
+  /*
+   * 현재 턴에서 실제로 낼 수 있는
+   * 공격 단어만 남긴다.
+   */
+  const attackList =
+    list.filter(word =>
+      !used.has(word) &&
+      hasWord(word) &&
+      attackData[word] != null
+    );
+
+  /*
+   * 공격 단어가 하나도 없음
+   */
+  if (
+    !attackList.length
+  ) {
+    return null;
+  }
+
+  const evaluated =
+    [];
+
+  for (
+    const word
+    of attackList
+  ) {
+
+    /*
+     * 현재 단어를 포함해서
+     * 이후 공격 루트가 얼마나 길게
+     * 이어지는지 계산
+     */
+    const chain =
+      attackChainLength(
+        word,
+        new Set(used),
+        30
+      );
+
+    const depth =
+      Number(
+        attackData[word]
+      );
+
+    const nextAttack =
+      attackCandidates(
+        word.at(-1),
+        new Set([
+          ...used,
+          word
+        ])
+      );
+
+    evaluated.push({
+      word,
+      chain,
+      depth,
+      nextAttackCount:
+        nextAttack.length
+    });
+  }
+
+  /*
+   * 우선순위
+   *
+   * 1. 공격 루트 길이 최대
+   * 2. 공격 깊이 최대
+   * 3. 다음 공격 후보 최소
+   * 4. 단어명 안정적인 정렬
+   */
+  evaluated.sort(
+    (a, b) => {
+
+      if (
+        b.chain !==
+        a.chain
+      ) {
+        return (
+          b.chain -
+          a.chain
+        );
+      }
+
+      if (
+        b.depth !==
+        a.depth
+      ) {
+        return (
+          b.depth -
+          a.depth
+        );
+      }
+
+      if (
+        a.nextAttackCount !==
+        b.nextAttackCount
+      ) {
+        return (
+          a.nextAttackCount -
+          b.nextAttackCount
+        );
+      }
+
+      return a.word.localeCompare(
+        b.word,
+        'ko'
+      );
+    }
+  );
+
+  return evaluated[0].word;
 }
 
 /* =========================================================
@@ -564,6 +813,10 @@ function score(
   const nextCount =
     info.nextCount;
 
+  /*
+   * 한방 단어
+   */
+
   if (info.oneShot) {
 
     if (level >= 5) {
@@ -581,6 +834,10 @@ function score(
     return -10000;
   }
 
+  /*
+   * 공격 단어
+   */
+
   if (
     info.depth != null
   ) {
@@ -591,9 +848,11 @@ function score(
 
     if (level === 2) {
       return (
-        (depth >= 4
-          ? 80
-          : -30) +
+        (
+          depth >= 4
+            ? 80
+            : -30
+        ) +
         Math.min(
           nextCount,
           30
@@ -627,13 +886,17 @@ function score(
       );
     }
 
-    if (level === 5) {
-      return (
-        100000 -
-        depth * 1000
-      );
-    }
+    /*
+     * Lv.5는 여기서 사용하지 않는다.
+     *
+     * Lv.5는 score()가 아니라
+     * pickLv5Attack()의 실제 공격 루트 탐색을 사용한다.
+     */
   }
+
+  /*
+   * 일반 공룰 단어
+   */
 
   if (level === 1) {
     return (
@@ -675,13 +938,11 @@ function score(
     );
   }
 
-  return (
-    -500 +
-    Math.min(
-      nextCount,
-      10
-    )
-  );
+  /*
+   * Lv.5 일반 단어는
+   * 공격 후보가 있을 때 절대 선택하지 않는다.
+   */
+  return -1000000000;
 }
 
 /* =========================================================
@@ -689,6 +950,7 @@ function score(
 ========================================================= */
 
 function aiPick() {
+
   const level =
     Number(
       $('difficulty').value
@@ -704,60 +966,133 @@ function aiPick() {
     return null;
   }
 
-  const infos =
-    list.map(
-      candidateInfo
-    );
-
-  /* Lv.5 */
+  /* =======================================================
+     Lv.5
+  ======================================================= */
 
   if (level === 5) {
 
-    const oneShots =
-      infos.filter(
-        x =>
-          x.oneShot
-      );
+    /*
+     * 핵심 규칙:
+     *
+     * 공격 단어가 하나라도 존재하면
+     * 일반 단어 / 공룰 단어 / 한방 단어를
+     * 후보에서 완전히 제외한다.
+     */
 
-    if (oneShots.length) {
+    const attackWord =
+      pickLv5Attack(list);
 
-      oneShots.sort(
-        (a, b) =>
-          (a.depth ?? 999) -
-          (b.depth ?? 999)
-      );
-
-      return oneShots[0].word;
+    if (attackWord) {
+      return attackWord;
     }
 
-    const attacks =
-      infos.filter(
-        x =>
-          x.depth != null &&
-          !x.oneShot
+    /*
+     * 여기까지 왔다는 것은
+     * 현재 글자에서 공격 단어가
+     * 정말 하나도 없다는 뜻이다.
+     *
+     * 이때만 일반 공룰 단어 사용.
+     */
+
+    const normal =
+      list.filter(word => {
+
+        if (
+          used.has(word)
+        ) {
+          return false;
+        }
+
+        if (
+          attack()[word] != null
+        ) {
+          return false;
+        }
+
+        /*
+         * 한방 단어는 일반적인
+         * Lv.5 공룰 선택에서도 제외
+         */
+        if (
+          isOneShot(
+            word,
+            used
+          )
+        ) {
+          return false;
+        }
+
+        return true;
+      });
+
+    if (
+      normal.length
+    ) {
+
+      /*
+       * 다음 선택지가 많은 단어 우선
+       */
+      normal.sort(
+        (a, b) => {
+
+          const aUsed =
+            new Set([
+              ...used,
+              a
+            ]);
+
+          const bUsed =
+            new Set([
+              ...used,
+              b
+            ]);
+
+          return (
+            countCandidates(
+              b.at(-1),
+              bUsed
+            ) -
+            countCandidates(
+              a.at(-1),
+              aUsed
+            )
+          );
+        }
       );
 
-    if (attacks.length) {
-
-      attacks.sort(
-        (a, b) =>
-          a.depth -
-          b.depth
-      );
-
-      return attacks[0].word;
+      return normal[0];
     }
 
-    infos.sort(
-      (a, b) =>
-        a.nextCount -
-        b.nextCount
-    );
+    /*
+     * 정말 일반 공룰 단어도 없다면
+     * 사용 가능한 비공격 단어 중 하나.
+     */
+    const fallback =
+      list.filter(
+        word =>
+          !used.has(word) &&
+          attack()[word] == null
+      );
 
-    return infos[0].word;
+    if (
+      fallback.length
+    ) {
+      return fallback[0];
+    }
+
+    return null;
   }
 
-  /* Lv.4 */
+  /* =======================================================
+     Lv.4
+  ======================================================= */
+
+  const infos =
+    list.map(
+      word =>
+        candidateInfo(word)
+    );
 
   if (level === 4) {
 
@@ -768,19 +1103,49 @@ function aiPick() {
           !x.oneShot
       );
 
-    if (attacks.length) {
+    if (
+      attacks.length
+    ) {
 
       attacks.sort(
         (a, b) =>
-          a.depth -
-          b.depth
+          b.depth -
+          a.depth
       );
 
       return attacks[0].word;
     }
+
+    const normal =
+      infos.filter(
+        x =>
+          !x.oneShot
+      );
+
+    if (
+      normal.length
+    ) {
+
+      normal.sort(
+        (a, b) =>
+          b.nextCount -
+          a.nextCount
+      );
+
+      return normal[0].word;
+    }
+
+    return list[
+      Math.floor(
+        Math.random() *
+        list.length
+      )
+    ];
   }
 
-  /* Lv.3 */
+  /* =======================================================
+     Lv.3
+  ======================================================= */
 
   if (level === 3) {
 
@@ -792,7 +1157,9 @@ function aiPick() {
           !x.oneShot
       );
 
-    if (shallow.length) {
+    if (
+      shallow.length
+    ) {
 
       shallow.sort(
         (a, b) =>
@@ -813,9 +1180,38 @@ function aiPick() {
         )
       ].word;
     }
+
+    const normal =
+      infos.filter(
+        x =>
+          x.depth == null &&
+          !x.oneShot
+      );
+
+    if (
+      normal.length
+    ) {
+
+      normal.sort(
+        (a, b) =>
+          b.nextCount -
+          a.nextCount
+      );
+
+      return normal[0].word;
+    }
+
+    return list[
+      Math.floor(
+        Math.random() *
+        list.length
+      )
+    ];
   }
 
-  /* Lv.2 */
+  /* =======================================================
+     Lv.2
+  ======================================================= */
 
   if (level === 2) {
 
@@ -846,57 +1242,58 @@ function aiPick() {
     ].word;
   }
 
-  /* Lv.1 */
+  /* =======================================================
+     Lv.1
+  ======================================================= */
 
-  if (level === 1) {
+  const safe =
+    infos.filter(
+      x =>
+        x.depth == null &&
+        !x.oneShot
+    );
 
-    const safe =
-      infos.filter(
-        x =>
-          x.depth == null &&
-          !x.oneShot
+  if (
+    safe.length
+  ) {
+
+    safe.sort(
+      (a, b) =>
+        b.nextCount -
+        a.nextCount
+    );
+
+    const count =
+      Math.min(
+        15,
+        safe.length
       );
 
-    if (safe.length) {
+    return safe[
+      Math.floor(
+        Math.random() *
+        count
+      )
+    ].word;
+  }
 
-      safe.sort(
-        (a, b) =>
-          b.nextCount -
-          a.nextCount
-      );
+  const nonOneShot =
+    infos.filter(
+      x =>
+        !x.oneShot
+    );
 
-      const count =
-        Math.min(
-          15,
-          safe.length
-        );
+  if (
+    nonOneShot.length
+  ) {
 
-      return safe[
-        Math.floor(
-          Math.random() *
-          count
-        )
-      ].word;
-    }
+    nonOneShot.sort(
+      (a, b) =>
+        b.nextCount -
+        a.nextCount
+    );
 
-    const nonOneShot =
-      infos.filter(
-        x =>
-          !x.oneShot
-      );
-
-    if (
-      nonOneShot.length
-    ) {
-
-      nonOneShot.sort(
-        (a, b) =>
-          b.nextCount -
-          a.nextCount
-      );
-
-      return nonOneShot[0].word;
-    }
+    return nonOneShot[0].word;
   }
 
   return list[
@@ -911,9 +1308,98 @@ function aiPick() {
    AI 단어 적용
 ========================================================= */
 
-function playAiWord(
-  word
-) {
+function playAiWord(word) {
+
+  /*
+   * 최종 방어.
+   * AI가 존재하지 않는 단어를 선택하거나
+   * 이미 사용한 단어를 선택하면 절대 적용하지 않는다.
+   */
+
+  if (
+    !word ||
+    !hasWord(word) ||
+    used.has(word)
+  ) {
+
+    console.error(
+      'AI 잘못된 단어 차단:',
+      word
+    );
+
+    /*
+     * 잘못된 AI 선택이 발생하면
+     * 현재 게임을 즉시 끝내지 않고
+     * 다시 후보를 찾아본다.
+     */
+
+    const retry =
+      candidates(
+        current.at(-1)
+      );
+
+    if (
+      retry.length
+    ) {
+      const level =
+        Number(
+          $('difficulty').value
+        );
+
+      if (
+        level === 5
+      ) {
+
+        const attackRetry =
+          pickLv5Attack(
+            retry
+          );
+
+        if (
+          attackRetry
+        ) {
+          playAiWord(
+            attackRetry
+          );
+
+          return;
+        }
+      }
+
+      playAiWord(
+        retry[0]
+      );
+
+      return;
+    }
+
+    finish(false);
+
+    return;
+  }
+
+  /*
+   * 연결 규칙 최종 검사
+   */
+
+  if (
+    current &&
+    !canStartWith(
+      word,
+      current.at(-1)
+    )
+  ) {
+
+    console.error(
+      'AI 연결 규칙 위반 차단:',
+      word
+    );
+
+    finish(false);
+
+    return;
+  }
+
   used.add(word);
 
   current = word;
@@ -939,9 +1425,12 @@ function playAiWord(
       word.at(-1)
     );
 
-  if (next === 0) {
+  if (
+    next === 0
+  ) {
 
     finish(true);
+
     return;
   }
 
@@ -964,6 +1453,7 @@ function playAiWord(
 ========================================================= */
 
 function aiTurn() {
+
   if (
     over ||
     playerTurn
@@ -975,12 +1465,11 @@ function aiTurn() {
     aiPick();
 
   if (!word) {
+    finish(false);
     return;
   }
 
-  playAiWord(
-    word
-  );
+  playAiWord(word);
 }
 
 /* =========================================================
@@ -988,6 +1477,7 @@ function aiTurn() {
 ========================================================= */
 
 function submit() {
+
   if (
     over ||
     !playerTurn
@@ -1024,6 +1514,7 @@ function submit() {
   /*
    * 첫 단어
    */
+
   if (!current) {
 
     const error =
@@ -1060,8 +1551,9 @@ function submit() {
   } else {
 
     /*
-     * 일반 단어
+     * 연결 규칙
      */
+
     if (
       !canStartWith(
         word,
@@ -1109,6 +1601,7 @@ function submit() {
   /*
    * 상대가 이어갈 수 있는지
    */
+
   if (
     countCandidates(
       current.at(-1)
@@ -1116,6 +1609,7 @@ function submit() {
   ) {
 
     finish(false);
+
     return;
   }
 
@@ -1137,17 +1631,19 @@ function submit() {
 }
 
 /* =========================================================
-   첫 단어 클라이언트 검사
+   첫 단어 검사
 ========================================================= */
 
 function validateFirstWordClient(
   word
 ) {
+
   if (
     !word.startsWith(
       startChar
     )
   ) {
+
     return (
       `'${startChar}'으로 시작하는 단어를 입력해야 해.`
     );
@@ -1156,6 +1652,7 @@ function validateFirstWordClient(
   if (
     attack()[word] != null
   ) {
+
     return (
       '첫 단어에서는 공격 단어를 사용할 수 없어.'
     );
@@ -1167,6 +1664,7 @@ function validateFirstWordClient(
       new Set()
     )
   ) {
+
     return (
       '첫 단어로 한방 단어는 사용할 수 없어.'
     );
@@ -1178,7 +1676,10 @@ function validateFirstWordClient(
       new Set([word])
     );
 
-  if (next < 5) {
+  if (
+    next < 5
+  ) {
+
     return (
       '첫 단어로는 선택지가 너무 적은 단어를 사용할 수 없어.'
     );
@@ -1236,9 +1737,8 @@ let onlineStarted = false;
    방 렌더링
 ========================================================= */
 
-function roomRender(
-  state
-) {
+function roomRender(state) {
+
   room = state;
 
   const players =
@@ -1331,10 +1831,13 @@ function roomRender(
 }
 
 /* =========================================================
-   Socket 연결
+   Socket
 ========================================================= */
 
-socket.on(
+const socketSafe =
+  socket;
+
+socketSafe.on(
   'connect',
   () => {
 
@@ -1364,9 +1867,7 @@ socket.on(
   'room_state',
   state => {
 
-    roomRender(
-      state
-    );
+    roomRender(state);
   }
 );
 
@@ -1389,7 +1890,7 @@ socket.on(
 );
 
 /* =========================================================
-   온라인 게임 시작
+   온라인 시작
 ========================================================= */
 
 socket.on(
@@ -1433,6 +1934,7 @@ socket.on(
       info.state.turnPlayer ===
       myId
     ) {
+
       $('onlineInput').focus();
     }
   }
@@ -1447,6 +1949,7 @@ function addOnline(
   word,
   depth
 ) {
+
   $('onlineHistory')
     .insertAdjacentHTML(
       'beforeend',
@@ -1513,7 +2016,7 @@ socket.on(
 );
 
 /* =========================================================
-   온라인 게임 종료
+   온라인 종료
 ========================================================= */
 
 socket.on(
@@ -1561,7 +2064,7 @@ $('create').onclick =
   };
 
 /* =========================================================
-   온라인 방 참가
+   온라인 참가
 ========================================================= */
 
 $('join').onclick =
@@ -1617,6 +2120,7 @@ $('onlineInput').onkeydown =
   };
 
 function onlineSubmit() {
+
   if (!onlineStarted) {
     return;
   }
@@ -1674,12 +2178,10 @@ function onlineSubmit() {
   }
 
   /*
-   * 첫 온라인 단어는
-   * 서버가 최종적으로 다시 검증한다.
+   * 첫 온라인 단어
    */
-  if (
-    !onlineLast
-  ) {
+
+  if (!onlineLast) {
 
     if (
       !word.startsWith(
@@ -1812,6 +2314,7 @@ async function loadData() {
     }
 
     data = {
+
       byFirst:
         result.byFirst || {},
 
@@ -1833,11 +2336,9 @@ async function loadData() {
     };
 
     /*
-     * 클라이언트 단어 Set 생성
-     *
-     * words 배열을 별도로 받지 않고
-     * byFirst에서 바로 생성한다.
+     * 클라이언트 단어 Set
      */
+
     data.wordSet =
       new Set();
 
@@ -1863,10 +2364,18 @@ async function loadData() {
     }
 
     /*
-     * 서버와 동일한 두음법칙 사용
+     * 서버와 동일한 두음법칙
      */
+
     DUEUM =
       result.dueum || {};
+
+    /*
+     * 데이터가 새로 로드되면
+     * 공격 캐시 초기화
+     */
+
+    attackCandidateCache.clear();
 
     loadStats();
 
@@ -1882,11 +2391,6 @@ async function loadData() {
     $('message').textContent =
       '게임 데이터를 불러오지 못했어. 잠시 후 새로고침해줘.';
 
-    /*
-     * Render에서 game.js가 아직 로딩 중일 수 있다.
-     *
-     * 잠깐 기다렸다가 다시 시도한다.
-     */
     setTimeout(
       loadData,
       1500
@@ -1899,6 +2403,7 @@ async function loadData() {
 ========================================================= */
 
 function esc(s) {
+
   return String(s).replace(
     /[&<>"']/g,
     c =>
