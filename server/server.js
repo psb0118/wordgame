@@ -520,7 +520,7 @@ server.listen(
       'index.html'
     )
   );
-});
+);
 
 /*
  * 게임 정보
