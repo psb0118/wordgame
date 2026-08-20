@@ -1,222 +1,142 @@
 const fs = require('fs');
 const path = require('path');
 
-const WORD_FILE = path.join(__dirname, '..', 'data', 'word.txt');
-const ATTACK_FILE = path.join(__dirname, '..', 'data', 'attack.txt');
+const WORD_FILE = path.join(
+  __dirname,
+  '..',
+  'data',
+  'word.txt'
+);
 
-/*
- * 두음법칙
- *
- * ㄹ → ㄴ
- * ㄹ → ㅇ
- * ㄴ → ㅇ
- *
- * 실제 한글 음절의 초성/중성을 계산해서
- * 가능한 첫 글자를 만들어낸다.
- */
-
-function replaceInitial(char, newInitial) {
-  const code = char.charCodeAt(0);
-
-  if (code < 0xAC00 || code > 0xD7A3) {
-    return char;
-  }
-
-  const syllable = code - 0xAC00;
-  const medial = Math.floor((syllable % 588) / 28);
-  const final = syllable % 28;
-
-  const initialIndex = {
-    'ㄱ': 0,
-    'ㄴ': 2,
-    'ㄹ': 5,
-    'ㅇ': 11
-  }[newInitial];
-
-  if (initialIndex == null) {
-    return char;
-  }
-
-  return String.fromCharCode(
-    0xAC00 +
-    initialIndex * 588 +
-    medial * 28 +
-    final
-  );
-}
-
-function allowedNextFirstChars(lastChar) {
-  const result = new Set([lastChar]);
-
-  if (!lastChar) {
-    return result;
-  }
-
-  const code = lastChar.charCodeAt(0);
-
-  if (code < 0xAC00 || code > 0xD7A3) {
-    return result;
-  }
-
-  const syllable = code - 0xAC00;
-  const initial = Math.floor(syllable / 588);
-  const medial = Math.floor((syllable % 588) / 28);
-
-  /*
-   * ㄹ → ㄴ
-   *
-   * 라 래 로 뢰 루 르
-   * → 나 내 노 뇌 누 느
-   */
-  if (initial === 5) {
-    result.add(replaceInitial(lastChar, 'ㄴ'));
-
-    /*
-     * ㄹ → ㅇ
-     *
-     * 랴 려 례 료 류 리
-     * → 야 여 예 요 유 이
-     */
-    const toIeung = new Set([
-      2, 6, 7, 8, 12, 20
-    ]);
-
-    if (toIeung.has(medial)) {
-      result.add(replaceInitial(lastChar, 'ㅇ'));
-    }
-  }
-
-  /*
-   * ㄴ → ㅇ
-   *
-   * 냐 녀 녜 뇨 뉴 니
-   * → 야 여 예 요 유 이
-   */
-  if (initial === 2) {
-    const toIeung = new Set([
-      2, 6, 7, 8, 12, 20
-    ]);
-
-    if (toIeung.has(medial)) {
-      result.add(replaceInitial(lastChar, 'ㅇ'));
-    }
-  }
-
-  return result;
-}
-
-function canConnect(current, next) {
-  if (!current || !next) {
-    return true;
-  }
-
-  const lastChar = current.at(-1);
-  const firstChar = next[0];
-
-  if (lastChar === firstChar) {
-    return true;
-  }
-
-  return allowedNextFirstChars(lastChar).has(firstChar);
-}
+const ATTACK_FILE = path.join(
+  __dirname,
+  '..',
+  'data',
+  'attack.txt'
+);
 
 function loadData() {
-  const rawWords = fs.readFileSync(
-    WORD_FILE,
-    'utf8'
-  )
+  console.log('game.js: 데이터 로딩 시작');
+
+  console.log('game.js: word.txt 읽는 중...');
+
+  const rawWords = fs
+    .readFileSync(WORD_FILE, 'utf8')
     .split(/\r?\n/)
     .map(s => s.trim())
     .filter(Boolean);
 
+  console.log(
+    `game.js: word.txt 읽기 완료 (${rawWords.length}개)`
+  );
+
   const words = [
     ...new Set(
       rawWords.filter(
-        w => /^[가-힣]+$/.test(w)
+        word => /^[가-힣]+$/.test(word)
       )
     )
   ];
+
+  console.log(
+    `game.js: 단어 정리 완료 (${words.length}개)`
+  );
 
   const wordSet = new Set(words);
 
   const byFirst = new Map();
 
-  for (const w of words) {
-    const first = w[0];
+  for (const word of words) {
+    const first = word[0];
 
     if (!byFirst.has(first)) {
       byFirst.set(first, []);
     }
 
-    byFirst.get(first).push(w);
+    byFirst.get(first).push(word);
   }
+
+  console.log('game.js: 첫 글자별 단어 목록 생성 완료');
 
   const attackDepth = new Map();
 
-  let currentGroup = null;
+  console.log('game.js: attack.txt 읽는 중...');
 
-  const attackText = fs.readFileSync(
-    ATTACK_FILE,
-    'utf8'
+  const attackLines = fs
+    .readFileSync(ATTACK_FILE, 'utf8')
+    .split(/\r?\n/);
+
+  console.log(
+    `game.js: attack.txt 읽기 완료 (${attackLines.length}줄)`
   );
 
-  for (
-    const line of attackText.split(/\r?\n/)
-  ) {
-    const s = line.trim();
+  let current = null;
 
-    const group = s.match(
+  for (const line of attackLines) {
+    const text = line.trim();
+
+    const group = text.match(
       /^\[(.+)\]$/
     );
 
     if (group) {
-      currentGroup = group[1];
+      current = group[1];
       continue;
     }
 
-    const match = s.match(
+    const match = text.match(
       /^깊이\s+(\d+)\s*:\s*(.+)$/
     );
 
-    if (!match || !currentGroup) {
+    if (!match || !current) {
       continue;
     }
 
     const depth = Number(match[1]);
 
-    for (
-      const w of match[2]
-        .split(',')
-        .map(x => x.trim())
-        .filter(Boolean)
-    ) {
-      if (wordSet.has(w)) {
-        attackDepth.set(w, depth);
+    const attackWords = match[2]
+      .split(',')
+      .map(word => word.trim())
+      .filter(Boolean);
+
+    for (const word of attackWords) {
+      if (wordSet.has(word)) {
+        attackDepth.set(word, depth);
       }
     }
   }
 
+  console.log(
+    `game.js: 공격 단어 처리 완료 (${attackDepth.size}개)`
+  );
+
   /*
    * 시작 단어는:
    * 1. 공격 단어가 아니고
-   * 2. 다음 단어가 최소 하나 존재해야 함
-   *
-   * 따라서 시작하자마자 한방으로 끝나는
-   * 단어가 나오지 않는다.
+   * 2. 마지막 글자로 이어지는 다른 단어가 존재해야 함
    */
+  const startPool = [];
 
-  const startPool = words.filter(w => {
-    if (attackDepth.has(w)) {
-      return false;
+  for (const word of words) {
+    if (attackDepth.has(word)) {
+      continue;
     }
 
-    const next = candidatesForWord(
-      w,
-      byFirst
-    );
+    const nextWords =
+      byFirst.get(word.at(-1)) || [];
 
-    return next.length > 0;
-  });
+    if (
+      nextWords.some(
+        next => next !== word
+      )
+    ) {
+      startPool.push(word);
+    }
+  }
+
+  console.log(
+    `game.js: 시작 단어 생성 완료 (${startPool.length}개)`
+  );
 
   return {
     words,
@@ -227,73 +147,120 @@ function loadData() {
   };
 }
 
-function candidatesForWord(
-  word,
-  byFirst
-) {
-  const result = new Set();
-
-  const possibleFirstChars =
-    allowedNextFirstChars(
-      word.at(-1)
-    );
-
-  for (
-    const firstChar of possibleFirstChars
-  ) {
-    for (
-      const next of
-        byFirst.get(firstChar) || []
-    ) {
-      if (next !== word) {
-        result.add(next);
-      }
-    }
-  }
-
-  return [...result];
-}
-
 const DATA = loadData();
 
+console.log('game.js: 모든 데이터 로딩 완료');
+
 function candidates(lastChar, used) {
-  const result = new Set();
+  const list =
+    DATA.byFirst.get(lastChar) || [];
 
-  const possibleFirstChars =
-    allowedNextFirstChars(lastChar);
-
-  for (
-    const firstChar of possibleFirstChars
-  ) {
-    for (
-      const word of
-        DATA.byFirst.get(firstChar) || []
-    ) {
-      if (!used.has(word)) {
-        result.add(word);
-      }
-    }
-  }
-
-  return [...result];
+  return list.filter(
+    word => !used.has(word)
+  );
 }
 
 function randomStart() {
   if (!DATA.startPool.length) {
-    return DATA.words[
-      Math.floor(
-        Math.random() *
-        DATA.words.length
-      )
-    ];
+    throw new Error(
+      '사용 가능한 시작 단어가 없습니다.'
+    );
   }
 
   return DATA.startPool[
     Math.floor(
-      Math.random() *
-      DATA.startPool.length
+      Math.random() * DATA.startPool.length
     )
   ];
+}
+
+/*
+ * 두음법칙
+ *
+ * 현재 단어의 마지막 글자와
+ * 다음 단어의 첫 글자가 정확히 같지 않아도
+ * 두음법칙으로 이어질 수 있는 경우를 허용한다.
+ */
+
+const DUEUM_MAP = {
+  '녀': ['녀', '여'],
+  '뇨': ['뇨', '요'],
+  '뉴': ['뉴', '유'],
+  '니': ['니', '이'],
+
+  '랴': ['랴', '야'],
+  '려': ['려', '여'],
+  '례': ['례', '예'],
+  '료': ['료', '요'],
+  '류': ['류', '유'],
+  '리': ['리', '이'],
+
+  '라': ['라', '나'],
+  '래': ['래', '내'],
+  '로': ['로', '노'],
+  '뢰': ['뢰', '뇌'],
+  '루': ['루', '누'],
+  '르': ['르', '느']
+};
+
+function canConnect(current, next) {
+  if (!current || !next) {
+    return true;
+  }
+
+  const last = current.at(-1);
+  const first = next[0];
+
+  if (first === last) {
+    return true;
+  }
+
+  const allowed =
+    DUEUM_MAP[last];
+
+  return (
+    Array.isArray(allowed) &&
+    allowed.includes(first)
+  );
+}
+
+function candidatesWithDueum(lastChar, used) {
+  const result = [];
+
+  /*
+   * 정확히 같은 글자로 시작하는 단어
+   */
+  const exact =
+    DATA.byFirst.get(lastChar) || [];
+
+  for (const word of exact) {
+    if (!used.has(word)) {
+      result.push(word);
+    }
+  }
+
+  /*
+   * 두음법칙으로 이어지는 단어
+   */
+  const dueum =
+    DUEUM_MAP[lastChar] || [];
+
+  for (const first of dueum) {
+    if (first === lastChar) {
+      continue;
+    }
+
+    const list =
+      DATA.byFirst.get(first) || [];
+
+    for (const word of list) {
+      if (!used.has(word)) {
+        result.push(word);
+      }
+    }
+  }
+
+  return result;
 }
 
 function validateWord(
@@ -313,7 +280,10 @@ function validateWord(
     current &&
     !canConnect(current, word)
   ) {
-    return `'${current.at(-1)}'에서 이어지는 단어가 필요합니다.`;
+    const last =
+      current.at(-1);
+
+    return `'${last}'으로 시작하거나 두음법칙으로 이어지는 단어가 필요합니다.`;
   }
 
   return null;
@@ -333,9 +303,9 @@ function publicData() {
 module.exports = {
   DATA,
   candidates,
+  candidatesWithDueum,
   randomStart,
   validateWord,
   publicData,
-  canConnect,
-  allowedNextFirstChars
+  canConnect
 };
