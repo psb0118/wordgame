@@ -259,43 +259,32 @@ function attackCandidates(
  * depthLimit은 무한 루프를 막기 위한 안전장치다.
  */
 
+/* =========================================================
+   Lv.5 공격 루트 탐색
+========================================================= */
+
+/*
+ * 공격 단어만 사용해서 만들 수 있는
+ * 가장 긴 공격 루트를 계산한다.
+ *
+ * 중요:
+ * - 일반 단어 탐색 안 함
+ * - 공룰 단어 탐색 안 함
+ * - 공격 단어만 탐색
+ * - 이미 사용한 단어 재사용 안 함
+ */
+
 function attackChainLength(
   word,
   localUsed = new Set(),
-  memo = new Map(),
-  depthLimit = 30
+  memo = new Map()
 ) {
   if (!word) {
     return 0;
   }
 
-  if (
-    localUsed.has(word) ||
-    depthLimit <= 0
-  ) {
+  if (localUsed.has(word)) {
     return 0;
-  }
-
-  /*
-   * 중요:
-   *
-   * 예전 코드에서는
-   * word + depthLimit만 memo key로 사용해서
-   * 서로 다른 used 상태가 잘못 공유될 수 있었다.
-   *
-   * 현재 경로의 used를 같이 포함한다.
-   */
-
-  const usedKey =
-    Array.from(localUsed)
-      .sort()
-      .join('\u0001');
-
-  const key =
-    `${word}|${depthLimit}|${usedKey}`;
-
-  if (memo.has(key)) {
-    return memo.get(key);
   }
 
   const nextUsed =
@@ -303,104 +292,237 @@ function attackChainLength(
 
   nextUsed.add(word);
 
-  const nextCandidates =
+  /*
+   * 현재 상태의 사용 단어까지 포함해서
+   * 메모 키를 만든다.
+   */
+  const usedKey =
+    Array.from(nextUsed)
+      .sort()
+      .join('\u0001');
+
+  const key =
+    `${word}|${usedKey}`;
+
+  if (memo.has(key)) {
+    return memo.get(key);
+  }
+
+  /*
+   * 다음 공격 후보만 검색한다.
+   */
+  const next =
     attackCandidates(
       word.at(-1),
       nextUsed
     );
 
-  if (!nextCandidates.length) {
+  /*
+   * 더 이상 공격 단어가 없으면
+   * 여기서 공격 루트 종료.
+   */
+  if (!next.length) {
     memo.set(key, 0);
     return 0;
   }
 
   /*
-   * 깊이가 높은 공격 단어를 먼저 검사한다.
-   * 최종적으로는 전체 후보를 비교하므로
-   * 단순 정렬 때문에 정확도가 떨어지지는 않는다.
+   * 깊은 공격 단어를 먼저 검사.
+   * 단, 실제 최종 판단은 전체 후보를 비교한다.
    */
-
   const attackData =
     attack();
 
-  nextCandidates.sort(
-    (a, b) => {
-      const da =
-        Number(
-          attackData[a] ?? 0
-        );
-
-      const db =
-        Number(
-          attackData[b] ?? 0
-        );
-
-      return db - da;
-    }
+  next.sort(
+    (a, b) =>
+      Number(
+        attackData[b] ?? 0
+      ) -
+      Number(
+        attackData[a] ?? 0
+      )
   );
 
   let best = 0;
 
-  for (const nextWord of nextCandidates) {
+  for (const nextWord of next) {
+
     const length =
       1 +
       attackChainLength(
         nextWord,
         nextUsed,
-        memo,
-        depthLimit - 1
+        memo
       );
 
     if (length > best) {
       best = length;
     }
-
-    /*
-     * 제한 깊이까지 도달했다면
-     * 더 좋은 결과가 나올 수 없으므로 종료.
-     */
-
-    if (
-      best >= depthLimit
-    ) {
-      break;
-    }
   }
 
-  memo.set(key, best);
+  memo.set(
+    key,
+    best
+  );
 
   return best;
 }
 
 /* =========================================================
-   Lv.5 공격 선택
+   Lv.5 공격 후보 평가
 ========================================================= */
 
-/*
- * Lv.5 핵심 로직.
- *
- * 공격 후보가 하나라도 존재한다면
- * 일반 단어를 절대로 반환하지 않는다.
- *
- * 공격 후보 중:
- *
- * 1. 공격 연속 길이
- * 2. 공격 깊이
- * 3. 다음 공격 후보 수
- *
- * 순서로 선택한다.
- */
+function evaluateLv5Attack(word) {
 
-function pickLv5Attack(list) {
   const attackData =
     attack();
 
+  if (
+    attackData[word] == null
+  ) {
+    return null;
+  }
+
+  if (
+    used.has(word)
+  ) {
+    return null;
+  }
+
+  const memo =
+    new Map();
+
+  const chain =
+    attackChainLength(
+      word,
+      new Set(used),
+      memo
+    );
+
+  const nextUsed =
+    new Set(used);
+
+  nextUsed.add(word);
+
+  const nextAttack =
+    attackCandidates(
+      word.at(-1),
+      nextUsed
+    );
+
+  return {
+    word,
+
+    /*
+     * 실제 공격 루트 길이
+     */
+    chain,
+
+    /*
+     * attack.txt 공격 깊이
+     */
+    depth:
+      Number(
+        attackData[word]
+      ),
+
+    /*
+     * 다음 공격 선택지
+     */
+    nextAttackCount:
+      nextAttack.length
+  };
+}
+
+/* =========================================================
+   Lv.5 공격 단어 선택
+========================================================= */
+
+function pickLv5Attack(list) {
+
+  /*
+   * 현재 위치에서 실제로 사용할 수 있는
+   * 공격 단어만 남긴다.
+   */
   const attackList =
     list.filter(
       word =>
         !used.has(word) &&
-        attackData[word] != null
+        attack()[word] != null
     );
+
+  /*
+   * 공격 단어가 하나도 없다.
+   *
+   * 이 경우 호출자가
+   * 일반 단어로 대체하면 안 된다.
+   */
+  if (!attackList.length) {
+    return null;
+  }
+
+  const evaluated =
+    attackList
+      .map(
+        evaluateLv5Attack
+      )
+      .filter(
+        Boolean
+      );
+
+  if (!evaluated.length) {
+    return null;
+  }
+
+  /*
+   * 우선순위
+   *
+   * 1. 실제 공격 루트 길이
+   * 2. 공격 깊이
+   * 3. 다음 공격 후보 수
+   */
+  evaluated.sort(
+    (a, b) => {
+
+      if (
+        b.chain !==
+        a.chain
+      ) {
+        return (
+          b.chain -
+          a.chain
+        );
+      }
+
+      if (
+        b.depth !==
+        a.depth
+      ) {
+        return (
+          b.depth -
+          a.depth
+        );
+      }
+
+      if (
+        b.nextAttackCount !==
+        a.nextAttackCount
+      ) {
+        return (
+          b.nextAttackCount -
+          a.nextAttackCount
+        );
+      }
+
+      return a.word.localeCompare(
+        b.word,
+        'ko'
+      );
+    }
+  );
+
+  return evaluated[0].word;
+}
 
   /*
    * 공격 후보가 없으면 null.
