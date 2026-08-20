@@ -6,22 +6,12 @@ console.log('game.js: 데이터 로딩 시작');
 const WORD_FILE = path.join(__dirname, '..', 'data', 'word.txt');
 const ATTACK_FILE = path.join(__dirname, '..', 'data', 'attack.txt');
 
-/*
- * 두음법칙
- *
- * 끝말잇기에서 마지막 글자가 아래 글자라면
- * 다음 단어의 첫 글자를 변환해서 인정한다.
- *
- * 예:
- * 리 -> 이
- * 녀 -> 여
- * 력 -> 역
- * 륨 -> 윰
- * 늄 -> 윰
- */
+/* =========================================================
+   두음법칙
+========================================================= */
 
 const DUEUM = {
-  // ㄴ -> ㅇ 계열
+  // ㄴ → ㅇ
   '녀': ['녀', '여'],
   '년': ['년', '연'],
   '념': ['념', '염'],
@@ -36,7 +26,7 @@ const DUEUM = {
   '닉': ['닉', '익'],
   '뉵': ['뉵', '육'],
 
-  // ㄹ -> ㄴ 계열
+  // ㄹ → ㄴ
   '라': ['라', '나'],
   '락': ['락', '낙'],
   '란': ['란', '난'],
@@ -44,30 +34,19 @@ const DUEUM = {
   '람': ['람', '남'],
   '랑': ['랑', '낭'],
   '래': ['래', '내'],
-  '뢰': ['뢰', '뇌'],
   '로': ['로', '노'],
   '록': ['록', '녹'],
   '론': ['론', '논'],
   '루': ['루', '누'],
-  '륵': ['륵', '늑'],
-  '릉': ['릉', '능'],
-  '름': ['름', '늠'],
-  '릅': ['릅', '늡'],
-  '른': ['른', '는'],
-  '릎': ['릎', '늪'],
-  '릇': ['릇', '늣'],
-  '랏': ['랏', '낫'],
-  '롯': ['롯', '놋'],
-  '롱': ['롱', '농'],
-  '룡': ['룡', '용'],
-  '륜': ['륜', '윤'],
-  '륭': ['륭', '융'],
+  '뢰': ['뢰', '뇌'],
 
-  // ㄹ -> ㅇ 계열
+  // ㄹ → ㅇ
+  '랴': ['랴', '야'],
   '려': ['려', '여'],
   '례': ['례', '예'],
   '료': ['료', '요'],
   '류': ['류', '유'],
+
   '리': ['리', '이'],
   '력': ['력', '역'],
   '략': ['략', '약'],
@@ -78,29 +57,44 @@ const DUEUM = {
   '렬': ['렬', '열'],
   '률': ['률', '율'],
   '린': ['린', '인'],
+  '림': ['림', '임'],
   '립': ['립', '입'],
   '륙': ['륙', '육'],
+  '륭': ['륭', '융'],
   '렵': ['렵', '엽'],
 
-  // 끝말잇기에서 자주 사용하는 특수 두음
-  '릿': ['릿', '잇'],
-  '랸': ['랸', '얀'],
-  '룔': ['룔', '욜'],
-
-  // 끄투/끝말잇기에서 자주 허용하는 륨/늄 -> 윰
+  // 일부 끝말잇기 사전에서 허용하는 형태
   '륨': ['륨', '윰'],
   '늄': ['늄', '윰'],
 
-  // 녘 -> 옄
-  '녘': ['녘', '옄']
+  '릉': ['릉', '능'],
+  '름': ['름', '늠'],
+  '릅': ['릅', '늡'],
+  '른': ['른', '는'],
+  '릎': ['릎', '늪'],
+  '릇': ['릇', '늣'],
+
+  '륜': ['륜', '윤'],
+  '릿': ['릿', '잇'],
+  '랸': ['랸', '얀'],
+  '룔': ['룔', '욜']
 };
 
+/*
+ * 마지막 글자에서 실제로 인정되는 첫 글자 목록.
+ */
 function allowedFirstChars(lastChar) {
+  if (!lastChar) return [];
+
   const result = [lastChar];
 
-  if (DUEUM[lastChar]) {
-    for (const c of DUEUM[lastChar]) {
-      if (!result.includes(c)) result.push(c);
+  const extra = DUEUM[lastChar];
+
+  if (extra) {
+    for (const char of extra) {
+      if (!result.includes(char)) {
+        result.push(char);
+      }
     }
   }
 
@@ -110,30 +104,40 @@ function allowedFirstChars(lastChar) {
 function canStartWith(word, lastChar) {
   if (!word || !lastChar) return false;
 
-  const first = word[0];
-
-  return allowedFirstChars(lastChar).includes(first);
+  return allowedFirstChars(lastChar).includes(word[0]);
 }
+
+/* =========================================================
+   단어 데이터
+========================================================= */
 
 console.log('game.js: word.txt 읽는 중...');
 
 const rawWords = fs
   .readFileSync(WORD_FILE, 'utf8')
   .split(/\r?\n/)
-  .map(s => s.trim())
+  .map(x => x.trim())
   .filter(Boolean);
 
-console.log(`game.js: word.txt 읽기 완료 (${rawWords.length}개)`);
+console.log(
+  `game.js: word.txt 읽기 완료 (${rawWords.length}개)`
+);
 
 const words = [
   ...new Set(
-    rawWords.filter(word => /^[가-힣]+$/.test(word))
+    rawWords.filter(
+      word => /^[가-힣]+$/.test(word)
+    )
   )
 ];
 
 const wordSet = new Set(words);
 
-console.log(`game.js: 단어 정리 완료 (${words.length}개)`);
+console.log(
+  `game.js: 단어 정리 완료 (${words.length}개)`
+);
+
+/* 첫 글자별 인덱스 */
 
 const byFirst = new Map();
 
@@ -147,7 +151,13 @@ for (const word of words) {
   byFirst.get(first).push(word);
 }
 
-console.log('game.js: 첫 글자별 단어 목록 생성 완료');
+console.log(
+  'game.js: 첫 글자별 단어 목록 생성 완료'
+);
+
+/* =========================================================
+   공격 단어 데이터
+========================================================= */
 
 console.log('game.js: attack.txt 읽는 중...');
 
@@ -158,7 +168,9 @@ if (fs.existsSync(ATTACK_FILE)) {
     .readFileSync(ATTACK_FILE, 'utf8')
     .split(/\r?\n/);
 
-  console.log(`game.js: attack.txt 읽기 완료 (${attackLines.length}줄)`);
+  console.log(
+    `game.js: attack.txt 읽기 완료 (${attackLines.length}줄)`
+  );
 
   let currentGroup = null;
 
@@ -174,7 +186,9 @@ if (fs.existsSync(ATTACK_FILE)) {
       continue;
     }
 
-    const match = s.match(/^깊이\s+(\d+)\s*:\s*(.+)$/);
+    const match = s.match(
+      /^깊이\s+(\d+)\s*:\s*(.+)$/
+    );
 
     if (!match || !currentGroup) continue;
 
@@ -190,24 +204,32 @@ if (fs.existsSync(ATTACK_FILE)) {
 
       const oldDepth = attackDepth.get(word);
 
-      if (oldDepth == null || depth < oldDepth) {
+      if (
+        oldDepth == null ||
+        depth < oldDepth
+      ) {
         attackDepth.set(word, depth);
       }
     }
   }
 }
 
-console.log(`game.js: 공격 단어 처리 완료 (${attackDepth.size}개)`);
+console.log(
+  `game.js: 공격 단어 처리 완료 (${attackDepth.size}개)`
+);
 
-/*
- * 특정 마지막 글자에서 실제로 갈 수 있는 단어.
- * 두음법칙도 여기서 처리한다.
- */
+/* =========================================================
+   후보 검색
+========================================================= */
+
 function candidates(lastChar, used = new Set()) {
   const result = [];
 
-  for (const firstChar of allowedFirstChars(lastChar)) {
-    const list = byFirst.get(firstChar) || [];
+  for (
+    const firstChar of allowedFirstChars(lastChar)
+  ) {
+    const list =
+      byFirst.get(firstChar) || [];
 
     for (const word of list) {
       if (!used.has(word)) {
@@ -220,20 +242,26 @@ function candidates(lastChar, used = new Set()) {
 }
 
 /*
- * 한방단어 여부
- *
- * 두음법칙까지 고려해서 다음 단어가 하나라도 있으면
- * 한방단어가 아니다.
+ * 현재 상태에서 한방인지 검사.
  */
 function isOneShot(word, used = new Set()) {
   if (!word) return true;
 
-  return candidates(word.at(-1), used).length === 0;
+  const nextUsed = new Set(used);
+  nextUsed.add(word);
+
+  return (
+    candidates(
+      word.at(-1),
+      nextUsed
+    ).length === 0
+  );
 }
 
-/*
- * 시작 단어는 무조건 이 8개 글자로 시작.
- */
+/* =========================================================
+   시작 단어
+========================================================= */
+
 const START_FIRST = [
   '가',
   '나',
@@ -246,50 +274,120 @@ const START_FIRST = [
 ];
 
 /*
- * 시작 단어 조건:
+ * 시작 단어가 너무 공격적인지 검사.
  *
- * 1. 지정된 글자로 시작
- * 2. 공격 깊이가 없어야 함
- * 3. 한방단어가 아니어야 함
- * 4. 다음으로 갈 단어가 충분히 있어야 함
- *
- * 마지막 조건 때문에 시작하자마자 사실상 승부가 결정되는
- * 이상한 단어가 시작 단어로 나오지 않는다.
+ * 단순히 시작 단어 자체만 보는 게 아니라
+ * 바로 다음 선택지까지 검사한다.
  */
+function isBadStart(word) {
+  if (!START_FIRST.includes(word[0])) {
+    return true;
+  }
 
-const startPool = words.filter(word => {
-  if (!START_FIRST.includes(word[0])) return false;
+  // 시작 단어 자체가 공격 단어면 제외
+  if (attackDepth.has(word)) {
+    return true;
+  }
 
-  // 공격 루트에 들어가는 시작 단어 금지
-  if (attackDepth.has(word)) return false;
+  const used = new Set([word]);
 
-  // 시작하자마자 한방 금지
-  const next = candidates(word.at(-1), new Set([word]));
+  const next = candidates(
+    word.at(-1),
+    used
+  );
 
-  if (next.length === 0) return false;
+  // 시작하자마자 한방
+  if (next.length === 0) {
+    return true;
+  }
 
-  // 선택지가 너무 적은 시작 단어도 제외
-  if (next.length < 5) return false;
+  // 선택지가 너무 적으면 승부가 너무 빨리 결정됨
+  if (next.length < 8) {
+    return true;
+  }
 
-  return true;
-});
+  /*
+   * 바로 다음에 공격 단어가 너무 많이 나오면
+   * 시작부터 특정 루트로 유도되는 단어일 가능성이 높음.
+   */
+  let attackCount = 0;
+  let oneShotCount = 0;
 
-console.log(`game.js: 시작 단어 생성 완료 (${startPool.length}개)`);
+  const sampleSize =
+    Math.min(next.length, 100);
+
+  for (let i = 0; i < sampleSize; i++) {
+    const nextWord = next[i];
+
+    if (attackDepth.has(nextWord)) {
+      attackCount++;
+    }
+
+    if (
+      isOneShot(
+        nextWord,
+        used
+      )
+    ) {
+      oneShotCount++;
+    }
+  }
+
+  /*
+   * 바로 다음 후보 대부분이 공격이면 시작 단어로 사용하지 않음.
+   */
+  if (
+    sampleSize >= 10 &&
+    attackCount / sampleSize > 0.35
+  ) {
+    return true;
+  }
+
+  /*
+   * 바로 다음 후보 대부분이 한방이면 제외.
+   */
+  if (
+    sampleSize >= 10 &&
+    oneShotCount / sampleSize > 0.45
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+const startPool = words.filter(
+  word => !isBadStart(word)
+);
+
+console.log(
+  `game.js: 시작 단어 생성 완료 (${startPool.length}개)`
+);
 
 function randomStart() {
   if (!startPool.length) {
-    throw new Error('사용할 수 있는 시작 단어가 없습니다.');
+    throw new Error(
+      '사용할 수 있는 시작 단어가 없습니다.'
+    );
   }
 
   return startPool[
-    Math.floor(Math.random() * startPool.length)
+    Math.floor(
+      Math.random() *
+      startPool.length
+    )
   ];
 }
 
-/*
- * 서버에서 실제 입력을 검증한다.
- */
-function validateWord(word, current, used = new Set()) {
+/* =========================================================
+   단어 검증
+========================================================= */
+
+function validateWord(
+  word,
+  current,
+  used = new Set()
+) {
   if (!word) {
     return '단어를 입력해주세요.';
   }
@@ -302,28 +400,55 @@ function validateWord(word, current, used = new Set()) {
     return '이미 사용한 단어입니다.';
   }
 
-  if (current && !canStartWith(word, current.at(-1))) {
-    const last = current.at(-1);
+  if (
+    current &&
+    !canStartWith(
+      word,
+      current.at(-1)
+    )
+  ) {
+    const last =
+      current.at(-1);
 
-    const accepted = allowedFirstChars(last);
+    const accepted =
+      allowedFirstChars(last);
 
     if (accepted.length > 1) {
-      return `'${last}' 다음에는 ${accepted.join(', ')}으로 시작하는 단어가 필요합니다.`;
+      return (
+        `'${last}' 다음에는 ` +
+        `${accepted.join(', ')}으로 ` +
+        `시작하는 단어가 필요합니다.`
+      );
     }
 
-    return `'${last}'으로 시작하는 단어가 필요합니다.`;
+    return (
+      `'${last}'으로 시작하는 ` +
+      `단어가 필요합니다.`
+    );
   }
 
   return null;
 }
 
+/* =========================================================
+   클라이언트 데이터
+========================================================= */
+
 function publicData() {
   return {
     words,
-    attackDepth: Object.fromEntries(attackDepth),
-    startPool
+    attackDepth:
+      Object.fromEntries(
+        attackDepth
+      ),
+    startPool,
+    dueum: DUEUM
   };
 }
+
+/* =========================================================
+   DATA
+========================================================= */
 
 const DATA = {
   words,
@@ -334,7 +459,9 @@ const DATA = {
   dueum: DUEUM
 };
 
-console.log('game.js: 모든 데이터 로딩 완료');
+console.log(
+  'game.js: 모든 데이터 로딩 완료'
+);
 
 module.exports = {
   DATA,
