@@ -1,0 +1,9 @@
+{
+  "name":"kkeul-word-chain",
+  "version":"1.0.0",
+  "private":true,
+  "description":"끝말잇기 AI 5단계 + 온라인 2인",
+  "main":"server/server.js",
+  "scripts":{"start":"node server/server.js","dev":"node --watch server/server.js"},
+  "dependencies":{"express":"^5.1.0","socket.io":"^4.8.1"}
+}
