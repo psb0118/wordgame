@@ -1,3 +1,4 @@
+```javascript
 const fs = require('fs');
 const path = require('path');
 
@@ -11,7 +12,7 @@ const ATTACK_FILE = path.join(__dirname, '..', 'data', 'attack.txt');
 ========================================================= */
 
 const DUEUM = {
-  // ㄴ → ㅇ
+  /* ㄴ → ㅇ */
   '녀': ['녀', '여'],
   '년': ['년', '연'],
   '념': ['념', '염'],
@@ -22,11 +23,8 @@ const DUEUM = {
   '녑': ['녑', '엽'],
   '녁': ['녁', '역'],
   '뇰': ['뇰', '욜'],
-  '닐': ['닐', '일'],
-  '닉': ['닉', '익'],
-  '뉵': ['뉵', '육'],
 
-  // ㄹ → ㄴ
+  /* ㄹ → ㄴ */
   '라': ['라', '나'],
   '락': ['락', '낙'],
   '란': ['란', '난'],
@@ -34,13 +32,13 @@ const DUEUM = {
   '람': ['람', '남'],
   '랑': ['랑', '낭'],
   '래': ['래', '내'],
-  '뢰': ['뢰', '뇌'],
   '로': ['로', '노'],
   '록': ['록', '녹'],
   '론': ['론', '논'],
   '루': ['루', '누'],
+  '뢰': ['뢰', '뇌'],
 
-  // ㄹ → ㅇ
+  /* ㄹ → ㅇ */
   '랴': ['랴', '야'],
   '려': ['려', '여'],
   '례': ['례', '예'],
@@ -62,12 +60,13 @@ const DUEUM = {
   '륭': ['륭', '융'],
   '렵': ['렵', '엽'],
 
-  // 특수/게임용
+  /* 추가 게임용 규칙 */
   '레': ['레', '에'],
+  '름': ['름', '음'],
+  '님': ['님', '임'],
   '륨': ['륨', '윰'],
   '늄': ['늄', '윰'],
   '릉': ['릉', '능'],
-  '름': ['름', '늠'],
   '릅': ['릅', '늡'],
   '른': ['른', '는'],
   '릎': ['릎', '늪'],
@@ -79,24 +78,17 @@ const DUEUM = {
 };
 
 function allowedFirstChars(lastChar) {
-  if (!lastChar) return [];
-
-  const result = [lastChar];
-  const extra = DUEUM[lastChar];
-
-  if (extra) {
-    for (const char of extra) {
-      if (!result.includes(char)) {
-        result.push(char);
-      }
-    }
+  if (!lastChar) {
+    return [];
   }
 
-  return result;
+  return DUEUM[lastChar] || [lastChar];
 }
 
 function canStartWith(word, lastChar) {
-  if (!word || !lastChar) return false;
+  if (!word || !lastChar) {
+    return false;
+  }
 
   return allowedFirstChars(lastChar).includes(word[0]);
 }
@@ -107,23 +99,19 @@ function canStartWith(word, lastChar) {
 
 console.log('game.js: word.txt 읽는 중...');
 
-const rawWords = fs
-  .readFileSync(WORD_FILE, 'utf8')
-  .split(/\r?\n/)
-  .map(x => x.trim())
-  .filter(Boolean);
-
-console.log(
-  `game.js: word.txt 읽기 완료 (${rawWords.length}개)`
-);
-
 const words = [
   ...new Set(
-    rawWords.filter(
-      word => /^[가-힣]+$/.test(word)
-    )
+    fs
+      .readFileSync(WORD_FILE, 'utf8')
+      .split(/\r?\n/)
+      .map(x => x.trim())
+      .filter(x => x && /^[가-힣]+$/.test(x))
   )
 ];
+
+console.log(
+  `game.js: word.txt 읽기 완료 (${words.length}개)`
+);
 
 const wordSet = new Set(words);
 
@@ -132,7 +120,7 @@ console.log(
 );
 
 /* =========================================================
-   첫 글자 인덱스
+   첫 글자별 인덱스
 ========================================================= */
 
 const byFirst = new Map();
@@ -176,7 +164,9 @@ if (fs.existsSync(ATTACK_FILE)) {
   for (const line of attackLines) {
     const s = line.trim();
 
-    if (!s) continue;
+    if (!s) {
+      continue;
+    }
 
     const group = s.match(/^\[(.+)\]$/);
 
@@ -189,7 +179,9 @@ if (fs.existsSync(ATTACK_FILE)) {
       /^깊이\s+(\d+)\s*:\s*(.+)$/
     );
 
-    if (!match || !currentGroup) continue;
+    if (!match || !currentGroup) {
+      continue;
+    }
 
     const depth = Number(match[1]);
 
@@ -199,7 +191,9 @@ if (fs.existsSync(ATTACK_FILE)) {
       .filter(Boolean);
 
     for (const word of attackWords) {
-      if (!wordSet.has(word)) continue;
+      if (!wordSet.has(word)) {
+        continue;
+      }
 
       const oldDepth = attackDepth.get(word);
 
@@ -218,18 +212,61 @@ console.log(
 );
 
 /* =========================================================
+   후보 수 계산
+   실제 후보 배열을 만들지 않고 숫자만 계산해서
+   AI 계산 속도를 높인다.
+========================================================= */
+
+function countCandidates(lastChar, used = new Set()) {
+  if (!lastChar) {
+    return 0;
+  }
+
+  const allowed = allowedFirstChars(lastChar);
+
+  let count = 0;
+
+  for (const first of allowed) {
+    const list = byFirst.get(first);
+
+    if (list) {
+      count += list.length;
+    }
+  }
+
+  /*
+   * 사용된 단어는 전체 단어를 다시 훑지 않고
+   * used만 확인해서 제외한다.
+   */
+  if (used && used.size) {
+    for (const word of used) {
+      if (allowed.includes(word[0])) {
+        count--;
+      }
+    }
+  }
+
+  return Math.max(0, count);
+}
+
+/* =========================================================
    후보 검색
 ========================================================= */
 
 function candidates(lastChar, used = new Set()) {
-  if (!lastChar) return [];
+  if (!lastChar) {
+    return [];
+  }
 
   const result = [];
+  const allowed = allowedFirstChars(lastChar);
 
-  for (const firstChar of allowedFirstChars(lastChar)) {
+  for (const firstChar of allowed) {
     const list = byFirst.get(firstChar);
 
-    if (!list) continue;
+    if (!list) {
+      continue;
+    }
 
     for (const word of list) {
       if (!used.has(word)) {
@@ -246,15 +283,17 @@ function candidates(lastChar, used = new Set()) {
 ========================================================= */
 
 function isOneShot(word, used = new Set()) {
-  if (!word) return true;
+  if (!word) {
+    return true;
+  }
 
   const nextUsed = new Set(used);
   nextUsed.add(word);
 
-  return candidates(
+  return countCandidates(
     word.at(-1),
     nextUsed
-  ).length === 0;
+  ) === 0;
 }
 
 /* =========================================================
@@ -272,9 +311,6 @@ const START_FIRST = [
   '시'
 ];
 
-/*
- * 단어가 아니라 "음절"만 반환한다.
- */
 function randomStart() {
   return START_FIRST[
     Math.floor(
@@ -287,13 +323,6 @@ function randomStart() {
    첫 단어 검사
 ========================================================= */
 
-/*
- * 첫 단어는 일반 게임보다 엄격하게 검사한다.
- *
- * 시작 음절만 주어졌기 때문에
- * 플레이어가 바로 한방단어를 내거나
- * 공격 단어를 내는 것을 막는다.
- */
 function validateFirstWord(word, startChar) {
   if (!word) {
     return '단어를 입력해주세요.';
@@ -303,33 +332,37 @@ function validateFirstWord(word, startChar) {
     return '목록에 없는 단어입니다.';
   }
 
+  if (!startChar) {
+    return '시작 음절이 없습니다.';
+  }
+
   if (!word.startsWith(startChar)) {
     return `'${startChar}'으로 시작하는 단어를 입력해야 합니다.`;
   }
 
   /*
-   * 첫 단어에서는 공격 단어 금지.
+   * 첫 단어는 공격 단어 금지
    */
   if (attackDepth.has(word)) {
     return '첫 단어에서는 공격 단어를 사용할 수 없습니다.';
   }
 
   /*
-   * 첫 단어에서 한방 금지.
+   * 첫 단어 한방 금지
    */
   if (isOneShot(word)) {
     return '첫 단어로 한방 단어는 사용할 수 없습니다.';
   }
 
   /*
-   * 다음 선택지가 너무 적은 단어도 금지.
+   * 다음 선택지가 너무 적은 단어 방지
    */
-  const next = candidates(
+  const nextCount = countCandidates(
     word.at(-1),
     new Set([word])
   );
 
-  if (next.length < 5) {
+  if (nextCount < 5) {
     return '첫 단어로는 선택지가 너무 적은 단어를 사용할 수 없습니다.';
   }
 
@@ -386,14 +419,25 @@ function validateWord(
 }
 
 /* =========================================================
+   공격 깊이
+========================================================= */
+
+function getAttackDepth(word) {
+  if (!word) {
+    return null;
+  }
+
+  return attackDepth.get(word) ?? null;
+}
+
+/* =========================================================
    클라이언트 데이터
 ========================================================= */
 
 function publicData() {
   return {
     words,
-    attackDepth:
-      Object.fromEntries(attackDepth),
+    attackDepth: Object.fromEntries(attackDepth),
     startPool: [],
     startFirst: START_FIRST,
     dueum: DUEUM
@@ -424,20 +468,15 @@ console.log(
 
 module.exports = {
   DATA,
-
   candidates,
-
+  countCandidates,
   randomStart,
-
   validateWord,
-
   validateFirstWord,
-
   publicData,
-
   canStartWith,
-
   allowedFirstChars,
-
-  isOneShot
+  isOneShot,
+  getAttackDepth
 };
+```
