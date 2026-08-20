@@ -1,40 +1,598 @@
-const $ = id => document.getElementById(id);
+const path = require('path');
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
 
-let data = null;
-let used = new Set();
-let current = '';
-let turn = 0;
-let over = false;
+const {
+  DATA,
+  candidates,
+  randomStart,
+  validateWord
+} = require('./game');
 
-let wins = 0;
-let losses = 0;
-let totalTurns = 0;
+const app = express();
+const server = http.createServer(app);
 
-const attack = () => data?.attackDepth || {};
+const io = new Server(server, {
+  cors: {
+    origin: true
+  }
+});
 
-function esc(s) {
-  return String(s).replace(
-    /[&<>"']/g,
-    c => ({
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#039;'
-    }[c])
+const PORT = process.env.PORT || 3000;
+
+/*
+ * client 폴더를 웹사이트로 사용
+ */
+app.use(
+  express.static(
+    path.join(__dirname, '..', 'client')
+  )
+);
+
+/*
+ * 기본 페이지
+ */
+app.get('/', (_req, res) => {
+  res.sendFile(
+    path.join(
+      __dirname,
+      '..',
+      'client',
+      'index.html'
+    )
+  );
+});
+
+/*
+ * 게임 정보
+ */
+app.get('/api/info', (_req, res) => {
+  res.json({
+    wordCount: DATA.words.length,
+    attackCount: DATA.attackDepth.size
+  });
+});
+
+/*
+ * 브라우저에 공식 단어 데이터 전달
+ */
+app.get('/api/data', (_req, res) => {
+  const byFirst = {};
+
+  for (const word of DATA.words) {
+    (byFirst[word[0]] ??= []).push(word);
+  }
+
+  res.json({
+    words: DATA.words,
+
+    attackDepth:
+      Object.fromEntries(
+        DATA.attackDepth
+      ),
+
+    startPool: DATA.startPool,
+
+    byFirst,
+
+    wordSet:
+      Object.fromEntries(
+        DATA.words.map(
+          word => [word, true]
+        )
+      )
+  });
+});
+
+/*
+ * 온라인 방
+ */
+const rooms = new Map();
+
+function createRoomCode() {
+  let code;
+
+  do {
+    code = Math.random()
+      .toString(36)
+      .slice(2, 8)
+      .toUpperCase();
+  } while (rooms.has(code));
+
+  return code;
+}
+
+/*
+ * 방의 현재 상태
+ */
+function roomState(room) {
+  return {
+    roomCode: room.code,
+
+    players: room.players.map(
+      player => ({
+        id: player.id,
+        name: player.name,
+        slot: player.slot
+      })
+    ),
+
+    started: room.started,
+
+    current: room.current,
+
+    turn: room.turn,
+
+    turnPlayer: room.turnPlayer,
+
+    lastDepth:
+      room.current
+        ? (
+            DATA.attackDepth.get(
+              room.current
+            ) ?? null
+          )
+        : null
+  };
+}
+
+/*
+ * 방 전체에 현재 상태 전달
+ */
+function broadcast(room) {
+  io.to(room.code).emit(
+    'room_state',
+    roomState(room)
   );
 }
 
-function saveStats() {
-  localStorage.kkeulStats = JSON.stringify({
-    wins,
-    losses,
-    totalTurns
-  });
+/*
+ * 방 나가기
+ */
+function leaveRoom(socket) {
+  const roomCode =
+    socket.data.room;
+
+  if (!roomCode) {
+    return;
+  }
+
+  const room =
+    rooms.get(roomCode);
+
+  if (!room) {
+    socket.data.room = null;
+    return;
+  }
+
+  room.players =
+    room.players.filter(
+      player =>
+        player.id !== socket.id
+    );
+
+  socket.leave(room.code);
+  socket.data.room = null;
+
+  if (room.players.length === 0) {
+    rooms.delete(room.code);
+    return;
+  }
+
+  /*
+   * 상대가 나가면 게임 종료
+   */
+  room.started = false;
+  room.current = null;
+  room.used = new Set();
+  room.turn = 0;
+  room.turnPlayer = null;
+
+  broadcast(room);
+
+  io.to(room.code).emit(
+    'notice',
+    '상대방이 방을 나갔습니다.'
+  );
 }
 
-function loadStats() {
-  try {
+/*
+ * Socket.IO
+ */
+io.on(
+  'connection',
+  socket => {
+
+    /*
+     * 방 만들기
+     */
+    socket.on(
+      'create_room',
+      ({ name }) => {
+
+        leaveRoom(socket);
+
+        const room = {
+          code:
+            createRoomCode(),
+
+          players: [
+            {
+              id: socket.id,
+              name:
+                String(
+                  name ||
+                  'Player 1'
+                ).slice(0, 20),
+              slot: 1
+            }
+          ],
+
+          started: false,
+
+          current: null,
+
+          used: new Set(),
+
+          turn: 0,
+
+          turnPlayer: null
+        };
+
+        rooms.set(
+          room.code,
+          room
+        );
+
+        socket.data.room =
+          room.code;
+
+        socket.join(
+          room.code
+        );
+
+        socket.emit(
+          'room_created',
+          {
+            code: room.code
+          }
+        );
+
+        broadcast(room);
+      }
+    );
+
+    /*
+     * 방 참가
+     */
+    socket.on(
+      'join_room',
+      ({ code, name }) => {
+
+        const room =
+          rooms.get(
+            String(
+              code || ''
+            )
+              .trim()
+              .toUpperCase()
+          );
+
+        if (!room) {
+          return socket.emit(
+            'error_msg',
+            '방을 찾을 수 없습니다.'
+          );
+        }
+
+        if (
+          room.players.length >= 2
+        ) {
+          return socket.emit(
+            'error_msg',
+            '방이 가득 찼습니다.'
+          );
+        }
+
+        leaveRoom(socket);
+
+        room.players.push({
+          id: socket.id,
+
+          name:
+            String(
+              name ||
+              'Player 2'
+            ).slice(0, 20),
+
+          slot: 2
+        });
+
+        socket.data.room =
+          room.code;
+
+        socket.join(
+          room.code
+        );
+
+        broadcast(room);
+      }
+    );
+
+    /*
+     * 온라인 게임 시작
+     */
+    socket.on(
+      'start_online',
+      () => {
+
+        const room =
+          rooms.get(
+            socket.data.room
+          );
+
+        if (!room) {
+          return socket.emit(
+            'error_msg',
+            '방에 먼저 참가하세요.'
+          );
+        }
+
+        if (
+          room.players.length !== 2
+        ) {
+          return socket.emit(
+            'error_msg',
+            '두 명이 모두 들어와야 시작할 수 있습니다.'
+          );
+        }
+
+        /*
+         * 방장만 시작 가능
+         */
+        if (
+          room.players[0].id !==
+          socket.id
+        ) {
+          return socket.emit(
+            'error_msg',
+            '방장만 시작할 수 있습니다.'
+          );
+        }
+
+        room.started = true;
+
+        /*
+         * 한방단어가 아닌 시작 단어
+         */
+        room.current =
+          randomStart();
+
+        room.used =
+          new Set([
+            room.current
+          ]);
+
+        room.turn = 0;
+
+        /*
+         * 랜덤으로 첫 플레이어 결정
+         */
+        room.turnPlayer =
+          room.players[
+            Math.floor(
+              Math.random() * 2
+            )
+          ].id;
+
+        io.to(
+          room.code
+        ).emit(
+          'game_started',
+          {
+            state:
+              roomState(room),
+
+            startWord:
+              room.current
+          }
+        );
+      }
+    );
+
+    /*
+     * 단어 입력
+     */
+    socket.on(
+      'play_word',
+      ({ word }) => {
+
+        const room =
+          rooms.get(
+            socket.data.room
+          );
+
+        if (
+          !room ||
+          !room.started
+        ) {
+          return socket.emit(
+            'error_msg',
+            '진행 중인 게임이 없습니다.'
+          );
+        }
+
+        /*
+         * 차례 확인
+         */
+        if (
+          room.turnPlayer !==
+          socket.id
+        ) {
+          return socket.emit(
+            'error_msg',
+            '상대방의 차례입니다.'
+          );
+        }
+
+        const w =
+          String(
+            word || ''
+          ).trim();
+
+        if (!w) {
+          return;
+        }
+
+        /*
+         * 공식 단어 + 중복 + 연결 규칙
+         */
+        const error =
+          validateWord(
+            w,
+            room.current,
+            room.used
+          );
+
+        if (error) {
+          return socket.emit(
+            'error_msg',
+            error
+          );
+        }
+
+        /*
+         * 첫 번째 플레이어의 단어는
+         * 한방단어가 될 수 없음.
+         *
+         * room.turn === 0
+         */
+        if (room.turn === 0) {
+
+          const next =
+            candidates(
+              w.at(-1),
+              room.used
+            );
+
+          if (!next.length) {
+            return socket.emit(
+              'error_msg',
+              '첫 번째 단어로 한방단어는 사용할 수 없습니다.'
+            );
+          }
+        }
+
+        /*
+         * 단어 적용
+         */
+        room.used.add(w);
+
+        room.current = w;
+
+        room.turn++;
+
+        /*
+         * 상대방이 이어갈 수 있는지 확인
+         */
+        const next =
+          candidates(
+            w.at(-1),
+            room.used
+          );
+
+        /*
+         * 상대방이 이어갈 단어가 없으면
+         * 현재 플레이어 승리
+         */
+        if (!next.length) {
+
+          room.started = false;
+
+          io.to(
+            room.code
+          ).emit(
+            'game_over',
+            {
+              winner:
+                socket.id,
+
+              word: w,
+
+              turn:
+                room.turn
+            }
+          );
+
+          broadcast(room);
+
+          return;
+        }
+
+        /*
+         * 상대방에게 차례 넘기기
+         */
+        const nextPlayer =
+          room.players.find(
+            player =>
+              player.id !==
+              socket.id
+          );
+
+        room.turnPlayer =
+          nextPlayer
+            ? nextPlayer.id
+            : null;
+
+        /*
+         * 두 플레이어에게 전달
+         */
+        io.to(
+          room.code
+        ).emit(
+          'word_played',
+          {
+            playerId:
+              socket.id,
+
+            word: w,
+
+            depth:
+              DATA.attackDepth.get(
+                w
+              ) ?? null,
+
+            state:
+              roomState(room)
+          }
+        );
+      }
+    );
+
+    /*
+     * 연결 종료
+     */
+    socket.on(
+      'disconnect',
+      () => {
+        leaveRoom(socket);
+      }
+    );
+  }
+);
+
+/*
+ * 서버 시작
+ */
+server.listen(
+  PORT,
+  () => {
+    console.log(
+      `끝말잇기 서버: http://localhost:${PORT}`
+    );
+  }
+);  try {
     ({
       wins = 0,
       losses = 0,
