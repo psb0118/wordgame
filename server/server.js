@@ -88,13 +88,6 @@ app.get('/api/data', (_req, res) => {
     });
   }
 
-  /*
-   * game.js에서 이미 만든 인덱스를
-   * 그대로 반환한다.
-   *
-   * words 배열을 따로 보내지 않기 때문에
-   * 기존보다 JSON 중복이 줄어든다.
-   */
   const byFirst = {};
 
   for (
@@ -158,15 +151,9 @@ function getRoomState(room) {
     started:
       room.started,
 
-    /*
-     * 첫 단어가 아직 입력되지 않았다면 null
-     */
     current:
       room.current,
 
-    /*
-     * 시작 음절
-     */
     startChar:
       room.startChar,
 
@@ -271,9 +258,6 @@ function startRoomGame(room) {
     };
   }
 
-  /*
-   * 단어가 아니라 시작 음절을 뽑는다.
-   */
   const startChar =
     game.randomStart();
 
@@ -288,9 +272,6 @@ function startRoomGame(room) {
 
   room.turn = 0;
 
-  /*
-   * 선공 랜덤
-   */
   const firstIndex =
     Math.floor(
       Math.random() *
@@ -322,6 +303,9 @@ io.on(
     console.log(
       `클라이언트 접속: ${socket.id}`
     );
+
+    socket.data.room = null;
+    socket.data.lastPlayTime = 0; // Phase 4: 빠른 클릭 방지
 
     /* =====================================================
        방 생성
@@ -538,9 +522,6 @@ io.on(
           return;
         }
 
-        /*
-         * 방장만 시작
-         */
         if (
           room.players[0].id !==
           socket.id
@@ -599,7 +580,7 @@ io.on(
     );
 
     /* =====================================================
-       온라인 단어 입력
+       온라인 단어 입력 (Phase 3: 서버 검증 강화)
     ===================================================== */
 
     socket.on(
@@ -650,6 +631,17 @@ io.on(
           return;
         }
 
+        /* Phase 4: 빠른 클릭 중복 방지 */
+        const now = Date.now();
+        if (now - socket.data.lastPlayTime < 200) {
+          socket.emit(
+            'error_msg',
+            '너무 빨리 입력했습니다.'
+          );
+          return;
+        }
+        socket.data.lastPlayTime = now;
+
         const w =
           String(
             word || ''
@@ -664,13 +656,26 @@ io.on(
           return;
         }
 
+        if (w.length > 50) {
+          socket.emit(
+            'error_msg',
+            '너무 긴 단어입니다.'
+          );
+          return;
+        }
+
+        if (!/^[가-힣]+$/.test(w)) {
+          socket.emit(
+            'error_msg',
+            '한글만 입력 가능합니다.'
+          );
+          return;
+        }
+
         let error = null;
 
-        /*
-         * 첫 단어
-         */
         if (!room.current) {
-
+          /* 첫 단어 검증 */
           error =
             game.validateFirstWord(
               w,
@@ -678,10 +683,7 @@ io.on(
             );
 
         } else {
-
-          /*
-           * 일반 단어
-           */
+          /* 일반 단어 검증 */
           error =
             game.validateWord(
               w,
@@ -705,19 +707,14 @@ io.on(
 
         room.turn++;
 
-        /*
-         * 상대가 이어갈 수 있는지 확인
-         */
+        /* 상대가 이어갈 수 있는지 확인 */
         const next =
           game.candidates(
             w.at(-1),
             room.used
           );
 
-        /*
-         * 더 이상 갈 단어가 없으면
-         * 현재 단어를 낸 사람이 승리
-         */
+        /* 더 이상 갈 단어가 없으면 현재 단어를 낸 사람이 승리 */
         if (next.length === 0) {
 
           room.started =
@@ -751,9 +748,7 @@ io.on(
           return;
         }
 
-        /*
-         * 상대방으로 턴 변경
-         */
+        /* 상대방으로 턴 변경 */
         const opponent =
           room.players.find(
             player =>
@@ -811,7 +806,6 @@ io.on(
 
 /* =========================================================
    중요: 포트를 먼저 연다.
-   Render가 포트를 감지할 수 있도록 한다.
 ========================================================= */
 
 server.listen(
@@ -823,10 +817,6 @@ server.listen(
       `끝말잇기 서버가 포트 ${PORT}에서 실행 중입니다.`
     );
 
-    /*
-     * 현재 이벤트 루프가 반환된 다음
-     * 무거운 game.js를 로딩한다.
-     */
     setImmediate(() => {
 
       console.log(
@@ -853,9 +843,6 @@ server.listen(
           error
         );
 
-        /*
-         * 서버 포트 자체는 유지한다.
-         */
       }
     });
   }
