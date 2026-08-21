@@ -67,6 +67,34 @@ function attack() {
   return data?.attackDepth || {};
 }
 
+/*
+ * 공격 깊이 판정
+ *
+ * 홀수 = 이기는 공격
+ * 짝수 = 지는 양보
+ */
+function isWinningAttack(word) {
+  const depth =
+    attack()[word];
+
+  if (depth == null) {
+    return false;
+  }
+
+  return Number(depth) % 2 === 1;
+}
+
+function isLosingAttack(word) {
+  const depth =
+    attack()[word];
+
+  if (depth == null) {
+    return false;
+  }
+
+  return Number(depth) % 2 === 0;
+}
+
 /* =========================================================
    단어 존재 확인
 ========================================================= */
@@ -83,7 +111,10 @@ function hasWord(word) {
    후보
 ========================================================= */
 
-function candidates(ch, usedSet = used) {
+function candidates(
+  ch,
+  usedSet = used
+) {
   if (!data || !ch) {
     return [];
   }
@@ -169,7 +200,13 @@ function isOneShot(
 
 function candidateInfo(word) {
   const next =
-    candidates(word.at(-1));
+    candidates(
+      word.at(-1),
+      new Set([
+        ...used,
+        word
+      ])
+    );
 
   const attackData =
     attack();
@@ -181,27 +218,28 @@ function candidateInfo(word) {
 
   return {
     word,
+
     depth,
-    nextCount: next.length,
+
+    nextCount:
+      next.length,
+
     oneShot:
-      next.length === 0
+      next.length === 0,
+
+    winningAttack:
+      depth != null &&
+      depth % 2 === 1,
+
+    losingAttack:
+      depth != null &&
+      depth % 2 === 0
   };
 }
 
 /* =========================================================
    공격 후보
 ========================================================= */
-
-/*
- * 현재 글자에서 실제 공격 단어만 가져온다.
- *
- * 반드시:
- * 1. 실제 data.byFirst에 존재
- * 2. 아직 사용하지 않음
- * 3. attackDepth에 등록됨
- *
- * 이 세 조건을 모두 만족해야 한다.
- */
 
 function attackCandidates(
   ch,
@@ -224,6 +262,57 @@ function attackCandidates(
       data.byFirst[first] || [];
 
     for (const word of list) {
+
+      if (usedSet.has(word)) {
+        continue;
+      }
+
+      if (attackData[word] == null) {
+        continue;
+      }
+
+      /*
+       * 짝수 깊이는 양보 단어이므로
+       * 공격 후보에서 제외한다.
+       */
+      if (!isWinningAttack(word)) {
+        continue;
+      }
+
+      result.push(word);
+    }
+  }
+
+  return result;
+}
+
+/* =========================================================
+   모든 공격 데이터 후보
+========================================================= */
+
+function allAttackCandidates(
+  ch,
+  usedSet = used
+) {
+  if (!data || !ch) {
+    return [];
+  }
+
+  const result = [];
+
+  const firstChars =
+    allowedFirstChars(ch);
+
+  const attackData =
+    attack();
+
+  for (const first of firstChars) {
+
+    const list =
+      data.byFirst[first] || [];
+
+    for (const word of list) {
+
       if (usedSet.has(word)) {
         continue;
       }
@@ -240,39 +329,8 @@ function attackCandidates(
 }
 
 /* =========================================================
-   공격 루트 계산
+   Lv.5 공격 루트 길이
 ========================================================= */
-
-/*
- * 특정 공격 단어 이후
- * 공격 단어만으로 몇 단계 이어갈 수 있는지 계산한다.
- *
- * 절대로 일반 단어를 탐색하지 않는다.
- *
- * 반환:
- *
- * 0 = 다음 공격 단어 없음
- * 1 = 다음 공격 1개 가능
- * 2 = 다음 공격 2개 가능
- * ...
- *
- * depthLimit은 무한 루프를 막기 위한 안전장치다.
- */
-
-/* =========================================================
-   Lv.5 공격 루트 탐색
-========================================================= */
-
-/*
- * 공격 단어만 사용해서 만들 수 있는
- * 가장 긴 공격 루트를 계산한다.
- *
- * 중요:
- * - 일반 단어 탐색 안 함
- * - 공룰 단어 탐색 안 함
- * - 공격 단어만 탐색
- * - 이미 사용한 단어 재사용 안 함
- */
 
 function attackChainLength(
   word,
@@ -287,15 +345,18 @@ function attackChainLength(
     return 0;
   }
 
+  /*
+   * 홀수 깊이 공격만 루트에 포함.
+   */
+  if (!isWinningAttack(word)) {
+    return 0;
+  }
+
   const nextUsed =
     new Set(localUsed);
 
   nextUsed.add(word);
 
-  /*
-   * 현재 상태의 사용 단어까지 포함해서
-   * 메모 키를 만든다.
-   */
   const usedKey =
     Array.from(nextUsed)
       .sort()
@@ -308,27 +369,20 @@ function attackChainLength(
     return memo.get(key);
   }
 
-  /*
-   * 다음 공격 후보만 검색한다.
-   */
   const next =
     attackCandidates(
       word.at(-1),
       nextUsed
     );
 
-  /*
-   * 더 이상 공격 단어가 없으면
-   * 여기서 공격 루트 종료.
-   */
   if (!next.length) {
     memo.set(key, 0);
     return 0;
   }
 
   /*
-   * 깊은 공격 단어를 먼저 검사.
-   * 단, 실제 최종 판단은 전체 후보를 비교한다.
+   * 깊이가 긴 공격을 우선적으로 탐색해서
+   * 공격 루트를 최대한 유지한다.
    */
   const attackData =
     attack();
@@ -374,20 +428,20 @@ function attackChainLength(
 
 function evaluateLv5Attack(word) {
 
+  if (!hasWord(word)) {
+    return null;
+  }
+
+  if (used.has(word)) {
+    return null;
+  }
+
+  if (!isWinningAttack(word)) {
+    return null;
+  }
+
   const attackData =
     attack();
-
-  if (
-    attackData[word] == null
-  ) {
-    return null;
-  }
-
-  if (
-    used.has(word)
-  ) {
-    return null;
-  }
 
   const memo =
     new Map();
@@ -413,22 +467,13 @@ function evaluateLv5Attack(word) {
   return {
     word,
 
-    /*
-     * 실제 공격 루트 길이
-     */
     chain,
 
-    /*
-     * attack.txt 공격 깊이
-     */
     depth:
       Number(
         attackData[word]
       ),
 
-    /*
-     * 다음 공격 선택지
-     */
     nextAttackCount:
       nextAttack.length
   };
@@ -441,21 +486,19 @@ function evaluateLv5Attack(word) {
 function pickLv5Attack(list) {
 
   /*
-   * 현재 위치에서 실제로 사용할 수 있는
-   * 공격 단어만 남긴다.
+   * 홀수 깊이 공격만 허용.
    */
   const attackList =
     list.filter(
       word =>
         !used.has(word) &&
-        attack()[word] != null
+        isWinningAttack(word)
     );
 
   /*
-   * 공격 단어가 하나도 없다.
+   * 공격 후보가 없으면 null.
    *
-   * 이 경우 호출자가
-   * 일반 단어로 대체하면 안 된다.
+   * 호출자가 일반 단어로 대체하지 않는다.
    */
   if (!attackList.length) {
     return null;
@@ -466,18 +509,16 @@ function pickLv5Attack(list) {
       .map(
         evaluateLv5Attack
       )
-      .filter(
-        Boolean
-      );
+      .filter(Boolean);
 
   if (!evaluated.length) {
     return null;
   }
 
   /*
-   * 우선순위
+   * Lv.5 우선순위
    *
-   * 1. 실제 공격 루트 길이
+   * 1. 공격 루트 길이
    * 2. 공격 깊이
    * 3. 다음 공격 후보 수
    */
@@ -524,139 +565,14 @@ function pickLv5Attack(list) {
   return evaluated[0].word;
 }
 
-  /*
-   * 공격 후보가 없으면 null.
-   *
-   * 이 null을 aiPick에서 일반 단어로
-   * 변환하지 않는다.
-   */
-
-  if (!attackList.length) {
-    return null;
-  }
-
-  const memo =
-    new Map();
-
-  const evaluated =
-    attackList.map(
-      word => {
-        const chain =
-          attackChainLength(
-            word,
-            new Set(used),
-            memo,
-            30
-          );
-
-        const depth =
-          Number(
-            attackData[word]
-          );
-
-        const nextAttack =
-          attackCandidates(
-            word.at(-1),
-            new Set([
-              ...used,
-              word
-            ])
-          );
-
-        /*
-         * 공격 루트가 길수록 압도적으로 우선.
-         */
-
-        const score =
-          chain * 1000000000 +
-          depth * 100000 +
-          Math.max(
-            0,
-            1000 -
-              nextAttack.length
-          );
-
-        return {
-          word,
-          chain,
-          depth,
-          nextAttackCount:
-            nextAttack.length,
-          score
-        };
-      }
-    );
-
-  evaluated.sort(
-    (a, b) => {
-
-      /*
-       * 1순위:
-       * 공격 루트 길이
-       */
-
-      if (
-        b.chain !==
-        a.chain
-      ) {
-        return (
-          b.chain -
-          a.chain
-        );
-      }
-
-      /*
-       * 2순위:
-       * 공격 깊이
-       */
-
-      if (
-        b.depth !==
-        a.depth
-      ) {
-        return (
-          b.depth -
-          a.depth
-        );
-      }
-
-      /*
-       * 3순위:
-       * 다음 공격 후보가 많은 쪽
-       *
-       * 공격을 계속 이어가기 위한 목적.
-       */
-
-      if (
-        b.nextAttackCount !==
-        a.nextAttackCount
-      ) {
-        return (
-          b.nextAttackCount -
-          a.nextAttackCount
-        );
-      }
-
-      /*
-       * 4순위:
-       * 종합 점수
-       */
-
-      return (
-        b.score -
-        a.score
-      );
-    }
-  );
-
-  return evaluated[0].word;
-}
-
 /* =========================================================
    AI 점수
 ========================================================= */
 
-function score(info, level) {
+function score(
+  info,
+  level
+) {
   const depth =
     info.depth == null
       ? 999
@@ -665,9 +581,9 @@ function score(info, level) {
   const nextCount =
     info.nextCount;
 
-  /*
-   * 한방 단어
-   */
+  /* -------------------------------------------------------
+     한방
+  ------------------------------------------------------- */
 
   if (info.oneShot) {
 
@@ -676,31 +592,33 @@ function score(info, level) {
     }
 
     if (level >= 4) {
-      return 50000;
+      return 500000;
     }
 
     if (level >= 3) {
-      return 1000;
+      return 100000;
     }
 
     return -10000;
   }
 
-  /*
-   * 공격 단어
-   */
+  /* -------------------------------------------------------
+     홀수 공격 = 이기는 공격
+  ------------------------------------------------------- */
 
-  if (info.depth != null) {
+  if (
+    info.depth != null &&
+    info.winningAttack
+  ) {
 
     if (level === 1) {
-      return -10000 - depth;
+      return -5000;
     }
 
     if (level === 2) {
       return (
-        (depth >= 4
-          ? 80
-          : -30) +
+        10000 -
+        depth * 100 +
         Math.min(
           nextCount,
           30
@@ -709,27 +627,18 @@ function score(info, level) {
     }
 
     /*
-     * Lv.3 상향
+     * Lv.3은 별도 선택 로직을 사용.
      */
-
     if (level === 3) {
       return (
-        10000 -
-        depth * 250 +
-        Math.min(
-          nextCount,
-          50
-        ) * 5
+        100000 -
+        depth * 1000
       );
     }
 
-    /*
-     * Lv.4 상향
-     */
-
     if (level === 4) {
       return (
-        50000 -
+        50000 +
         depth * 500 +
         Math.min(
           nextCount,
@@ -738,21 +647,33 @@ function score(info, level) {
       );
     }
 
-    /*
-     * Lv.5에서는 실제 공격 루트를 사용한다.
-     */
-
     if (level === 5) {
       return (
-        100000000 -
+        100000000 +
         depth * 1000
       );
     }
   }
 
-  /*
-   * 일반 공룰 단어
-   */
+  /* -------------------------------------------------------
+     짝수 공격 = 지는 양보
+  ------------------------------------------------------- */
+
+  if (
+    info.depth != null &&
+    info.losingAttack
+  ) {
+
+    /*
+     * 짝수 깊이는 기본적으로
+     * 일반 단어보다도 낮게 평가한다.
+     */
+    return -1000000;
+  }
+
+  /* -------------------------------------------------------
+     일반 공룰 단어
+  ------------------------------------------------------- */
 
   if (level === 1) {
     return (
@@ -774,10 +695,6 @@ function score(info, level) {
     );
   }
 
-  /*
-   * Lv.3 상향
-   */
-
   if (level === 3) {
     return (
       500 +
@@ -787,10 +704,6 @@ function score(info, level) {
       ) * 2
     );
   }
-
-  /*
-   * Lv.4 상향
-   */
 
   if (level === 4) {
     return (
@@ -803,10 +716,9 @@ function score(info, level) {
   }
 
   /*
-   * Lv.5 일반 단어는
-   * 공격 후보가 없을 때도 선택하지 않는다.
+   * Lv.5에서는 공격 후보가 없을 경우
+   * 일반 단어를 선택하지 않는다.
    */
-
   return -1000000000;
 }
 
@@ -815,14 +727,20 @@ function score(info, level) {
 ========================================================= */
 
 function aiPick() {
+
   const level =
     Number(
       $('difficulty').value
     );
 
+  const lastChar =
+    current
+      ? current.at(-1)
+      : startChar;
+
   const list =
     candidates(
-      current.at(-1)
+      lastChar
     );
 
   if (!list.length) {
@@ -842,31 +760,21 @@ function aiPick() {
   if (level === 5) {
 
     /*
-     * 공격 후보만 만든다.
+     * 공격 단어가 존재한다면
+     * 무조건 홀수 깊이 공격.
      */
-
     const attackWord =
       pickLv5Attack(list);
-
-    /*
-     * 공격 단어가 있으면
-     * 무조건 공격 단어.
-     */
 
     if (attackWord) {
       return attackWord;
     }
 
     /*
-     * 여기서 절대로 일반 단어를 선택하지 않는다.
+     * 절대 일반 단어로 내려가지 않는다.
      *
-     * 공격 중에 일반 단어로 넘어가는 현상을
-     * 완전히 차단한다.
-     *
-     * 실제 공격 후보가 없다면
-     * AI는 이 턴에서 더 이상 공격할 수 없다.
+     * 짝수 깊이 양보 단어도 사용하지 않는다.
      */
-
     return null;
   }
 
@@ -877,91 +785,8 @@ function aiPick() {
   if (level === 4) {
 
     /*
-     * 한방 단어가 있으면 적극적으로 사용.
+     * 한방 단어 우선.
      */
-
-    const oneShots =
-      infos.filter(
-        x =>
-          x.oneShot
-      );
-
-    if (oneShots.length) {
-
-      oneShots.sort(
-        (a, b) => {
-
-          const ad =
-            a.depth ?? 999;
-
-          const bd =
-            b.depth ?? 999;
-
-          return ad - bd;
-        }
-      );
-
-      return oneShots[0].word;
-    }
-
-    /*
-     * 공격 단어 우선.
-     *
-     * 깊이가 높은 공격을 우선한다.
-     */
-
-    const attacks =
-      infos.filter(
-        x =>
-          x.depth != null
-      );
-
-    if (attacks.length) {
-
-      attacks.sort(
-        (a, b) =>
-          b.depth -
-          a.depth
-      );
-
-      return attacks[0].word;
-    }
-
-    /*
-     * 공격이 없다면
-     * 상대 선택지를 최대한 줄이는 일반 단어.
-     */
-
-    const normal =
-      infos.filter(
-        x =>
-          !x.oneShot
-      );
-
-    if (normal.length) {
-
-      normal.sort(
-        (a, b) =>
-          a.nextCount -
-          b.nextCount
-      );
-
-      return normal[0].word;
-    }
-
-    return list[0];
-  }
-
-  /* =======================================================
-     Lv.3
-  ======================================================= */
-
-  if (level === 3) {
-
-    /*
-     * 한방 단어를 적극적으로 사용.
-     */
-
     const oneShots =
       infos.filter(
         x =>
@@ -971,39 +796,45 @@ function aiPick() {
     if (oneShots.length) {
 
       /*
-       * 깊이가 있는 공격 한방을 우선.
+       * 한방 중에서도
+       * 이기는 공격이면 우선.
        */
+      const winningOneShots =
+        oneShots.filter(
+          x =>
+            x.winningAttack
+        );
 
-      oneShots.sort(
+      const target =
+        winningOneShots.length
+          ? winningOneShots
+          : oneShots;
+
+      target.sort(
         (a, b) =>
-          (b.depth ?? 0) -
-          (a.depth ?? 0)
+          (b.depth ?? -1) -
+          (a.depth ?? -1)
       );
 
-      return oneShots[0].word;
+      return target[0].word;
     }
 
     /*
-     * 공격 단어 중
-     * 너무 얕은 것만 고르지 않는다.
-     *
-     * 기존 Lv.3보다 공격 성향 강화.
+     * 홀수 공격만 공격으로 취급.
      */
-
     const attacks =
       infos.filter(
         x =>
-          x.depth != null
+          x.winningAttack
       );
 
     if (attacks.length) {
 
+      /*
+       * Lv.4는 강한 공격을 선호.
+       */
       attacks.sort(
         (a, b) => {
-
-          /*
-           * 깊이가 높은 공격을 우선.
-           */
 
           if (
             b.depth !==
@@ -1022,33 +853,19 @@ function aiPick() {
         }
       );
 
-      /*
-       * 완전히 랜덤하지 않고
-       * 상위 공격 후보에서 선택.
-       */
-
-      const count =
-        Math.min(
-          3,
-          attacks.length
-        );
-
-      return attacks[
-        Math.floor(
-          Math.random() *
-          count
-        )
-      ].word;
+      return attacks[0].word;
     }
 
     /*
-     * 공격이 없으면
-     * 상대 선택지를 줄이는 단어.
+     * 짝수 깊이 양보 단어는
+     * 공격 후보로 사용하지 않는다.
+     *
+     * 일반 단어 중 상대 선택지를 줄이는 쪽.
      */
-
     const normal =
       infos.filter(
         x =>
+          x.depth == null &&
           !x.oneShot
       );
 
@@ -1060,18 +877,197 @@ function aiPick() {
           b.nextCount
       );
 
-      const count =
-        Math.min(
-          5,
-          normal.length
+      return normal[0].word;
+    }
+
+    /*
+     * 일반 단어가 없다면
+     * 짝수 공격은 최후의 수단.
+     */
+    const fallback =
+      infos.filter(
+        x =>
+          !x.oneShot
+      );
+
+    if (fallback.length) {
+      return fallback[0].word;
+    }
+
+    return list[0];
+  }
+
+  /* =======================================================
+     Lv.3
+  ======================================================= */
+
+  if (level === 3) {
+
+    /*
+     * 1순위:
+     * 한방이면 바로 끝낸다.
+     */
+    const oneShots =
+      infos.filter(
+        x =>
+          x.oneShot
+      );
+
+    if (oneShots.length) {
+
+      /*
+       * 홀수 깊이 한방을 우선.
+       */
+      const winningOneShots =
+        oneShots.filter(
+          x =>
+            x.winningAttack
         );
 
-      return normal[
-        Math.floor(
-          Math.random() *
-          count
-        )
-      ].word;
+      const target =
+        winningOneShots.length
+          ? winningOneShots
+          : oneShots;
+
+      /*
+       * 깊이가 낮은 것부터.
+       *
+       * 낮은 깊이 =
+       * 더 빨리 끝나는 공격.
+       */
+      target.sort(
+        (a, b) =>
+          (a.depth ?? 999) -
+          (b.depth ?? 999)
+      );
+
+      return target[0].word;
+    }
+
+    /*
+     * 2순위:
+     *
+     * 홀수 깊이 공격만 사용.
+     *
+     * 핵심:
+     * "공격 깊이가 낮은 것을 먼저
+     * 최대한 빨리 끝내기"
+     */
+    const attacks =
+      infos.filter(
+        x =>
+          x.winningAttack
+      );
+
+    if (attacks.length) {
+
+      attacks.sort(
+        (a, b) => {
+
+          /*
+           * 가장 중요한 기준:
+           * 낮은 공격 깊이
+           */
+          if (
+            a.depth !==
+            b.depth
+          ) {
+            return (
+              a.depth -
+              b.depth
+            );
+          }
+
+          /*
+           * 같은 깊이라면
+           * 다음 선택지가 적은 쪽.
+           *
+           * 상대가 빨리 막히도록 한다.
+           */
+          if (
+            a.nextCount !==
+            b.nextCount
+          ) {
+            return (
+              a.nextCount -
+              b.nextCount
+            );
+          }
+
+          return a.word.localeCompare(
+            b.word,
+            'ko'
+          );
+        }
+      );
+
+      /*
+       * Lv.3은 랜덤으로 섞지 않는다.
+       *
+       * 항상 가장 낮은 깊이부터
+       * 확실하게 공격한다.
+       */
+      return attacks[0].word;
+    }
+
+    /*
+     * 3순위:
+     * 일반 공룰 단어.
+     *
+     * 짝수 공격은 여기서도 우선하지 않는다.
+     */
+    const normal =
+      infos.filter(
+        x =>
+          x.depth == null &&
+          !x.oneShot
+      );
+
+    if (normal.length) {
+
+      normal.sort(
+        (a, b) => {
+
+          if (
+            a.nextCount !==
+            b.nextCount
+          ) {
+            return (
+              a.nextCount -
+              b.nextCount
+            );
+          }
+
+          return a.word.localeCompare(
+            b.word,
+            'ko'
+          );
+        }
+      );
+
+      return normal[0].word;
+    }
+
+    /*
+     * 4순위:
+     * 정말 다른 선택지가 없을 때만
+     * 짝수 깊이 양보 단어를 사용.
+     */
+    const losing =
+      infos.filter(
+        x =>
+          x.losingAttack
+      );
+
+    if (losing.length) {
+
+      losing.sort(
+        (a, b) =>
+          a.depth -
+          b.depth
+      );
+
+      return losing[0].word;
     }
 
     return list[0];
@@ -1167,15 +1163,16 @@ function aiPick() {
 ========================================================= */
 
 function playAiWord(word) {
+
   if (!word) {
     return;
   }
 
   /*
-   * 실제 데이터에 존재하는지 최종 확인.
+   * 존재 여부
    */
-
   if (!hasWord(word)) {
+
     console.error(
       'AI가 존재하지 않는 단어를 선택함:',
       word
@@ -1186,10 +1183,10 @@ function playAiWord(word) {
   }
 
   /*
-   * 이미 사용한 단어도 방어.
+   * 중복 방지
    */
-
   if (used.has(word)) {
+
     console.error(
       'AI가 이미 사용한 단어를 선택함:',
       word
@@ -1200,9 +1197,8 @@ function playAiWord(word) {
   }
 
   /*
-   * 현재 끝 글자와 연결되는지도 방어.
+   * 연결 확인
    */
-
   if (
     current &&
     !canStartWith(
@@ -1210,6 +1206,7 @@ function playAiWord(word) {
       current.at(-1)
     )
   ) {
+
     console.error(
       'AI 단어 연결 오류:',
       current,
@@ -1246,6 +1243,7 @@ function playAiWord(word) {
     );
 
   if (next === 0) {
+
     finish(true);
     return;
   }
@@ -1269,6 +1267,7 @@ function playAiWord(word) {
 ========================================================= */
 
 function aiTurn() {
+
   if (
     over ||
     playerTurn
@@ -1283,15 +1282,7 @@ function aiTurn() {
    * Lv.5에서 공격 후보가 없으면
    * 일반 단어로 대체하지 않는다.
    */
-
   if (!word) {
-
-    /*
-     * 현재 AI가 낼 수 있는 단어 자체가 없거나
-     * Lv.5 공격 루트가 막힌 상황.
-     *
-     * AI가 패배 처리된다.
-     */
 
     finish(false);
     return;
@@ -1305,6 +1296,7 @@ function aiTurn() {
 ========================================================= */
 
 function submit() {
+
   if (
     over ||
     !playerTurn
@@ -1325,14 +1317,18 @@ function submit() {
   }
 
   if (!hasWord(word)) {
+
     $('message').textContent =
       '목록에 없는 단어야.';
+
     return;
   }
 
   if (used.has(word)) {
+
     $('message').textContent =
       '이미 나온 단어야.';
+
     return;
   }
 
@@ -1348,8 +1344,10 @@ function submit() {
       );
 
     if (error) {
+
       $('message').textContent =
         error;
+
       return;
     }
 
@@ -1374,10 +1372,6 @@ function submit() {
     );
 
   } else {
-
-    /*
-     * 연결 확인
-     */
 
     if (
       !canStartWith(
@@ -1422,9 +1416,8 @@ function submit() {
   }
 
   /*
-   * 상대가 이어갈 수 있는지
+   * 상대가 이어갈 수 있는지 확인
    */
-
   if (
     countCandidates(
       current.at(-1)
@@ -1457,30 +1450,43 @@ function submit() {
 ========================================================= */
 
 function validateFirstWordClient(word) {
+
   if (
     !word.startsWith(
       startChar
     )
   ) {
+
     return (
       `'${startChar}'으로 시작하는 단어를 입력해야 해.`
     );
   }
 
+  /*
+   * 첫 단어 공격 금지.
+   *
+   * 홀수/짝수 관계없이
+   * attack.txt 등록 단어는 금지.
+   */
   if (
     attack()[word] != null
   ) {
+
     return (
       '첫 단어에서는 공격 단어를 사용할 수 없어.'
     );
   }
 
+  /*
+   * 한방 금지
+   */
   if (
     isOneShot(
       word,
       new Set()
     )
   ) {
+
     return (
       '첫 단어로 한방 단어는 사용할 수 없어.'
     );
@@ -1493,6 +1499,7 @@ function validateFirstWordClient(word) {
     );
 
   if (next < 5) {
+
     return (
       '첫 단어로는 선택지가 너무 적은 단어를 사용할 수 없어.'
     );
@@ -1510,10 +1517,13 @@ $('singleSend').onclick =
 
 $('singleInput').onkeydown =
   e => {
+
     if (
       e.key === 'Enter'
     ) {
+
       e.preventDefault();
+
       submit();
     }
   };
@@ -1548,6 +1558,7 @@ let onlineStarted = false;
 ========================================================= */
 
 function roomRender(state) {
+
   room = state;
 
   const players =
@@ -1646,6 +1657,7 @@ function roomRender(state) {
 socket.on(
   'connect',
   () => {
+
     myId =
       socket.id;
 
@@ -1656,9 +1668,14 @@ socket.on(
   }
 );
 
+/* =========================================================
+   온라인 방 생성
+========================================================= */
+
 socket.on(
   'room_created',
   info => {
+
     $('roomCode').value =
       info.code;
 
@@ -1667,16 +1684,28 @@ socket.on(
   }
 );
 
+/* =========================================================
+   온라인 상태
+========================================================= */
+
 socket.on(
   'room_state',
   state => {
-    roomRender(state);
+
+    roomRender(
+      state
+    );
   }
 );
+
+/* =========================================================
+   온라인 알림
+========================================================= */
 
 socket.on(
   'notice',
   message => {
+
     $('onlineMessage').textContent =
       message;
   }
@@ -1685,6 +1714,7 @@ socket.on(
 socket.on(
   'error_msg',
   message => {
+
     $('onlineMessage').textContent =
       message;
   }
@@ -1735,6 +1765,7 @@ socket.on(
       info.state.turnPlayer ===
       myId
     ) {
+
       $('onlineInput').focus();
     }
   }
@@ -1749,6 +1780,7 @@ function addOnline(
   word,
   depth
 ) {
+
   $('onlineHistory')
     .insertAdjacentHTML(
       'beforeend',
@@ -2010,7 +2042,7 @@ function onlineSubmit() {
     ) {
 
       $('onlineMessage').textContent =
-        '첫 단어로 한방 단어는 사용할 수 없어.';
+        '첫 단어로 한방 단어를 사용할 수 없어.';
 
       return;
     }
@@ -2134,7 +2166,6 @@ async function loadData() {
     /*
      * 클라이언트 단어 Set
      */
-
     data.wordSet =
       new Set();
 
@@ -2158,10 +2189,6 @@ async function loadData() {
         );
       }
     }
-
-    /*
-     * 서버와 동일한 두음법칙
-     */
 
     DUEUM =
       result.dueum || {};
@@ -2192,6 +2219,7 @@ async function loadData() {
 ========================================================= */
 
 function saveStats() {
+
   localStorage.kkeulStats =
     JSON.stringify({
       wins,
@@ -2391,7 +2419,6 @@ function aiFirstCandidates() {
       /*
        * 첫 단어 공격 금지
        */
-
       if (
         attack()[word] != null
       ) {
@@ -2399,9 +2426,8 @@ function aiFirstCandidates() {
       }
 
       /*
-       * 첫 단어 한방 금지
+       * 한방 금지
        */
-
       if (
         isOneShot(
           word,
@@ -2413,10 +2439,6 @@ function aiFirstCandidates() {
 
       const nextUsed =
         new Set([word]);
-
-      /*
-       * 최소 5개 이상의 선택지.
-       */
 
       return (
         countCandidates(
@@ -2445,6 +2467,11 @@ function aiFirstTurn() {
 
   if (safe.length) {
 
+    /*
+     * 첫 단어에서는
+     * 공격/한방을 피하고
+     * 무난한 단어를 선택.
+     */
     word =
       safe[
         Math.floor(
@@ -2462,13 +2489,10 @@ function aiFirstTurn() {
       );
 
     if (!list.length) {
+
       finish(false);
       return;
     }
-
-    /*
-     * 공격/한방 제외
-     */
 
     const normal =
       list.filter(
@@ -2528,6 +2552,7 @@ function finish(aiWon) {
     turn;
 
   saveStats();
+
   updateStats();
 
   $('message').textContent =
@@ -2541,6 +2566,7 @@ function finish(aiWon) {
 ========================================================= */
 
 function esc(s) {
+
   return String(s).replace(
     /[&<>"']/g,
     c =>
