@@ -169,12 +169,13 @@ console.log(
 );
 
 /* =========================================================
-   공격 단어
+   공격 단어 (attack.txt 검증 강화)
 ========================================================= */
 
 console.log('game.js: attack.txt 읽는 중...');
 
 const attackDepth = new Map();
+const validAttackWords = new Set(); // Phase 1: 검증된 공격 단어만 저장
 
 if (fs.existsSync(ATTACK_FILE)) {
   const attackLines = fs
@@ -217,10 +218,15 @@ if (fs.existsSync(ATTACK_FILE)) {
       .filter(Boolean);
 
     for (const word of attackWords) {
+      // Phase 1: word.txt에 실제로 존재하는지 검증
       if (!wordSet.has(word)) {
+        console.warn(
+          `game.js: 공격 단어 "${word}"는 word.txt에 없습니다. 제외됨.`
+        );
         continue;
       }
 
+      validAttackWords.add(word);
       const oldDepth = attackDepth.get(word);
 
       if (
@@ -234,7 +240,7 @@ if (fs.existsSync(ATTACK_FILE)) {
 }
 
 console.log(
-  `game.js: 공격 단어 처리 완료 (${attackDepth.size}개)`
+  `game.js: 공격 단어 처리 완료 (${attackDepth.size}개 / 원본 ${validAttackWords.size}개 검증됨)`
 );
 
 /* =========================================================
@@ -294,7 +300,7 @@ function countCandidates(lastChar, used = new Set()) {
 }
 
 /* =========================================================
-   한방단어
+   한방 단어 (정확한 검증)
 ========================================================= */
 
 function isOneShot(word, used = new Set()) {
@@ -326,20 +332,6 @@ const START_FIRST = [
   '시'
 ];
 
-/*
- * 이제 시작 단어를 미리 고르지 않는다.
- *
- * 예:
- * 시작 음절 = "가"
- *
- * 플레이어:
- * 가...
- *
- * AI:
- * 가...
- *
- * 이런 방식으로 첫 단어를 직접 선택한다.
- */
 function randomStart() {
   return START_FIRST[
     Math.floor(
@@ -467,6 +459,19 @@ function getAttackDepth(word) {
 }
 
 /* =========================================================
+   공격 후보 추출 (Phase 2 용)
+========================================================= */
+
+function getAttackCandidates(lastChar, used = new Set()) {
+  const all = candidates(lastChar, used);
+  return all.filter(w => attackDepth.has(w));
+}
+
+function countAttackCandidates(lastChar, used = new Set()) {
+  return getAttackCandidates(lastChar, used).length;
+}
+
+/* =========================================================
    클라이언트 데이터
 ========================================================= */
 
@@ -478,12 +483,6 @@ function publicData() {
   }
 
   return {
-    /*
-     * words 전체를 다시 보내지 않는다.
-     *
-     * byFirst 안에 모든 단어가 있기 때문에
-     * 클라이언트에서 Set을 만들 수 있다.
-     */
     byFirst: byFirstObject,
 
     attackDepth:
@@ -506,15 +505,8 @@ const DATA = {
   wordSet,
   byFirst,
   attackDepth,
-
-  /*
-   * 기존 호환용.
-   * 이제 실제 시작 단어 목록은 사용하지 않는다.
-   */
   startPool: [],
-
   startFirst: START_FIRST,
-
   dueum: DUEUM
 };
 
@@ -547,5 +539,10 @@ module.exports = {
 
   isOneShot,
 
-  getAttackDepth
+  getAttackDepth,
+
+  // Phase 2용 추가 함수
+  getAttackCandidates,
+
+  countAttackCandidates
 };
