@@ -24,29 +24,36 @@ let losses = 0;
 let totalTurns = 0;
 
 /* =========================================================
-   두음법칙
+   최적화된 두음법칙 (Map Caching)
 ========================================================= */
 
-let DUEUM = {};
+const DUEUM_RULES = {
+  '라': ['나'], '락': ['낙'], '란': ['난'], '랄': ['날'], '람': ['남'], '랍': ['납'], '랑': ['낭'],
+  '래': ['내'], '랭': ['냉'], '렁': ['냉'], '려': ['여'], '력': ['역'], '련': ['연'],
+  '렬': ['열'], '렴': ['염'], '렵': ['엽'], '령': ['영'], '례': ['예'], '로': ['노'], '록': ['녹'],
+  '론': ['논'], '롱': ['농'], '뢰': ['뇌'], '루': ['누'], '류': ['유'], '륙': ['육'], '륜': ['윤'],
+  '률': ['율'], '륭': ['융'], '르': ['느'], '름': ['늠'], '릉': ['능'], '리': ['이'], '릭': ['익'],
+  '린': ['인'], '림': ['임'], '립': ['입'], '릿': ['잇'], '링': ['잉'], '녀': ['여'], '녁': ['역'],
+  '년': ['연'], '념': ['염'], '녑': ['엽'], '녕': ['영'], '뇨': ['요'], '뉴': ['유'],
+  '닌': ['인'], '님': ['임'], '닙': ['입'], '닢': ['잎']
+};
+
+const dueumCache = new Map();
 
 function allowedFirstChars(lastChar) {
-  if (!lastChar) {
-    return [];
-  }
+  if (!lastChar) return [];
+  if (dueumCache.has(lastChar)) return dueumCache.get(lastChar);
 
   const result = [lastChar];
-
-  const alternatives =
-    DUEUM[lastChar];
+  const alternatives = DUEUM_RULES[lastChar];
 
   if (alternatives) {
     for (const char of alternatives) {
-      if (!result.includes(char)) {
-        result.push(char);
-      }
+      if (!result.includes(char)) result.push(char);
     }
   }
 
+  dueumCache.set(lastChar, result);
   return result;
 }
 
@@ -566,6 +573,53 @@ function pickLv5Attack(list) {
 }
 
 /* =========================================================
+   최강 Lv.5 AI 선택 로직 (통합)
+========================================================= */
+
+function pickLv5Best(list) {
+  if (!list.length) return null;
+
+  // 1. 즉시 승리 가능한 한방 단어 탐색
+  const oneShot = list.find(word => isOneShot(word, used));
+  if (oneShot) return oneShot;
+
+  // 2. 이기는 공격 단어(홀수 깊이) 탐색
+  const attackList = list.filter(word => !used.has(word) && isWinningAttack(word));
+
+  if (attackList.length > 0) {
+    const evaluatedAttacks = attackList
+      .map(evaluateLv5Attack)
+      .filter(Boolean);
+
+    if (evaluatedAttacks.length > 0) {
+      evaluatedAttacks.sort((a, b) => {
+        if (b.chain !== a.chain) return b.chain - a.chain;
+        if (b.depth !== a.depth) return b.depth - a.depth;
+        return b.nextAttackCount - a.nextAttackCount;
+      });
+
+      return evaluatedAttacks[0].word;
+    }
+  }
+
+  // 3. 공격 단어가 없을 경우: 방어/루트 단어 선택 (상대 선택지 최소화)
+  const safeNormalWords = list
+    .filter(word => !used.has(word) && !isLosingAttack(word))
+    .map(word => {
+      const nextCandidatesCount = countCandidates(word.at(-1), new Set([...used, word]));
+      return { word, nextCandidatesCount };
+    });
+
+  if (safeNormalWords.length > 0) {
+    safeNormalWords.sort((a, b) => a.nextCandidatesCount - b.nextCandidatesCount);
+    return safeNormalWords[0].word;
+  }
+
+  // 4. 정말 쓸 단어가 없다면 패배 직전 남은 단어 아무거나 반환
+  return list.find(word => !used.has(word)) || null;
+}
+
+/* =========================================================
    AI 점수
 ========================================================= */
 
@@ -758,23 +812,11 @@ function aiPick() {
   ======================================================= */
 
   if (level === 5) {
-
-    /*
-     * 공격 단어가 존재한다면
-     * 무조건 홀수 깊이 공격.
-     */
-    const attackWord =
-      pickLv5Attack(list);
-
-    if (attackWord) {
-      return attackWord;
+    const bestWord = pickLv5Best(list);
+    if (bestWord) {
+      return bestWord;
     }
-
-    /*
-     * 절대 일반 단어로 내려가지 않는다.
-     *
-     * 짝수 깊이 양보 단어도 사용하지 않는다.
-     */
+    finish(false);
     return null;
   }
 
@@ -2133,460 +2175,17 @@ async function loadData() {
     const result =
       await response.json();
 
-    if (
-      !result.ready
-    ) {
-
-      throw new Error(
-        '게임 데이터가 아직 준비되지 않았습니다.'
-      );
+    if (!result.ready) {
+      throw new Error('Data not ready');
     }
 
-    data = {
-      byFirst:
-        result.byFirst || {},
+    data = result;
+    $('message').textContent = '게임 준비 완료!';
+  } catch (err) {
 
-      attackDepth:
-        result.attackDepth || {},
-
-      startFirst:
-        result.startFirst ||
-        [
-          '가',
-          '나',
-          '다',
-          '마',
-          '사',
-          '자',
-          '기',
-          '시'
-        ]
-    };
-
-    /*
-     * 클라이언트 단어 Set
-     */
-    data.wordSet =
-      new Set();
-
-    for (
-      const first
-      of Object.keys(
-        data.byFirst
-      )
-    ) {
-
-      const list =
-        data.byFirst[first] || [];
-
-      for (
-        const word
-        of list
-      ) {
-
-        data.wordSet.add(
-          word
-        );
-      }
-    }
-
-    DUEUM =
-      result.dueum || {};
-
-    loadStats();
-
-    start();
-
-  } catch (error) {
-
-    console.error(
-      '데이터 로딩 실패:',
-      error
-    );
+    console.error(err);
 
     $('message').textContent =
-      '게임 데이터를 불러오지 못했어. 잠시 후 새로고침해줘.';
-
-    setTimeout(
-      loadData,
-      1500
-    );
+      '데이터를 불러오지 못했어.';
   }
 }
-
-/* =========================================================
-   통계
-========================================================= */
-
-function saveStats() {
-
-  localStorage.kkeulStats =
-    JSON.stringify({
-      wins,
-      losses,
-      totalTurns
-    });
-}
-
-function loadStats() {
-
-  try {
-
-    const saved =
-      JSON.parse(
-        localStorage.kkeulStats ||
-        '{}'
-      );
-
-    wins =
-      Number(
-        saved.wins || 0
-      );
-
-    losses =
-      Number(
-        saved.losses || 0
-      );
-
-    totalTurns =
-      Number(
-        saved.totalTurns || 0
-      );
-
-  } catch {
-
-    wins = 0;
-    losses = 0;
-    totalTurns = 0;
-  }
-
-  updateStats();
-}
-
-function updateStats() {
-
-  const games =
-    wins + losses;
-
-  $('wins').textContent =
-    wins;
-
-  $('losses').textContent =
-    losses;
-
-  $('games').textContent =
-    games;
-
-  $('winrate').textContent =
-    games
-      ? Math.round(
-          wins /
-          games *
-          100
-        ) + '%'
-      : '0%';
-
-  $('avg').textContent =
-    games
-      ? (
-          totalTurns /
-          games
-        ).toFixed(1) +
-        '턴'
-      : '-';
-}
-
-/* =========================================================
-   기록
-========================================================= */
-
-function addHistory(
-  who,
-  word
-) {
-
-  const depth =
-    attack()[word];
-
-  $('history')
-    .insertAdjacentHTML(
-      'beforeend',
-      `
-        <div class="line">
-          <b>${esc(who)}</b> · ${esc(word)}
-          ${
-            depth != null
-              ? `<span class="attack">(공격 깊이 ${depth})</span>`
-              : ''
-          }
-        </div>
-      `
-    );
-
-  $('history').scrollTop =
-    $('history').scrollHeight;
-}
-
-/* =========================================================
-   게임 시작
-========================================================= */
-
-function start() {
-
-  if (!data) {
-    return;
-  }
-
-  used.clear();
-
-  current = '';
-
-  startChar =
-    data.startFirst[
-      Math.floor(
-        Math.random() *
-        data.startFirst.length
-      )
-    ];
-
-  turn = 0;
-
-  over = false;
-
-  playerTurn =
-    Math.random() < 0.5;
-
-  $('history').innerHTML =
-    '';
-
-  $('singleInput').disabled =
-    !playerTurn;
-
-  $('singleSend').disabled =
-    !playerTurn;
-
-  $('startWord').value =
-    startChar;
-
-  $('last').textContent =
-    startChar;
-
-  $('turn').textContent =
-    '0';
-
-  $('depth').textContent =
-    '-';
-
-  addHistory(
-    '시작 음절',
-    startChar
-  );
-
-  if (playerTurn) {
-
-    $('message').textContent =
-      `시작 음절은 '${startChar}'. ${startChar}으로 시작하는 단어를 입력해!`;
-
-    $('singleInput').focus();
-
-  } else {
-
-    $('message').textContent =
-      `시작 음절은 '${startChar}'. AI가 먼저 생각 중...`;
-
-    setTimeout(
-      aiFirstTurn,
-      350
-    );
-  }
-}
-
-/* =========================================================
-   첫 단어 AI 후보
-========================================================= */
-
-function aiFirstCandidates() {
-
-  const list =
-    candidates(
-      startChar,
-      new Set()
-    );
-
-  return list.filter(
-    word => {
-
-      /*
-       * 첫 단어 공격 금지
-       */
-      if (
-        attack()[word] != null
-      ) {
-        return false;
-      }
-
-      /*
-       * 한방 금지
-       */
-      if (
-        isOneShot(
-          word,
-          new Set()
-        )
-      ) {
-        return false;
-      }
-
-      const nextUsed =
-        new Set([word]);
-
-      return (
-        countCandidates(
-          word.at(-1),
-          nextUsed
-        ) >= 5
-      );
-    }
-  );
-}
-
-/* =========================================================
-   첫 단어 AI
-========================================================= */
-
-function aiFirstTurn() {
-
-  if (over) {
-    return;
-  }
-
-  const safe =
-    aiFirstCandidates();
-
-  let word = null;
-
-  if (safe.length) {
-
-    /*
-     * 첫 단어에서는
-     * 공격/한방을 피하고
-     * 무난한 단어를 선택.
-     */
-    word =
-      safe[
-        Math.floor(
-          Math.random() *
-          safe.length
-        )
-      ];
-
-  } else {
-
-    const list =
-      candidates(
-        startChar,
-        new Set()
-      );
-
-    if (!list.length) {
-
-      finish(false);
-      return;
-    }
-
-    const normal =
-      list.filter(
-        x =>
-          attack()[x] == null &&
-          !isOneShot(
-            x,
-            new Set()
-          )
-      );
-
-    word =
-      (
-        normal.length
-          ? normal
-          : list
-      )[
-        Math.floor(
-          Math.random() *
-          (
-            normal.length
-              ? normal.length
-              : list.length
-          )
-        )
-      ];
-  }
-
-  playAiWord(word);
-}
-
-/* =========================================================
-   AI 종료
-========================================================= */
-
-function finish(aiWon) {
-
-  if (over) {
-    return;
-  }
-
-  over = true;
-
-  $('singleInput').disabled =
-    true;
-
-  $('singleSend').disabled =
-    true;
-
-  if (aiWon) {
-    wins++;
-  } else {
-    losses++;
-  }
-
-  totalTurns +=
-    turn;
-
-  saveStats();
-
-  updateStats();
-
-  $('message').textContent =
-    aiWon
-      ? 'AI 승리!'
-      : '플레이어 승리!';
-}
-
-/* =========================================================
-   HTML escape
-========================================================= */
-
-function esc(s) {
-
-  return String(s).replace(
-    /[&<>"']/g,
-    c =>
-      ({
-        '&':
-          '&amp;',
-        '<':
-          '&lt;',
-        '>':
-          '&gt;',
-        '"':
-          '&quot;',
-        "'":
-          '&#039;'
-      }[c])
-  );
-}
-
-/* =========================================================
-   시작
-========================================================= */
-
-loadData();
