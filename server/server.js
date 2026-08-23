@@ -1,849 +1,330 @@
-const path = require('path');
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
+const express = require("express");
+const http = require("http");
+const path = require("path");
+const fs = require("fs");
+const { Server } = require("socket.io");
 
-console.log('서버 시작');
+const {
+  normalizeWord,
+  canConnect,
+  isValidWord,
+  createGame,
+  playWord
+} = require("../game");
 
 const app = express();
 const server = http.createServer(app);
+const io = new Server(server);
 
-const io = new Server(server, {
-  cors: {
-    origin: true,
-    methods: ['GET', 'POST']
+const PORT = process.env.PORT || 3000;
+
+const ROOT = path.join(__dirname, "..");
+const WORD_FILE = path.join(ROOT, "word.txt");
+
+let words = new Set();
+
+function loadWords() {
+  if (!fs.existsSync(WORD_FILE)) {
+    console.error("word.txt를 찾을 수 없습니다.");
+    process.exit(1);
   }
-});
 
-const PORT = Number(
-  process.env.PORT || 3000
-);
+  const text = fs.readFileSync(WORD_FILE, "utf8");
 
-let game = null;
-let gameLoading = true;
-
-/* =========================================================
-   정적 파일
-========================================================= */
-
-app.use(
-  express.static(
-    path.join(
-      __dirname,
-      '..',
-      'client'
-    )
-  )
-);
-
-/* =========================================================
-   기본 페이지
-========================================================= */
-
-app.get('/', (_req, res) => {
-  res.sendFile(
-    path.join(
-      __dirname,
-      '..',
-      'client',
-      'index.html'
-    )
+  words = new Set(
+    text
+      .split(/\r?\n/)
+      .map(v => normalizeWord(v))
+      .filter(Boolean)
   );
-});
 
-/* =========================================================
-   게임 상태
-========================================================= */
+  console.log(`단어 ${words.size.toLocaleString()}개 로드 완료`);
+}
 
-app.get('/api/info', (_req, res) => {
-  if (gameLoading || !game) {
-    return res.status(503).json({
-      ready: false,
-      message:
-        '게임 데이터를 준비하는 중입니다.'
-    });
-  }
+loadWords();
 
+app.use(express.static(ROOT));
+
+app.get("/health", (req, res) => {
   res.json({
-    ready: true,
-    wordCount:
-      game.DATA.words.length,
-    attackCount:
-      game.DATA.attackDepth.size,
-    startCount:
-      game.DATA.startFirst.length
+    ok: true,
+    words: words.size
   });
 });
 
-/* =========================================================
-   데이터 API
-========================================================= */
-
-app.get('/api/data', (_req, res) => {
-  if (gameLoading || !game) {
-    return res.status(503).json({
-      ready: false,
-      message:
-        '게임 데이터를 준비하는 중입니다.'
-    });
-  }
-
-  const byFirst = {};
-
-  for (
-    const [first, list]
-    of game.DATA.byFirst.entries()
-  ) {
-    byFirst[first] = list;
-  }
-
-  res.json({
-    ready: true,
-
-    byFirst,
-
-    attackDepth:
-      Object.fromEntries(
-        game.DATA.attackDepth
-      ),
-
-    startFirst:
-      game.DATA.startFirst,
-
-    dueum:
-      game.DATA.dueum
-  });
+app.get("/", (req, res) => {
+  res.sendFile(path.join(ROOT, "index.html"));
 });
-
-/* =========================================================
-   방 관리
-========================================================= */
 
 const rooms = new Map();
 
-function generateRoomCode() {
+function makeRoomCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
   let code;
 
   do {
-    code = Math.random()
-      .toString(36)
-      .slice(2, 8)
-      .toUpperCase();
+    code = "";
+
+    for (let i = 0; i < 6; i++) {
+      code += chars[Math.floor(Math.random() * chars.length)];
+    }
   } while (rooms.has(code));
 
   return code;
 }
 
-function getRoomState(room) {
+function getRoom(socket) {
+  if (!socket.roomCode) return null;
+  return rooms.get(socket.roomCode) || null;
+}
+
+function roomState(room) {
   return {
-    roomCode:
-      room.code,
-
-    players:
-      room.players.map(
-        player => ({
-          id: player.id,
-          name: player.name,
-          slot: player.slot
-        })
-      ),
-
-    started:
-      room.started,
-
-    current:
-      room.current,
-
-    startChar:
-      room.startChar,
-
-    turn:
-      room.turn,
-
-    turnPlayer:
-      room.turnPlayer,
-
-    firstPlayer:
-      room.firstPlayer,
-
-    lastDepth:
-      room.current && game
-        ? game.getAttackDepth(
-            room.current
-          )
-        : null
+    code: room.code,
+    started: room.started,
+    players: room.players.map(player => ({
+      id: player.id,
+      name: player.name
+    })),
+    turn: room.game ? room.game.turn : 0,
+    currentWord: room.game ? room.game.currentWord : null,
+    history: room.game ? room.game.history : []
   };
 }
 
 function broadcastRoom(room) {
-  io.to(room.code).emit(
-    'room_state',
-    getRoomState(room)
-  );
+  io.to(room.code).emit("roomState", roomState(room));
 }
 
-function leaveRoom(socket) {
-  const roomCode =
-    socket.data.room;
+function removePlayerFromRoom(socket) {
+  const room = getRoom(socket);
 
-  if (!roomCode) {
-    return;
-  }
+  if (!room) return;
 
-  const room =
-    rooms.get(roomCode);
-
-  if (!room) {
-    socket.data.room = null;
-    return;
-  }
-
-  room.players =
-    room.players.filter(
-      player =>
-        player.id !==
-        socket.id
-    );
-
-  socket.leave(
-    room.code
-  );
-
-  socket.data.room =
-    null;
+  room.players = room.players.filter(p => p.id !== socket.id);
 
   if (room.players.length === 0) {
-    rooms.delete(
-      room.code
-    );
-
+    rooms.delete(room.code);
     return;
   }
 
-  /*
-   * 한 명만 남으면 게임 초기화
-   */
   room.started = false;
-  room.current = null;
-  room.startChar = null;
-  room.used = new Set();
-  room.turn = 0;
-  room.turnPlayer = null;
-  room.firstPlayer = null;
+  room.game = null;
 
-  broadcastRoom(room);
+  for (const player of room.players) {
+    const other = io.sockets.sockets.get(player.id);
 
-  io.to(room.code).emit(
-    'notice',
-    '상대방이 방을 나갔습니다.'
-  );
+    if (other) {
+      other.roomCode = null;
+      other.emit("roomClosed");
+    }
+  }
+
+  rooms.delete(room.code);
 }
 
-/* =========================================================
-   게임 시작
-========================================================= */
+io.on("connection", socket => {
+  console.log("접속:", socket.id);
 
-function startRoomGame(room) {
-  if (!game) {
-    return {
-      error:
-        '게임 데이터를 아직 준비하는 중입니다.'
+  socket.on("createRoom", data => {
+    if (socket.roomCode) {
+      socket.emit("errorMessage", "이미 방에 참가하고 있습니다.");
+      return;
+    }
+
+    const name =
+      typeof data?.name === "string" && data.name.trim()
+        ? data.name.trim().slice(0, 20)
+        : "Player";
+
+    const code = makeRoomCode();
+
+    const room = {
+      code,
+      players: [
+        {
+          id: socket.id,
+          name
+        }
+      ],
+      started: false,
+      game: null
     };
-  }
 
-  if (room.players.length !== 2) {
-    return {
-      error:
-        '두 명이 모두 들어와야 시작할 수 있습니다.'
-    };
-  }
+    rooms.set(code, room);
 
-  const startChar =
-    game.randomStart();
+    socket.join(code);
+    socket.roomCode = code;
 
-  room.started = true;
-
-  room.current = null;
-
-  room.startChar =
-    startChar;
-
-  room.used = new Set();
-
-  room.turn = 0;
-
-  const firstIndex =
-    Math.floor(
-      Math.random() *
-      room.players.length
-    );
-
-  room.firstPlayer =
-    room.players[firstIndex].id;
-
-  room.turnPlayer =
-    room.players[firstIndex].id;
-
-  return {
-    startChar,
-
-    firstPlayer:
-      room.firstPlayer
-  };
-}
-
-/* =========================================================
-   Socket.IO
-========================================================= */
-
-io.on(
-  'connection',
-  socket => {
-
-    console.log(
-      `클라이언트 접속: ${socket.id}`
-    );
-
-    socket.data.room = null;
-    socket.data.lastPlayTime = 0; // Phase 4: 빠른 클릭 방지
-
-    /* =====================================================
-       방 생성
-    ===================================================== */
-
-    socket.on(
-      'create_room',
-      ({ name }) => {
-
-        leaveRoom(socket);
-
-        const roomCode =
-          generateRoomCode();
-
-        const playerName =
-          String(
-            name || 'Player 1'
-          )
-            .trim()
-            .slice(0, 20) ||
-          'Player 1';
-
-        const room = {
-          code:
-            roomCode,
-
-          players: [
-            {
-              id:
-                socket.id,
-
-              name:
-                playerName,
-
-              slot: 1
-            }
-          ],
-
-          started:
-            false,
-
-          current:
-            null,
-
-          startChar:
-            null,
-
-          used:
-            new Set(),
-
-          turn:
-            0,
-
-          turnPlayer:
-            null,
-
-          firstPlayer:
-            null
-        };
-
-        rooms.set(
-          roomCode,
-          room
-        );
-
-        socket.data.room =
-          roomCode;
-
-        socket.join(
-          roomCode
-        );
-
-        socket.emit(
-          'room_created',
-          {
-            code:
-              roomCode
-          }
-        );
-
-        broadcastRoom(
-          room
-        );
-
-        console.log(
-          `${playerName}님이 방 생성: ${roomCode}`
-        );
-      }
-    );
-
-    /* =====================================================
-       방 참가
-    ===================================================== */
-
-    socket.on(
-      'join_room',
-      ({ code, name }) => {
-
-        const roomCode =
-          String(
-            code || ''
-          )
-            .trim()
-            .toUpperCase();
-
-        const room =
-          rooms.get(
-            roomCode
-          );
-
-        if (!room) {
-          socket.emit(
-            'error_msg',
-            '방을 찾을 수 없습니다.'
-          );
-
-          return;
-        }
-
-        if (
-          room.players.length >= 2
-        ) {
-          socket.emit(
-            'error_msg',
-            '방이 가득 찼습니다.'
-          );
-
-          return;
-        }
-
-        leaveRoom(socket);
-
-        const playerName =
-          String(
-            name || 'Player 2'
-          )
-            .trim()
-            .slice(0, 20) ||
-          'Player 2';
-
-        room.players.push({
-          id:
-            socket.id,
-
-          name:
-            playerName,
-
-          slot: 2
-        });
-
-        socket.data.room =
-          roomCode;
-
-        socket.join(
-          roomCode
-        );
-
-        broadcastRoom(
-          room
-        );
-
-        io.to(
-          roomCode
-        ).emit(
-          'notice',
-          `${playerName}님이 입장했습니다.`
-        );
-
-        console.log(
-          `${playerName}님이 방 참가: ${roomCode}`
-        );
-      }
-    );
-
-    /* =====================================================
-       온라인 게임 시작
-    ===================================================== */
-
-    socket.on(
-      'start_online',
-      () => {
-
-        const room =
-          rooms.get(
-            socket.data.room
-          );
-
-        if (!room) {
-          socket.emit(
-            'error_msg',
-            '방에 먼저 참가하세요.'
-          );
-
-          return;
-        }
-
-        if (!game) {
-          socket.emit(
-            'error_msg',
-            '게임 데이터를 준비하는 중입니다.'
-          );
-
-          return;
-        }
-
-        if (
-          room.players.length !== 2
-        ) {
-          socket.emit(
-            'error_msg',
-            '두 명이 모두 들어와야 시작할 수 있습니다.'
-          );
-
-          return;
-        }
-
-        if (
-          room.players[0].id !==
-          socket.id
-        ) {
-          socket.emit(
-            'error_msg',
-            '방장만 게임을 시작할 수 있습니다.'
-          );
-
-          return;
-        }
-
-        if (room.started) {
-          socket.emit(
-            'error_msg',
-            '이미 게임이 진행 중입니다.'
-          );
-
-          return;
-        }
-
-        const result =
-          startRoomGame(room);
-
-        if (result.error) {
-          socket.emit(
-            'error_msg',
-            result.error
-          );
-
-          return;
-        }
-
-        io.to(
-          room.code
-        ).emit(
-          'game_started',
-          {
-            state:
-              getRoomState(
-                room
-              ),
-
-            startChar:
-              result.startChar,
-
-            firstPlayer:
-              result.firstPlayer
-          }
-        );
-
-        console.log(
-          `게임 시작: ${room.code}, 시작 음절=${result.startChar}`
-        );
-      }
-    );
-
-    /* =====================================================
-       온라인 단어 입력 (Phase 3: 서버 검증 강화)
-    ===================================================== */
-
-    socket.on(
-      'play_word',
-      ({ word }) => {
-
-        const room =
-          rooms.get(
-            socket.data.room
-          );
-
-        if (!room) {
-          socket.emit(
-            'error_msg',
-            '방에 참가하지 않았습니다.'
-          );
-
-          return;
-        }
-
-        if (!game) {
-          socket.emit(
-            'error_msg',
-            '게임 데이터를 준비하는 중입니다.'
-          );
-
-          return;
-        }
-
-        if (!room.started) {
-          socket.emit(
-            'error_msg',
-            '진행 중인 게임이 없습니다.'
-          );
-
-          return;
-        }
-
-        if (
-          room.turnPlayer !==
-          socket.id
-        ) {
-          socket.emit(
-            'error_msg',
-            '상대방의 차례입니다.'
-          );
-
-          return;
-        }
-
-        /* Phase 4: 빠른 클릭 중복 방지 */
-        const now = Date.now();
-        if (now - socket.data.lastPlayTime < 200) {
-          socket.emit(
-            'error_msg',
-            '너무 빨리 입력했습니다.'
-          );
-          return;
-        }
-        socket.data.lastPlayTime = now;
-
-        const w =
-          String(
-            word || ''
-          ).trim();
-
-        if (!w) {
-          socket.emit(
-            'error_msg',
-            '단어를 입력해주세요.'
-          );
-
-          return;
-        }
-
-        if (w.length > 50) {
-          socket.emit(
-            'error_msg',
-            '너무 긴 단어입니다.'
-          );
-          return;
-        }
-
-        if (!/^[가-힣]+$/.test(w)) {
-          socket.emit(
-            'error_msg',
-            '한글만 입력 가능합니다.'
-          );
-          return;
-        }
-
-        let error = null;
-
-        if (!room.current) {
-          /* 첫 단어 검증 */
-          error =
-            game.validateFirstWord(
-              w,
-              room.startChar
-            );
-
-        } else {
-          /* 일반 단어 검증 */
-          error =
-            game.validateWord(
-              w,
-              room.current,
-              room.used
-            );
-        }
-
-        if (error) {
-          socket.emit(
-            'error_msg',
-            error
-          );
-
-          return;
-        }
-
-        room.used.add(w);
-
-        room.current = w;
-
-        room.turn++;
-
-        /* 상대가 이어갈 수 있는지 확인 */
-        const next =
-          game.candidates(
-            w.at(-1),
-            room.used
-          );
-
-        /* 더 이상 갈 단어가 없으면 현재 단어를 낸 사람이 승리 */
-        if (next.length === 0) {
-
-          room.started =
-            false;
-
-          io.to(
-            room.code
-          ).emit(
-            'game_over',
-            {
-              winner:
-                socket.id,
-
-              word:
-                w,
-
-              turn:
-                room.turn,
-
-              state:
-                getRoomState(
-                  room
-                )
-            }
-          );
-
-          broadcastRoom(
-            room
-          );
-
-          return;
-        }
-
-        /* 상대방으로 턴 변경 */
-        const opponent =
-          room.players.find(
-            player =>
-              player.id !==
-              socket.id
-          );
-
-        room.turnPlayer =
-          opponent
-            ? opponent.id
-            : null;
-
-        io.to(
-          room.code
-        ).emit(
-          'word_played',
-          {
-            playerId:
-              socket.id,
-
-            word:
-              w,
-
-            depth:
-              game.getAttackDepth(
-                w
-              ),
-
-            state:
-              getRoomState(
-                room
-              )
-          }
-        );
-      }
-    );
-
-    /* =====================================================
-       연결 종료
-    ===================================================== */
-
-    socket.on(
-      'disconnect',
-      () => {
-
-        console.log(
-          `클라이언트 종료: ${socket.id}`
-        );
-
-        leaveRoom(socket);
-      }
-    );
-  }
-);
-
-/* =========================================================
-   중요: 포트를 먼저 연다.
-========================================================= */
-
-server.listen(
-  PORT,
-  '0.0.0.0',
-  () => {
-
-    console.log(
-      `끝말잇기 서버가 포트 ${PORT}에서 실행 중입니다.`
-    );
-
-    setImmediate(() => {
-
-      console.log(
-        '게임 데이터 로딩 시작...'
-      );
-
-      try {
-
-        const loaded =
-          require('./game');
-
-        game = loaded;
-
-        gameLoading = false;
-
-        console.log(
-          '게임 데이터 로딩 완료'
-        );
-
-      } catch (error) {
-
-        console.error(
-          'game.js 로딩 실패:',
-          error
-        );
-
-      }
+    socket.emit("roomCreated", {
+      code
     });
-  }
-);
+
+    broadcastRoom(room);
+  });
+
+  socket.on("joinRoom", data => {
+    if (socket.roomCode) {
+      socket.emit("errorMessage", "이미 방에 참가하고 있습니다.");
+      return;
+    }
+
+    const code =
+      typeof data?.code === "string"
+        ? data.code.trim().toUpperCase()
+        : "";
+
+    const name =
+      typeof data?.name === "string" && data.name.trim()
+        ? data.name.trim().slice(0, 20)
+        : "Player";
+
+    const room = rooms.get(code);
+
+    if (!room) {
+      socket.emit("errorMessage", "존재하지 않는 방입니다.");
+      return;
+    }
+
+    if (room.players.length >= 2) {
+      socket.emit("errorMessage", "방이 가득 찼습니다.");
+      return;
+    }
+
+    room.players.push({
+      id: socket.id,
+      name
+    });
+
+    socket.join(code);
+    socket.roomCode = code;
+
+    socket.emit("joinedRoom", {
+      code
+    });
+
+    broadcastRoom(room);
+  });
+
+  socket.on("startOnline", () => {
+    const room = getRoom(socket);
+
+    if (!room) {
+      socket.emit("errorMessage", "방에 참가하지 않았습니다.");
+      return;
+    }
+
+    if (room.players.length !== 2) {
+      socket.emit("errorMessage", "플레이어 2명이 모두 들어와야 합니다.");
+      return;
+    }
+
+    if (room.players[0].id !== socket.id) {
+      socket.emit("errorMessage", "방장만 게임을 시작할 수 있습니다.");
+      return;
+    }
+
+    if (room.started) {
+      return;
+    }
+
+    room.game = createGame();
+    room.started = true;
+
+    broadcastRoom(room);
+  });
+
+  socket.on("playWord", data => {
+    const room = getRoom(socket);
+
+    if (!room) {
+      socket.emit("errorMessage", "방에 참가하지 않았습니다.");
+      return;
+    }
+
+    if (!room.started || !room.game) {
+      socket.emit("errorMessage", "게임이 시작되지 않았습니다.");
+      return;
+    }
+
+    const word = normalizeWord(data?.word);
+
+    if (!word) {
+      socket.emit("errorMessage", "단어를 입력해주세요.");
+      return;
+    }
+
+    const playerIndex = room.players.findIndex(
+      player => player.id === socket.id
+    );
+
+    if (playerIndex === -1) {
+      socket.emit("errorMessage", "플레이어 정보를 찾을 수 없습니다.");
+      return;
+    }
+
+    if (room.game.turn !== playerIndex) {
+      socket.emit("errorMessage", "지금은 당신의 차례가 아닙니다.");
+      return;
+    }
+
+    const result = playWord(room.game, word, words);
+
+    if (!result.ok) {
+      socket.emit("wordRejected", {
+        reason: result.reason
+      });
+
+      return;
+    }
+
+    io.to(room.code).emit("wordPlayed", {
+      word,
+      playerIndex,
+      currentWord: room.game.currentWord,
+      history: room.game.history,
+      nextTurn: room.game.turn
+    });
+
+    if (result.finished) {
+      room.started = false;
+
+      io.to(room.code).emit("gameFinished", {
+        winner: result.winner,
+        loser: result.loser,
+        history: room.game.history
+      });
+
+      room.game = null;
+      broadcastRoom(room);
+
+      return;
+    }
+
+    broadcastRoom(room);
+  });
+
+  socket.on("leaveRoom", () => {
+    const room = getRoom(socket);
+
+    if (!room) return;
+
+    socket.leave(room.code);
+    removePlayerFromRoom(socket);
+  });
+
+  socket.on("disconnect", () => {
+    console.log("접속 종료:", socket.id);
+
+    const room = getRoom(socket);
+
+    if (!room) return;
+
+    removePlayerFromRoom(socket);
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`서버 실행: http://localhost:${PORT}`);
+});
