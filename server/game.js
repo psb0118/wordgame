@@ -1,19 +1,22 @@
+# game.js
+
+```js
 "use strict";
 
 /*
-  끝말잇기 공통 게임 로직
+ * 끝말잇기 공통 게임 엔진
+ *
+ * word.txt
+ *   실제 사용 가능한 전체 단어 목록
+ *
+ * attack.txt
+ *   현재 AI를 제거했으므로 게임 판정에 사용하지 않음
+ */
 
-  word.txt
-  └─ 실제 사용 가능한 전체 단어 목록
 
-  attack.txt
-  └─ AI 제거 이후 게임 판정에는 사용하지 않음
-*/
-
-
-/* =========================
-   단어 정규화
-========================= */
+/* =========================================================
+   기본 처리
+========================================================= */
 
 function normalizeWord(word) {
   if (typeof word !== "string") {
@@ -27,100 +30,70 @@ function normalizeWord(word) {
 }
 
 
-/* =========================
+/* =========================================================
    두음법칙
-========================= */
-
-const DUEUM = {
-  "녀": ["녀", "여"],
-  "년": ["년", "연"],
-  "녈": ["녈", "열"],
-  "녹": ["녹", "록"],
-  "논": ["논", "론"],
-  "뇌": ["뇌", "뇌"],
-  "뇨": ["뇨", "요"],
-  "뉴": ["뉴", "유"],
-  "니": ["니", "이"],
-
-  "랴": ["랴", "야"],
-  "려": ["려", "여"],
-  "례": ["례", "예"],
-  "료": ["료", "요"],
-  "류": ["류", "유"],
-  "리": ["리", "이"],
-
-  "라": ["라", "나"],
-  "래": ["래", "내"],
-  "로": ["로", "노"],
-  "뢰": ["뢰", "뇌"],
-  "루": ["루", "누"],
-  "르": ["르", "느"],
-
-  "랴": ["랴", "야"],
-  "려": ["려", "여"],
-  "례": ["례", "예"],
-  "료": ["료", "요"],
-  "류": ["류", "유"],
-
-  "마": ["마"],
-  "바": ["바"],
-  "사": ["사"],
-  "아": ["아"],
-  "자": ["자"],
-  "차": ["차"],
-  "카": ["카"],
-  "타": ["타"],
-  "파": ["파"],
-  "하": ["하"]
-};
-
+========================================================= */
 
 /*
-  끝 글자에서 실제로 허용되는 시작 글자 목록.
+ * 서버의 /api/data에서 실제 DUEUM 데이터를 받을 수 있도록
+ * game.js 자체에서는 외부 두음 데이터를 주입받는다.
+ *
+ * dueum 형식:
+ *
+ * {
+ *   "녀": ["여"],
+ *   "년": ["연"],
+ *   ...
+ * }
+ */
 
-  기본적으로는 동일 음절.
-  두음법칙이 적용되는 경우 변환된 음절도 허용.
-*/
-
-function getConnectableInitials(lastChar) {
-  const result = new Set();
-
+function allowedFirstChars(lastChar, dueum = {}) {
   if (!lastChar) {
-    return result;
+    return [];
   }
+
+  const result = new Set();
 
   result.add(lastChar);
 
-  const mapped = DUEUM[lastChar];
+  const alternatives = dueum[lastChar];
 
-  if (mapped) {
-    for (const value of mapped) {
-      result.add(value);
+  if (Array.isArray(alternatives)) {
+    for (const char of alternatives) {
+      if (char) {
+        result.add(char);
+      }
     }
   }
 
   /*
-    역방향도 허용.
-    예:
-      녀 -> 여
-      여 -> 녀
-  */
+   * 역방향도 지원한다.
+   *
+   * 예:
+   * DUEUM["녀"] = ["여"]
+   *
+   * 마지막 글자가 "여"인 경우에도
+   * 필요하면 "녀"를 허용한다.
+   */
+  for (const [from, values] of Object.entries(dueum)) {
+    if (!Array.isArray(values)) {
+      continue;
+    }
 
-  for (const [from, values] of Object.entries(DUEUM)) {
     if (values.includes(lastChar)) {
       result.add(from);
     }
   }
 
-  return result;
+  return [...result];
 }
 
 
-/* =========================
-   연결 가능 여부
-========================= */
+/* =========================================================
+   연결 검사
+========================================================= */
 
-function canConnect(previousWord, nextWord) {
+function canConnect(previousWord, nextWord, dueum = {}) {
   previousWord = normalizeWord(previousWord);
   nextWord = normalizeWord(nextWord);
 
@@ -131,17 +104,18 @@ function canConnect(previousWord, nextWord) {
   const lastChar = previousWord.at(-1);
   const firstChar = nextWord.at(0);
 
-  const allowed = getConnectableInitials(lastChar);
-
-  return allowed.has(firstChar);
+  return allowedFirstChars(
+    lastChar,
+    dueum
+  ).includes(firstChar);
 }
 
 
-/* =========================
-   단어 존재 여부
-========================= */
+/* =========================================================
+   단어 목록 검사
+========================================================= */
 
-function isValidWord(word, words) {
+function hasWord(word, words) {
   word = normalizeWord(word);
 
   if (!word || !words) {
@@ -160,19 +134,70 @@ function isValidWord(word, words) {
 }
 
 
-/* =========================
+/* =========================================================
+   후보 검색
+========================================================= */
+
+function getCandidates(
+  previousWord,
+  usedWords,
+  words,
+  dueum = {}
+) {
+  const result = [];
+
+  previousWord = normalizeWord(previousWord);
+
+  if (!previousWord || !words) {
+    return result;
+  }
+
+  const used =
+    usedWords instanceof Set
+      ? usedWords
+      : new Set(usedWords || []);
+
+  const source =
+    words instanceof Set
+      ? words
+      : new Set(words);
+
+  const allowed =
+    new Set(
+      allowedFirstChars(
+        previousWord.at(-1),
+        dueum
+      )
+    );
+
+  for (const word of source) {
+    if (used.has(word)) {
+      continue;
+    }
+
+    if (!allowed.has(word.at(0))) {
+      continue;
+    }
+
+    result.push(word);
+  }
+
+  return result;
+}
+
+
+/* =========================================================
    게임 생성
-========================= */
+========================================================= */
 
 function createGame() {
   return {
     currentWord: null,
 
     /*
-      0 = 첫 번째 플레이어
-      1 = 두 번째 플레이어
-    */
-
+     * 0 = 첫 번째 플레이어
+     * 1 = 두 번째 플레이어
+     */
     turn: 0,
 
     history: [],
@@ -188,15 +213,27 @@ function createGame() {
 }
 
 
-/* =========================
-   단어 입력
-========================= */
+/* =========================================================
+   단어 플레이
+========================================================= */
 
-function playWord(game, word, words) {
-  if (!game || game.finished) {
+function playWord(
+  game,
+  word,
+  words,
+  dueum = {}
+) {
+  if (!game) {
     return {
       ok: false,
-      reason: "게임이 끝났습니다."
+      reason: "게임 정보를 찾을 수 없습니다."
+    };
+  }
+
+  if (game.finished) {
+    return {
+      ok: false,
+      reason: "이미 끝난 게임입니다."
     };
   }
 
@@ -210,11 +247,11 @@ function playWord(game, word, words) {
   }
 
 
-  /* -------------------------
-     단어 목록 검사
-  ------------------------- */
+  /* ---------------------------------------------------------
+     단어 목록
+  --------------------------------------------------------- */
 
-  if (!isValidWord(word, words)) {
+  if (!hasWord(word, words)) {
     return {
       ok: false,
       reason: "단어 목록에 없는 단어입니다."
@@ -222,9 +259,9 @@ function playWord(game, word, words) {
   }
 
 
-  /* -------------------------
-     중복 검사
-  ------------------------- */
+  /* ---------------------------------------------------------
+     중복
+  --------------------------------------------------------- */
 
   if (game.usedWords.has(word)) {
     return {
@@ -234,25 +271,41 @@ function playWord(game, word, words) {
   }
 
 
-  /* -------------------------
-     연결 검사
-  ------------------------- */
+  /* ---------------------------------------------------------
+     연결
+  --------------------------------------------------------- */
 
   if (
     game.currentWord &&
-    !canConnect(game.currentWord, word)
+    !canConnect(
+      game.currentWord,
+      word,
+      dueum
+    )
   ) {
+    const last =
+      game.currentWord.at(-1);
+
+    const allowed =
+      allowedFirstChars(
+        last,
+        dueum
+      );
+
     return {
       ok: false,
       reason:
-        `"${game.currentWord.at(-1)}"으로 시작할 수 없는 단어입니다.`
+        allowed.length > 1
+          ? `"${last}" 다음에는 ${allowed.join(", ")}으로 시작해야 합니다.`
+          : `"${last}"으로 시작해야 합니다.`,
+      allowed
     };
   }
 
 
-  /* -------------------------
-     단어 등록
-  ------------------------- */
+  /* ---------------------------------------------------------
+     등록
+  --------------------------------------------------------- */
 
   const playerIndex = game.turn;
 
@@ -267,28 +320,29 @@ function playWord(game, word, words) {
   });
 
 
-  /* -------------------------
-     다음 턴
-  ------------------------- */
+  /* ---------------------------------------------------------
+     다음 플레이어
+  --------------------------------------------------------- */
 
-  game.turn = game.turn === 0 ? 1 : 0;
+  game.turn =
+    game.turn === 0
+      ? 1
+      : 0;
 
 
-  /* -------------------------
-     막힌 단어인지 검사
+  /* ---------------------------------------------------------
+     다음 플레이어가 낼 수 있는 단어 검사
+  --------------------------------------------------------- */
 
-     현재 플레이어가 단어를 낸 뒤
-     다음 플레이어가 연결할 단어가
-     하나도 없다면 다음 플레이어가 패배.
-  ------------------------- */
+  const nextCandidates =
+    getCandidates(
+      word,
+      game.usedWords,
+      words,
+      dueum
+    );
 
-  const nextWords = getCandidates(
-    game.currentWord,
-    game.usedWords,
-    words
-  );
-
-  if (nextWords.length === 0) {
+  if (nextCandidates.length === 0) {
     game.finished = true;
 
     game.winner = playerIndex;
@@ -313,41 +367,9 @@ function playWord(game, word, words) {
 }
 
 
-/* =========================
-   후보 단어 검색
-========================= */
-
-function getCandidates(previousWord, usedWords, words) {
-  const result = [];
-
-  if (!previousWord || !words) {
-    return result;
-  }
-
-  const source =
-    words instanceof Set
-      ? words
-      : new Set(words);
-
-  for (const word of source) {
-    if (usedWords && usedWords.has(word)) {
-      continue;
-    }
-
-    if (!canConnect(previousWord, word)) {
-      continue;
-    }
-
-    result.push(word);
-  }
-
-  return result;
-}
-
-
-/* =========================
-   게임 상태 복사
-========================= */
+/* =========================================================
+   공개 상태
+========================================================= */
 
 function getPublicGameState(game) {
   if (!game) {
@@ -355,33 +377,43 @@ function getPublicGameState(game) {
   }
 
   return {
-    currentWord: game.currentWord,
-    turn: game.turn,
-    history: game.history.map(item => ({
-      word: item.word,
-      player: item.player,
-      turn: item.turn
-    })),
-    finished: game.finished,
-    winner: game.winner,
-    loser: game.loser
+    currentWord:
+      game.currentWord,
+
+    turn:
+      game.turn,
+
+    history:
+      game.history.map(item => ({
+        word: item.word,
+        player: item.player,
+        turn: item.turn
+      })),
+
+    finished:
+      game.finished,
+
+    winner:
+      game.winner,
+
+    loser:
+      game.loser
   };
 }
 
 
-/* =========================
-   브라우저 / Node 공통 사용
-========================= */
+/* =========================================================
+   exports
+========================================================= */
 
-if (typeof module !== "undefined") {
-  module.exports = {
-    normalizeWord,
-    canConnect,
-    isValidWord,
-    createGame,
-    playWord,
-    getCandidates,
-    getPublicGameState,
-    getConnectableInitials
-  };
-}
+module.exports = {
+  normalizeWord,
+  allowedFirstChars,
+  canConnect,
+  hasWord,
+  getCandidates,
+  createGame,
+  playWord,
+  getPublicGameState
+};
+```
