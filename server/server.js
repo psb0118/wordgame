@@ -1,5 +1,3 @@
-"use strict";
-
 const express = require("express");
 const http = require("http");
 const path = require("path");
@@ -26,7 +24,7 @@ const io =
   new Server(server);
 
 const PORT =
-  process.env.PORT || 3000;
+  Number(process.env.PORT) || 3000;
 
 const ROOT =
   path.join(__dirname, "..");
@@ -38,14 +36,6 @@ const WORD_FILE =
 /* =========================================================
    두음법칙
 ========================================================= */
-
-/*
- * 기존 프로젝트의 /api/data 구조와 맞춰서
- * 클라이언트에도 그대로 전달한다.
- *
- * 프로젝트에서 기존 DUEUM 데이터를 별도 파일로 관리하고
- * 있다면 여기의 객체 대신 그 데이터를 읽으면 된다.
- */
 
 const DUEUM = {
   "녀": ["여"],
@@ -78,8 +68,8 @@ const DUEUM = {
 ========================================================= */
 
 let WORDS = new Set();
+let BY_FIRST = Object.create(null);
 
-let BY_FIRST = {};
 
 function loadWords() {
   if (!fs.existsSync(WORD_FILE)) {
@@ -105,7 +95,8 @@ function loadWords() {
         .filter(Boolean)
     );
 
-  BY_FIRST = {};
+  BY_FIRST =
+    Object.create(null);
 
   for (const word of WORDS) {
     const first =
@@ -122,10 +113,9 @@ function loadWords() {
     BY_FIRST[first].push(word);
   }
 
-  /*
-   * 가나다순 정렬
-   */
-  for (const first of Object.keys(BY_FIRST)) {
+  for (
+    const first of Object.keys(BY_FIRST)
+  ) {
     BY_FIRST[first].sort(
       (a, b) =>
         a.localeCompare(
@@ -140,92 +130,8 @@ function loadWords() {
   );
 }
 
+
 loadWords();
-
-
-/* =========================================================
-   정적 파일
-========================================================= */
-
-app.use(
-  express.static(ROOT)
-);
-
-app.get(
-  "/",
-  (req, res) => {
-    res.sendFile(
-      path.join(
-        ROOT,
-        "index.html"
-      )
-    );
-  }
-);
-
-
-/* =========================================================
-   데이터 API
-========================================================= */
-
-app.get(
-  "/api/data",
-  (req, res) => {
-    res.json({
-      ready: true,
-
-      /*
-       * 전체 단어를 클라이언트에
-       * 한 번에 보내지 않고 첫 글자별로 제공
-       */
-      byFirst: BY_FIRST,
-
-      /*
-       * 기존 script.js 호환
-       *
-       * 이제 공격 AI는 사용하지 않지만
-       * 기존 프론트가 해당 필드를 참조해도
-       * 오류가 나지 않도록 빈 객체를 전달한다.
-       */
-      attackDepth: {},
-
-      /*
-       * 기존 프로젝트의 시작 글자 구조 유지
-       */
-      startFirst: [
-        "가",
-        "나",
-        "다",
-        "마",
-        "사",
-        "자",
-        "기",
-        "시"
-      ],
-
-      dueum: DUEUM,
-
-      wordCount:
-        WORDS.size
-    });
-  }
-);
-
-
-/* =========================================================
-   Health Check
-========================================================= */
-
-app.get(
-  "/health",
-  (req, res) => {
-    res.json({
-      ok: true,
-      words: WORDS.size,
-      rooms: rooms.size
-    });
-  }
-);
 
 
 /* =========================================================
@@ -254,7 +160,6 @@ function makeRoomCode() {
           )
         ];
     }
-
   } while (
     rooms.has(code)
   );
@@ -282,7 +187,8 @@ function getRoom(socket) {
 
 function getRoomState(room) {
   return {
-    code: room.code,
+    code:
+      room.code,
 
     started:
       room.started,
@@ -324,7 +230,7 @@ function broadcastRoom(room) {
 
 
 /* =========================================================
-   플레이어 제거
+   방 나가기
 ========================================================= */
 
 function leaveRoom(socket) {
@@ -341,24 +247,31 @@ function leaveRoom(socket) {
         player.id !== socket.id
     );
 
-  socket.leave(room.code);
+  socket.leave(
+    room.code
+  );
 
   socket.roomCode =
     null;
 
-  /*
-   * 아무도 없으면 방 삭제
-   */
+
+  // 방에 아무도 없으면 삭제
   if (room.players.length === 0) {
-    rooms.delete(room.code);
+    rooms.delete(
+      room.code
+    );
+
     return;
   }
 
-  /*
-   * 한 명만 남으면 게임 종료
-   */
-  room.started = false;
-  room.game = null;
+
+  // 한 명만 남으면 게임 종료
+  room.started =
+    false;
+
+  room.game =
+    null;
+
 
   const remaining =
     room.players[0];
@@ -368,6 +281,7 @@ function leaveRoom(socket) {
       remaining.id
     );
 
+
   if (remainingSocket) {
     remainingSocket.emit(
       "roomMessage",
@@ -375,8 +289,84 @@ function leaveRoom(socket) {
     );
   }
 
+
   broadcastRoom(room);
 }
+
+
+/* =========================================================
+   정적 파일
+========================================================= */
+
+app.use(
+  express.static(ROOT)
+);
+
+
+app.get(
+  "/",
+  (req, res) => {
+    res.sendFile(
+      path.join(
+        ROOT,
+        "index.html"
+      )
+    );
+  }
+);
+
+
+/* =========================================================
+   데이터 API
+========================================================= */
+
+app.get(
+  "/api/data",
+  (req, res) => {
+    res.json({
+      ready: true,
+
+      byFirst:
+        BY_FIRST,
+
+      attackDepth:
+        {},
+
+      startFirst: [
+        "가",
+        "나",
+        "다",
+        "마",
+        "사",
+        "자",
+        "기",
+        "시"
+      ],
+
+      dueum:
+        DUEUM,
+
+      wordCount:
+        WORDS.size
+    });
+  }
+);
+
+
+/* =========================================================
+   Health Check
+========================================================= */
+
+app.get(
+  "/health",
+  (req, res) => {
+    res.json({
+      ok: true,
+      words: WORDS.size,
+      rooms: rooms.size
+    });
+  }
+);
 
 
 /* =========================================================
@@ -386,7 +376,6 @@ function leaveRoom(socket) {
 io.on(
   "connection",
   socket => {
-
     console.log(
       "접속:",
       socket.id
@@ -400,7 +389,6 @@ io.on(
     socket.on(
       "createRoom",
       data => {
-
         if (socket.roomCode) {
           socket.emit(
             "errorMessage",
@@ -409,6 +397,7 @@ io.on(
 
           return;
         }
+
 
         const name =
           typeof data?.name === "string" &&
@@ -445,7 +434,9 @@ io.on(
         );
 
 
-        socket.join(code);
+        socket.join(
+          code
+        );
 
         socket.roomCode =
           code;
@@ -471,7 +462,6 @@ io.on(
     socket.on(
       "joinRoom",
       data => {
-
         if (socket.roomCode) {
           socket.emit(
             "errorMessage",
@@ -529,7 +519,9 @@ io.on(
         });
 
 
-        socket.join(code);
+        socket.join(
+          code
+        );
 
         socket.roomCode =
           code;
@@ -555,7 +547,6 @@ io.on(
     socket.on(
       "startOnline",
       () => {
-
         const room =
           getRoom(socket);
 
@@ -580,9 +571,7 @@ io.on(
         }
 
 
-        /*
-         * 첫 번째 플레이어 = 방장
-         */
+        // 방장만 시작 가능
         if (
           room.players[0].id !==
           socket.id
@@ -622,7 +611,6 @@ io.on(
     socket.on(
       "playWord",
       data => {
-
         const room =
           getRoom(socket);
 
@@ -668,9 +656,7 @@ io.on(
         }
 
 
-        /*
-         * 서버에서 차례 최종 검사
-         */
+        // 서버에서 차례 검사
         if (
           room.game.turn !==
           playerIndex
@@ -718,15 +704,14 @@ io.on(
         }
 
 
-        /*
-         * 정상 입력
-         */
+        // 정상 입력
         io
           .to(room.code)
           .emit(
             "wordPlayed",
             {
-              word: result.word,
+              word:
+                result.word,
 
               player:
                 playerIndex,
@@ -743,11 +728,8 @@ io.on(
           );
 
 
-        /*
-         * 게임 종료
-         */
+        // 게임 종료
         if (result.finished) {
-
           room.started =
             false;
 
@@ -803,7 +785,6 @@ io.on(
     socket.on(
       "disconnect",
       () => {
-
         console.log(
           "접속 종료:",
           socket.id
@@ -828,8 +809,7 @@ server.listen(
     );
 
     console.log(
-      `단어 수: ${WORDS.size.toLocaleString()}`
+      `단어 수: ${WORDS.size.toLocaleString()}개`
     );
   }
 );
-```
