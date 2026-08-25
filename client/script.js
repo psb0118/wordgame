@@ -2999,102 +2999,53 @@ function startOnlineGame() {
 
 function sendOnlineWord() {
 
-  const s =
-    connectSocket();
-
-
-  if (!s) {
+  if (!socket) {
+    onlineMessage.textContent =
+      "서버에 연결되지 않았습니다.";
     return;
   }
-
 
   if (!onlineStarted) {
-
-    if (onlineMessage) {
-
-      onlineMessage.textContent =
-        "아직 게임이 시작되지 않았습니다.";
-    }
-
+    onlineMessage.textContent =
+      "아직 게임이 시작되지 않았습니다.";
     return;
   }
-
 
   if (
-    onlineMyIndex < 0
+    onlineMyIndex < 0 ||
+    !onlineRoom
   ) {
+    onlineMessage.textContent =
+      "방 정보를 불러오는 중입니다.";
     return;
   }
-
-
-  /*
-   * 서버 상태가 있으면
-   * 내 차례인지 클라이언트에서도 검사
-   */
 
   if (
-    onlineRoom &&
-    onlineRoom.turnPlayer != null &&
-    Number(
-      onlineRoom.turnPlayer
-    ) !==
-      Number(onlineMyIndex)
+    typeof onlineRoom.turnPlayer === "number" &&
+    onlineRoom.turnPlayer !== onlineMyIndex
   ) {
-
-    if (onlineMessage) {
-
-      onlineMessage.textContent =
-        "상대방 차례입니다.";
-    }
-
+    onlineMessage.textContent =
+      "지금은 상대방 차례입니다.";
     return;
   }
-
 
   const word =
     normalizeWord(
-      onlineInput?.value
+      onlineInput.value
     );
 
-
   if (!word) {
-
-    onlineInput?.focus();
-
     return;
   }
 
-
-  /*
-   * 먼저 비운다.
-   */
-
   onlineInput.value = "";
 
-
-  s.emit(
+  socket.emit(
     "playWord",
     {
       word
     }
   );
-
-
-  /*
-   * 서버가 처리하는 동안
-   * 중복 전송을 막기 위해 잠시 비활성.
-   *
-   * 서버 wordPlayed / wordRejected에서
-   * 다시 활성화된다.
-   */
-
-  if (onlineInput) {
-    onlineInput.disabled = true;
-  }
-
-  if (onlineSend) {
-    onlineSend.disabled = true;
-  }
 }
 
 
