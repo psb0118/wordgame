@@ -5,23 +5,19 @@
  * 끝말잇기 공통 게임 엔진
  * =========================================================
  *
+ * 사용 데이터
+ *
  * word.txt
- *   실제 사용 가능한 전체 단어 목록
+ *   실제 사용 가능한 전체 단어
  *
  * attack.txt
- *   공격 단어만 존재
- *   예:
+ *   공격 단어 + 공격 깊이
  *
- *   가녘 1
- *   가마깥 3
- *   가겍 5
+ * 예:
  *
- * attackDepth:
- *   {
- *     "가녘": 1,
- *     "가마깥": 3,
- *     "가겍": 5
- *   }
+ * 가녘 1
+ * 가마깥 3
+ * 가겍 5
  *
  * =========================================================
  */
@@ -59,6 +55,7 @@ function allowedFirstChars(lastChar, dueum = {}) {
   /*
    * 정방향
    *
+   * 예:
    * 녀 -> 여
    * 년 -> 연
    */
@@ -75,11 +72,11 @@ function allowedFirstChars(lastChar, dueum = {}) {
   /*
    * 역방향
    *
+   * 예:
    * 여 -> 녀
    * 연 -> 년
    *
-   * 기존 프로젝트의 두음 처리 방식과
-   * 호환하기 위한 부분.
+   * 기존 프로젝트의 양방향 두음 처리와 호환.
    */
   for (const [from, values] of Object.entries(dueum)) {
     if (!Array.isArray(values)) {
@@ -99,26 +96,16 @@ function allowedFirstChars(lastChar, dueum = {}) {
    연결 가능 여부
 ========================================================= */
 
-function canConnect(
-  previousWord,
-  nextWord,
-  dueum = {}
-) {
-  previousWord =
-    normalizeWord(previousWord);
-
-  nextWord =
-    normalizeWord(nextWord);
+function canConnect(previousWord, nextWord, dueum = {}) {
+  previousWord = normalizeWord(previousWord);
+  nextWord = normalizeWord(nextWord);
 
   if (!previousWord || !nextWord) {
     return false;
   }
 
-  const last =
-    previousWord.at(-1);
-
-  const first =
-    nextWord.at(0);
+  const last = previousWord.at(-1);
+  const first = nextWord.at(0);
 
   return allowedFirstChars(
     last,
@@ -132,8 +119,7 @@ function canConnect(
 ========================================================= */
 
 function hasWord(word, words) {
-  word =
-    normalizeWord(word);
+  word = normalizeWord(word);
 
   if (!word || !words) {
     return false;
@@ -145,6 +131,25 @@ function hasWord(word, words) {
 
   if (Array.isArray(words)) {
     return words.includes(word);
+  }
+
+  /*
+   * byFirst 형태의 객체도 지원.
+   *
+   * 서버에서 데이터 구조가
+   * {
+   *   가: [...],
+   *   나: [...],
+   *   ...
+   * }
+   * 형태일 경우 사용할 수 있음.
+   */
+  if (typeof words === "object") {
+    const list = words[word.at(0)];
+
+    if (Array.isArray(list)) {
+      return list.includes(word);
+    }
   }
 
   return false;
@@ -161,8 +166,7 @@ function getCandidates(
   words,
   dueum = {}
 ) {
-  previousWord =
-    normalizeWord(previousWord);
+  previousWord = normalizeWord(previousWord);
 
   if (!previousWord || !words) {
     return [];
@@ -173,20 +177,48 @@ function getCandidates(
       ? usedWords
       : new Set(usedWords || []);
 
-  const allowed =
-    new Set(
-      allowedFirstChars(
-        previousWord.at(-1),
-        dueum
-      )
-    );
+  const allowed = new Set(
+    allowedFirstChars(
+      previousWord.at(-1),
+      dueum
+    )
+  );
 
   const result = [];
 
   /*
-   * words가 Set이면 그대로 순회.
-   * 매번 new Set(words)를 만들지 않는다.
+   * words가 Set/Array이면 전체 순회.
+   *
+   * byFirst 객체라면 필요한 첫 글자만 검색.
    */
+  if (
+    !Array.isArray(words) &&
+    !(words instanceof Set) &&
+    typeof words === "object"
+  ) {
+    for (const first of allowed) {
+      const list = words[first];
+
+      if (!Array.isArray(list)) {
+        continue;
+      }
+
+      for (const word of list) {
+        if (!word) {
+          continue;
+        }
+
+        if (used.has(word)) {
+          continue;
+        }
+
+        result.push(word);
+      }
+    }
+
+    return result;
+  }
+
   for (const word of words) {
     if (!word) {
       continue;
@@ -226,16 +258,49 @@ function getCandidatesFromChar(
       ? usedWords
       : new Set(usedWords || []);
 
-  const allowed =
-    new Set(
-      allowedFirstChars(
-        char,
-        dueum
-      )
-    );
+  const allowed = new Set(
+    allowedFirstChars(
+      char,
+      dueum
+    )
+  );
 
   const result = [];
 
+  /*
+   * byFirst 구조
+   */
+  if (
+    !Array.isArray(words) &&
+    !(words instanceof Set) &&
+    typeof words === "object"
+  ) {
+    for (const first of allowed) {
+      const list = words[first];
+
+      if (!Array.isArray(list)) {
+        continue;
+      }
+
+      for (const word of list) {
+        if (!word) {
+          continue;
+        }
+
+        if (used.has(word)) {
+          continue;
+        }
+
+        result.push(word);
+      }
+    }
+
+    return result;
+  }
+
+  /*
+   * Array / Set 구조
+   */
   for (const word of words) {
     if (!word) {
       continue;
@@ -264,19 +329,19 @@ function getAttackDepth(
   word,
   attackDepth = {}
 ) {
+  word = normalizeWord(word);
+
   if (!word) {
     return null;
   }
 
-  const value =
-    attackDepth[word];
+  const value = attackDepth[word];
 
   if (value == null) {
     return null;
   }
 
-  const depth =
-    Number(value);
+  const depth = Number(value);
 
   if (!Number.isFinite(depth)) {
     return null;
@@ -286,25 +351,18 @@ function getAttackDepth(
 }
 
 
-/*
- * attack.txt에는 공격 단어만 있으므로
- *
- * 홀수 깊이 = 공격 성공 계열
- *
- * 로 취급한다.
- *
- * 단, 실제 봇은 이것만 보고 무조건 사용하지 않는다.
- */
+/* =========================================================
+   공격 단어 판정
+========================================================= */
 
 function isWinningAttack(
   word,
   attackDepth = {}
 ) {
-  const depth =
-    getAttackDepth(
-      word,
-      attackDepth
-    );
+  const depth = getAttackDepth(
+    word,
+    attackDepth
+  );
 
   return (
     depth != null &&
@@ -313,23 +371,14 @@ function isWinningAttack(
 }
 
 
-/*
- * attack.txt에 없는 일반 단어는
- * losingAttack가 아니다.
- *
- * 짝수 깊이가 들어오는 경우에만
- * 별도 분석용으로 취급한다.
- */
-
 function isLosingAttack(
   word,
   attackDepth = {}
 ) {
-  const depth =
-    getAttackDepth(
-      word,
-      attackDepth
-    );
+  const depth = getAttackDepth(
+    word,
+    attackDepth
+  );
 
   return (
     depth != null &&
@@ -354,55 +403,36 @@ function analyzeWord(
       ? usedWords
       : new Set(usedWords || []);
 
-  /*
-   * 이 단어를 사용한 뒤의 상태
-   */
-  const nextUsed =
-    new Set(used);
+  const nextUsed = new Set(used);
 
   nextUsed.add(word);
 
-  /*
-   * 상대가 다음 턴에 사용할 수 있는 수
-   */
-  const next =
-    getCandidates(
-      word,
-      nextUsed,
-      words,
-      dueum
-    );
+  const next = getCandidates(
+    word,
+    nextUsed,
+    words,
+    dueum
+  );
 
-  const depth =
-    getAttackDepth(
-      word,
-      attackDepth
-    );
+  const depth = getAttackDepth(
+    word,
+    attackDepth
+  );
 
   return {
     word,
 
     depth,
 
-    nextCount:
-      next.length,
+    nextCount: next.length,
 
-    /*
-     * 상대에게 선택지가 하나도 없음.
-     */
     oneShot:
       next.length === 0,
 
-    /*
-     * 공격 단어인지
-     */
     winningAttack:
       depth != null &&
       depth % 2 === 1,
 
-    /*
-     * 짝수 깊이가 존재하는 경우
-     */
     losingAttack:
       depth != null &&
       depth % 2 === 0
@@ -411,61 +441,52 @@ function analyzeWord(
 
 
 /* =========================================================
-   상대가 다음에 막힐 가능성 분석
+   미래 위험 분석
 ========================================================= */
 
 function analyzeFutureRisk(
   info,
   words,
   usedWords,
-  dueum
+  dueum,
+  sampleLimit = 60
 ) {
-  /*
-   * 상대가 info.word에 답한 뒤
-   * 봇에게 돌아올 후보를 확인한다.
-   */
-
-  const usedAfterOpponent =
+  const usedAfterWord =
     usedWords instanceof Set
       ? new Set(usedWords)
       : new Set(usedWords || []);
 
-  usedAfterOpponent.add(info.word);
+  usedAfterWord.add(info.word);
 
   const opponentCandidates =
     getCandidates(
       info.word,
-      usedAfterOpponent,
+      usedAfterWord,
       words,
       dueum
     );
 
   /*
-   * 상대 선택지가 많으면
-   * 상대가 좋은 수를 고를 가능성이 높다.
+   * 상대가 아예 답할 수 없다면
+   * 이미 즉시 승리.
    */
-
-  if (opponentCandidates.length === 0) {
+  if (!opponentCandidates.length) {
     return {
       risk: 0,
-      botNextCount: 0
+      botNextCount: 0,
+      opponentCount: 0
     };
   }
 
   /*
-   * 상대 후보 중 하나씩 봇에게 돌아오는 상황을
-   * 간단하게 샘플링한다.
-   *
-   * 모든 후보를 깊게 탐색하면
-   * 50만 단어에서 너무 느려질 수 있으므로
-   * 최대 일부만 검사한다.
+   * 모든 후보를 탐색하면
+   * 대규모 단어 데이터에서 느려질 수 있으므로
+   * 일부만 확인.
    */
-
-  const limit =
-    Math.min(
-      opponentCandidates.length,
-      60
-    );
+  const limit = Math.min(
+    opponentCandidates.length,
+    sampleLimit
+  );
 
   let dangerous = 0;
 
@@ -474,13 +495,9 @@ function analyzeFutureRisk(
       opponentCandidates[i];
 
     const nextUsed =
-      new Set(
-        usedAfterOpponent
-      );
+      new Set(usedAfterWord);
 
-    nextUsed.add(
-      opponentWord
-    );
+    nextUsed.add(opponentWord);
 
     const botCandidates =
       getCandidates(
@@ -490,7 +507,7 @@ function analyzeFutureRisk(
         dueum
       );
 
-    if (botCandidates.length === 0) {
+    if (!botCandidates.length) {
       dangerous++;
     }
   }
@@ -500,43 +517,107 @@ function analyzeFutureRisk(
       dangerous / limit,
 
     botNextCount:
-      Math.max(
-        0,
-        limit - dangerous
-      )
+      limit - dangerous,
+
+    opponentCount:
+      opponentCandidates.length
   };
 }
 
 
 /* =========================================================
-   봇 후보 점수
+   AI 난이도 정책
 ========================================================= */
 
 /*
- * 핵심 AI 정책
+ * level 1
+ *   거의 랜덤
+ *   공격 단어 최대한 회피
  *
- * 상대 선택지 0개
- *   -> 매우 강한 공격
+ * level 2
+ *   약한 공격
  *
- * 상대 선택지 1개
- *   -> 강한 공격
+ * level 3
+ *   균형형
  *
- * 상대 선택지 많음
- *   -> 중간 정도
+ * level 4
+ *   공격 적극 사용
  *
- * 내가 다음 턴에 막힐 가능성이 높음
- *   -> 위험한 수
- *
- * 현재 승률이 너무 높음
- *   -> 공격 강도 감소
+ * level 5
+ *   공격 우선
+ *   깊은 공격 단어 우선
+ *   공격 중에는 불필요하게 양보 단어로 전환하지 않음
  */
+function getDifficultyPolicy(level) {
+  level = Number(level);
+
+  switch (level) {
+    case 1:
+      return {
+        strength: 0.20,
+        attackWeight: 0.20,
+        depthWeight: 0.15,
+        randomPool: 18,
+        futureAnalysis: 25
+      };
+
+    case 2:
+      return {
+        strength: 0.38,
+        attackWeight: 0.55,
+        depthWeight: 0.35,
+        randomPool: 12,
+        futureAnalysis: 40
+      };
+
+    case 3:
+      return {
+        strength: 0.55,
+        attackWeight: 0.90,
+        depthWeight: 0.65,
+        randomPool: 8,
+        futureAnalysis: 50
+      };
+
+    case 4:
+      return {
+        strength: 0.76,
+        attackWeight: 1.30,
+        depthWeight: 1.00,
+        randomPool: 5,
+        futureAnalysis: 60
+      };
+
+    case 5:
+      return {
+        strength: 0.95,
+        attackWeight: 2.00,
+        depthWeight: 1.70,
+        randomPool: 3,
+        futureAnalysis: 80
+      };
+
+    default:
+      return getDifficultyPolicy(3);
+  }
+}
+
+
+/* =========================================================
+   후보 점수
+========================================================= */
 
 function scoreBotCandidate({
   info,
   futureRisk,
-  strength,
-  winBias
+  strength = 0.50,
+  winBias = 0.50,
+  level = 3,
+  currentWord = null
 }) {
+  const policy =
+    getDifficultyPolicy(level);
+
   let score = 0;
 
   const nextCount =
@@ -550,177 +631,255 @@ function scoreBotCandidate({
 
 
   /* =======================================================
-     1. 상대 선택지
+     즉시 승리
   ======================================================= */
 
-  if (nextCount === 0) {
+  if (info.oneShot) {
+
+    score += 15000;
+
     /*
-     * 즉시 승리
-     *
-     * 단, 승률이 이미 너무 높으면
-     * 아래 winBias에서 일부 감쇠한다.
+     * 낮은 난이도에서는 즉시 끝내는 수를
+     * 일부러 덜 선택한다.
      */
-    score += 12000;
+    score *=
+      0.65 +
+      strength * 0.35;
   }
 
-  else if (nextCount === 1) {
-    score += 4200;
+
+  /* =======================================================
+     상대 선택지 수
+  ======================================================= */
+
+  if (nextCount === 1) {
+    score += 4500;
   }
 
-  else if (nextCount <= 4) {
-    score += 1700;
+  else if (nextCount <= 3) {
+    score += 2100;
   }
 
-  else if (nextCount <= 10) {
-    score += 500;
+  else if (nextCount <= 7) {
+    score += 800;
+  }
+
+  else if (nextCount <= 15) {
+    score += 300;
   }
 
   else {
-    /*
-     * 선택지가 많으면
-     * 너무 공격적으로 보지 않는다.
-     */
-    score += 80;
+    score += 60;
   }
 
 
   /* =======================================================
-     2. 공격 단어
+     공격 단어
   ======================================================= */
 
   if (info.winningAttack) {
 
-    score +=
-      900 +
-      depth * 45;
-
     /*
-     * 공격 깊이가 높을수록
-     * 이론적인 공격력이 강하다고 본다.
+     * 공격 단어 자체의 기본 가치
      */
     score +=
-      Math.min(
-        depth,
-        30
-      ) * 25;
-  }
-
-
-  /* =======================================================
-     3. 일반 단어
-  ======================================================= */
-
-  if (!info.winningAttack) {
+      1000 *
+      policy.attackWeight;
 
     /*
-     * 일반 단어는 너무 강하지 않게
-     * 선택지를 확보하는 정도만 평가.
+     * 깊이가 높을수록 추가 가점
      */
     score +=
-      Math.min(
-        nextCount,
-        30
-      ) * 12;
-  }
-
-
-  /* =======================================================
-     4. 내가 위험한지
-  ======================================================= */
-
-  if (risk >= 0.75) {
-    /*
-     * 이 수를 두면
-     * 봇이 다음 턴에 막힐 가능성이 높음.
-     */
-    score -= 4500;
-  }
-
-  else if (risk >= 0.50) {
-    score -= 2200;
-  }
-
-  else if (risk >= 0.25) {
-    score -= 700;
-  }
-
-
-  /* =======================================================
-     5. 승률 조절
-  ======================================================= */
-
-  /*
-   * winBias
-   *
-   * 0.50 = 정상
-   * 0.60 이상 = 봇이 너무 유리
-   * 0.40 이하 = 플레이어가 너무 유리
-   */
-
-  if (winBias > 0.60) {
+      Math.min(depth, 50) *
+      45 *
+      policy.depthWeight;
 
     /*
-     * 봇이 너무 강함.
-     *
-     * 공격 수를 약화한다.
+     * 높은 난이도일수록
+     * 공격 단어를 훨씬 선호.
      */
-    if (info.winningAttack) {
-      score -=
-        (winBias - 0.60) *
-        9000;
-    }
-
-    /*
-     * 즉시 승리도 일부 감쇠.
-     */
-    if (info.oneShot) {
-      score -=
-        (winBias - 0.60) *
-        7000;
-    }
-  }
-
-
-  else if (winBias < 0.40) {
-
-    /*
-     * 플레이어가 너무 유리함.
-     *
-     * 공격 수를 강화.
-     */
-    if (info.winningAttack) {
-      score +=
-        (0.40 - winBias) *
-        7000;
-    }
-
-    if (info.nextCount <= 1) {
-      score +=
-        (0.40 - winBias) *
-        4000;
-    }
-  }
-
-
-  /* =======================================================
-     6. 난이도
-  ======================================================= */
-
-  /*
-   * strength가 높을수록
-   * 공격을 조금 더 선호.
-   */
-
-  if (info.winningAttack) {
     score +=
       strength *
-      1800;
+      depth *
+      80;
   }
 
-  else {
+
+  /* =======================================================
+     짝수 깊이
+  ======================================================= */
+
+  if (info.losingAttack) {
+
+    /*
+     * 기본적으로 좋은 공격 수로 보지 않는다.
+     */
+    score -=
+      500 +
+      depth * 20;
+
+    /*
+     * 낮은 난이도에서는
+     * 가끔 사용할 수 있도록 너무 강하게 배제하지 않는다.
+     */
+    if (level <= 2) {
+      score += 300;
+    }
+  }
+
+
+  /* =======================================================
+     일반 단어
+  ======================================================= */
+
+  if (
+    !info.winningAttack &&
+    !info.losingAttack
+  ) {
     score +=
-      (1 - strength) *
-      250;
+      Math.min(nextCount, 30) *
+      (level <= 2 ? 18 : 10);
+  }
+
+
+  /* =======================================================
+     미래 위험
+  ======================================================= */
+
+  if (risk >= 0.80) {
+    score -= 5000;
+  }
+
+  else if (risk >= 0.60) {
+    score -= 2800;
+  }
+
+  else if (risk >= 0.35) {
+    score -= 1100;
+  }
+
+  else if (risk >= 0.15) {
+    score -= 300;
+  }
+
+
+  /* =======================================================
+     승률 보정
+  ======================================================= */
+
+  /*
+   * winBias는 AI의 현재 승률.
+   *
+   * 너무 강하면 공격을 조금 완화.
+   * 너무 약하면 공격을 강화.
+   */
+
+  if (winBias > 0.70) {
+
+    if (info.winningAttack) {
+      score -=
+        (winBias - 0.70) *
+        8500;
+    }
+
+    if (info.oneShot) {
+      score -=
+        (winBias - 0.70) *
+        6500;
+    }
+  }
+
+  else if (winBias < 0.30) {
+
+    if (info.winningAttack) {
+      score +=
+        (0.30 - winBias) *
+        7000;
+    }
+
+    if (nextCount <= 3) {
+      score +=
+        (0.30 - winBias) *
+        3000;
+    }
+  }
+
+
+  /* =======================================================
+     첫 수
+  ======================================================= */
+
+  if (!currentWord) {
+
+    /*
+     * 첫 수에서 한방 공격은
+     * 난이도와 관계없이 최대한 피한다.
+     */
+    if (info.oneShot) {
+      score -= 12000;
+    }
+
+    /*
+     * attack.txt 공격 단어도
+     * 첫 수에서는 기본적으로 피한다.
+     */
+    if (info.winningAttack) {
+
+      if (level <= 4) {
+        score -= 6000;
+      }
+
+      /*
+       * Lv5도 첫 수부터 무조건 공격하지 않음.
+       */
+      else {
+        score -= 2500;
+      }
+    }
+
+    /*
+     * 일반 단어 중에서도
+     * 상대에게 너무 적은 선택지만 주는 단어를
+     * 첫 수에서는 조금 피한다.
+     */
+    if (
+      !info.winningAttack &&
+      nextCount <= 2
+    ) {
+      score -= 1000;
+    }
+  }
+
+
+  /* =======================================================
+     Lv5 특수 정책
+  ======================================================= */
+
+  if (level === 5) {
+
+    /*
+     * 공격 단어가 존재하면
+     * 일반 양보 단어보다 공격 단어를 강하게 우선.
+     */
+    if (info.winningAttack) {
+
+      score +=
+        2500 +
+        depth * 120;
+    }
+
+    /*
+     * 공격 중 깊은 수를 계속 이어갈 수 있는 상황에서
+     * 선택지가 많은 일반 단어로 갑자기 빠지는 것을 방지.
+     */
+    if (
+      currentWord &&
+      info.winningAttack
+    ) {
+
+      score +=
+        depth * 100;
+    }
   }
 
 
@@ -729,7 +888,7 @@ function scoreBotCandidate({
 
 
 /* =========================================================
-   봇 선택
+   봇 후보 선택
 ========================================================= */
 
 function chooseBotWord({
@@ -740,8 +899,12 @@ function chooseBotWord({
   dueum = {},
   attackDepth = {},
   strength = 0.50,
-  winBias = 0.50
+  winBias = 0.50,
+  level = 3
 }) {
+  if (!words) {
+    return null;
+  }
 
   const used =
     usedWords instanceof Set
@@ -779,117 +942,89 @@ function chooseBotWord({
   ======================================================= */
 
   const analyzed =
-    candidates.map(
-      word =>
-        analyzeWord(
-          word,
-          used,
-          words,
-          attackDepth,
-          dueum
-        )
+    candidates.map(word =>
+      analyzeWord(
+        word,
+        used,
+        words,
+        attackDepth,
+        dueum
+      )
     );
 
 
   /* =======================================================
-     첫 수 특별 처리
+     첫 수 안전 처리
   ======================================================= */
+
+  let usable =
+    analyzed;
+
 
   if (!currentWord) {
 
-    /*
-     * 첫 수에서 바로 게임을 끝내는 단어를
-     * 우선적으로 피한다.
-     */
-
     const safe =
-      analyzed.filter(
-        info =>
-          !info.oneShot &&
-          !info.winningAttack
+      analyzed.filter(info =>
+        !info.oneShot &&
+        !info.winningAttack
       );
 
-    if (safe.length > 0) {
-      return chooseFromScored(
-        safe,
-        used,
-        words,
-        dueum,
-        strength,
-        winBias
-      );
+    if (safe.length) {
+      usable = safe;
     }
   }
 
 
-  return chooseFromScored(
-    analyzed,
-    used,
-    words,
-    dueum,
-    strength,
-    winBias
-  );
-}
-
-
-/* =========================================================
-   점수 계산 후 선택
-========================================================= */
-
-function chooseFromScored(
-  analyzed,
-  used,
-  words,
-  dueum,
-  strength,
-  winBias
-) {
-
-  const scored = [];
-
-  /*
-   * 모든 후보를 미래 분석하면 너무 느릴 수 있으므로
-   * 우선 기본 점수를 계산한다.
-   */
+  /* =======================================================
+     1차 점수
+  ======================================================= */
 
   const preliminary =
-    analyzed.map(
-      info => {
+    usable.map(info => {
 
-        let base = 0;
+      let score = 0;
 
-        if (info.oneShot) {
-          base += 12000;
-        }
+      /*
+       * 즉시 승리
+       */
+      if (info.oneShot) {
+        score += 15000;
+      }
 
-        if (info.winningAttack) {
-          base +=
-            900 +
-            (info.depth ?? 0) * 45;
-        }
+      /*
+       * 공격
+       */
+      if (info.winningAttack) {
+        score +=
+          1000 +
+          (info.depth ?? 0) * 70;
+      }
 
-        base +=
+      /*
+       * 상대 선택지
+       */
+      if (info.nextCount === 1) {
+        score += 4000;
+      }
+
+      else if (info.nextCount <= 3) {
+        score += 1800;
+      }
+
+      else {
+        score +=
           Math.min(
             info.nextCount,
             30
-          ) * 12;
-
-        return {
-          info,
-          base
-        };
+          ) * 15;
       }
-    );
 
+      return {
+        info,
+        base: score
+      };
+    });
 
-  /*
-   * 후보가 매우 많을 때는
-   * 상위 후보만 미래 위험까지 계산한다.
-   *
-   * 이렇게 해야 새 게임이 지나치게 오래 걸리는
-   * 문제를 막을 수 있다.
-   */
 
   preliminary.sort(
     (a, b) =>
@@ -897,11 +1032,20 @@ function chooseFromScored(
   );
 
 
+  /* =======================================================
+     미래 분석
+  ======================================================= */
+
+  const policy =
+    getDifficultyPolicy(level);
+
   const analysisLimit =
     Math.min(
       preliminary.length,
-      80
+      policy.futureAnalysis
     );
+
+  const scored = [];
 
 
   for (
@@ -918,18 +1062,19 @@ function chooseFromScored(
         info,
         words,
         used,
-        dueum
+        dueum,
+        policy.futureAnalysis
       );
-
 
     const score =
       scoreBotCandidate({
         info,
         futureRisk,
         strength,
-        winBias
+        winBias,
+        level,
+        currentWord
       });
-
 
     scored.push({
       info,
@@ -940,9 +1085,8 @@ function chooseFromScored(
 
   /*
    * 나머지 후보는
-   * 미래 분석 없이 기본 점수만 사용.
+   * 미래 분석 없이 기본 점수 사용.
    */
-
   for (
     let i = analysisLimit;
     i < preliminary.length;
@@ -955,13 +1099,17 @@ function chooseFromScored(
     const score =
       scoreBotCandidate({
         info,
+
         futureRisk: {
-          risk: 0.2,
+          risk: 0.20,
           botNextCount:
             info.nextCount
         },
+
         strength,
-        winBias
+        winBias,
+        level,
+        currentWord
       });
 
     scored.push({
@@ -976,6 +1124,10 @@ function chooseFromScored(
   }
 
 
+  /* =======================================================
+     정렬
+  ======================================================= */
+
   scored.sort(
     (a, b) =>
       b.score - a.score
@@ -986,40 +1138,24 @@ function chooseFromScored(
      선택 풀
   ======================================================= */
 
-  let poolSize;
-
-
-  if (strength >= 0.85) {
-    poolSize = 3;
-  }
-
-  else if (strength >= 0.70) {
-    poolSize = 5;
-  }
-
-  else if (strength >= 0.55) {
-    poolSize = 8;
-  }
-
-  else {
-    poolSize = 12;
-  }
+  let poolSize =
+    policy.randomPool;
 
 
   /*
    * 승률이 너무 높으면
-   * 더 넓은 후보에서 선택한다.
+   * 선택 폭을 넓힌다.
    */
-  if (winBias > 0.60) {
-    poolSize += 8;
+  if (winBias > 0.65) {
+    poolSize += 6;
   }
 
 
   /*
-   * 승률이 너무 낮으면
-   * 상위 공격 후보에 조금 더 집중한다.
+   * 승률이 낮으면
+   * 좋은 후보에 더 집중.
    */
-  if (winBias < 0.40) {
+  if (winBias < 0.35) {
     poolSize =
       Math.max(
         2,
@@ -1038,22 +1174,31 @@ function chooseFromScored(
     );
 
 
-  /*
-   * 최고 점수와 너무 차이 나는 수는
-   * 선택하지 않는다.
-   *
-   * 완전히 랜덤하게 해서 AI가
-   * 이상한 단어를 내는 것을 방지한다.
-   */
+  if (!pool.length) {
+    return null;
+  }
+
+
+  /* =======================================================
+     최고 점수와 너무 차이 나는 후보 제거
+  ======================================================= */
 
   const bestScore =
     pool[0].score;
 
+  const margin =
+    level === 5
+      ? 350
+      : level === 4
+        ? 550
+        : level === 3
+          ? 750
+          : 1000;
+
   const reasonable =
-    pool.filter(
-      item =>
-        item.score >=
-        bestScore - 900
+    pool.filter(item =>
+      item.score >=
+      bestScore - margin
     );
 
 
@@ -1061,6 +1206,54 @@ function chooseFromScored(
     reasonable.length
       ? reasonable
       : [pool[0]];
+
+
+  /*
+   * Lv5는 공격 후보가 있으면
+   * 공격 후보를 우선 유지.
+   */
+  if (level === 5) {
+
+    const attacks =
+      finalPool.filter(
+        item =>
+          item.info.winningAttack
+      );
+
+    if (attacks.length) {
+
+      /*
+       * 깊은 공격 단어 중심.
+       */
+      attacks.sort(
+        (a, b) =>
+          (b.info.depth ?? 0) -
+          (a.info.depth ?? 0)
+      );
+
+      /*
+       * 최상위 공격 후보 몇 개 중 선택.
+       */
+      const attackPool =
+        attacks.slice(
+          0,
+          Math.min(
+            3,
+            attacks.length
+          )
+        );
+
+      const selected =
+        attackPool[
+          Math.floor(
+            Math.random() *
+            attackPool.length
+          )
+        ];
+
+      return selected.info.word;
+    }
+  }
 
 
   const selected =
@@ -1084,26 +1277,32 @@ function createGame({
   startChar = "",
   startPlayer = 0
 } = {}) {
-
   return {
 
-    startChar,
+    startChar:
+      normalizeWord(startChar).at(0) || "",
 
-    currentWord: null,
+    currentWord:
+      null,
 
     turnPlayer:
-      startPlayer,
+      startPlayer === 1
+        ? 1
+        : 0,
 
     history: [],
 
     usedWords:
       new Set(),
 
-    finished: false,
+    finished:
+      false,
 
-    winner: null,
+    winner:
+      null,
 
-    loser: null
+    loser:
+      null
   };
 }
 
@@ -1119,7 +1318,6 @@ function playWord(
   dueum = {},
   attackDepth = {}
 ) {
-
   if (!game) {
     return {
       ok: false,
@@ -1192,12 +1390,17 @@ function playWord(
         word.at(0)
       )
     ) {
-
       return {
         ok: false,
 
         reason:
-          `"${game.startChar}"으로 시작하는 단어가 아닙니다.`
+          `"${game.startChar}"으로 시작하는 단어가 아닙니다.`,
+
+        allowed:
+          allowedFirstChars(
+            game.startChar,
+            dueum
+          )
       };
     }
   }
@@ -1299,7 +1502,8 @@ function playWord(
 
   if (!next.length) {
 
-    game.finished = true;
+    game.finished =
+      true;
 
     game.winner =
       player;
@@ -1314,12 +1518,15 @@ function playWord(
 
       finished: true,
 
-      winner: player,
+      winner:
+        game.winner,
 
       loser:
-        game.turnPlayer,
+        game.loser,
 
       word,
+
+      player,
 
       depth:
         getAttackDepth(
@@ -1340,6 +1547,8 @@ function playWord(
 
     word,
 
+    player,
+
     depth:
       getAttackDepth(
         word,
@@ -1356,15 +1565,13 @@ function playWord(
 
 
 /* =========================================================
-   공개 상태
+   공개 게임 상태
 ========================================================= */
 
 function getPublicGameState(game) {
-
   if (!game) {
     return null;
   }
-
 
   return {
 
@@ -1378,20 +1585,20 @@ function getPublicGameState(game) {
       game.turnPlayer,
 
     history:
-      game.history.map(
-        item => ({
-          word: item.word,
+      game.history.map(item => ({
 
-          player:
-            item.player,
+        word:
+          item.word,
 
-          turn:
-            item.turn,
+        player:
+          item.player,
 
-          depth:
-            item.depth
-        })
-      ),
+        turn:
+          item.turn,
+
+        depth:
+          item.depth
+      })),
 
     finished:
       game.finished,
@@ -1406,7 +1613,7 @@ function getPublicGameState(game) {
 
 
 /* =========================================================
-   exports
+   모듈 exports
 ========================================================= */
 
 module.exports = {
@@ -1433,11 +1640,15 @@ module.exports = {
 
   analyzeFutureRisk,
 
+  getDifficultyPolicy,
+
+  scoreBotCandidate,
+
+  chooseBotWord,
+
   createGame,
 
   playWord,
-
-  chooseBotWord,
 
   getPublicGameState
 };
