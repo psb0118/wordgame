@@ -1,22 +1,22 @@
+"use strict";
+
 /*
  * 끝말잇기 공통 게임 엔진
  *
  * word.txt
- *   실제 사용 가능한 전체 단어 목록
+ *   실제 사용 가능한 전체 단어
  *
  * attack.txt
- *   현재 AI를 제거했으므로 게임 판정에는 사용하지 않음
+ *   공격 단어 + 공격 깊이
  */
 
 
 /* =========================================================
-   기본 처리
+   기본
 ========================================================= */
 
 function normalizeWord(word) {
-  if (typeof word !== "string") {
-    return "";
-  }
+  if (typeof word !== "string") return "";
 
   return word
     .trim()
@@ -30,33 +30,29 @@ function normalizeWord(word) {
 ========================================================= */
 
 function allowedFirstChars(lastChar, dueum = {}) {
-  if (!lastChar) {
-    return [];
-  }
+  if (!lastChar) return [];
 
-  const result = new Set();
+  const result = new Set([lastChar]);
 
-  // 원래 글자
-  result.add(lastChar);
+  const values = dueum[lastChar];
 
-  // 정방향
-  const alternatives = dueum[lastChar];
-
-  if (Array.isArray(alternatives)) {
-    for (const char of alternatives) {
-      if (char) {
-        result.add(char);
-      }
+  if (Array.isArray(values)) {
+    for (const ch of values) {
+      if (ch) result.add(ch);
     }
   }
 
-  // 역방향
-  for (const [from, values] of Object.entries(dueum)) {
-    if (!Array.isArray(values)) {
-      continue;
-    }
-
-    if (values.includes(lastChar)) {
+  /*
+   * 역방향
+   *
+   * 녀 -> 여
+   * 여 -> 녀도 허용
+   */
+  for (const [from, list] of Object.entries(dueum)) {
+    if (
+      Array.isArray(list) &&
+      list.includes(lastChar)
+    ) {
       result.add(from);
     }
   }
@@ -64,10 +60,6 @@ function allowedFirstChars(lastChar, dueum = {}) {
   return [...result];
 }
 
-
-/* =========================================================
-   연결 검사
-========================================================= */
 
 function canConnect(previousWord, nextWord, dueum = {}) {
   previousWord = normalizeWord(previousWord);
@@ -77,26 +69,24 @@ function canConnect(previousWord, nextWord, dueum = {}) {
     return false;
   }
 
-  const lastChar = previousWord.at(-1);
-  const firstChar = nextWord.at(0);
+  const last = previousWord.at(-1);
+  const first = nextWord.at(0);
 
   return allowedFirstChars(
-    lastChar,
+    last,
     dueum
-  ).includes(firstChar);
+  ).includes(first);
 }
 
 
 /* =========================================================
-   단어 목록 검사
+   단어
 ========================================================= */
 
 function hasWord(word, words) {
   word = normalizeWord(word);
 
-  if (!word || !words) {
-    return false;
-  }
+  if (!word || !words) return false;
 
   if (words instanceof Set) {
     return words.has(word);
@@ -110,10 +100,6 @@ function hasWord(word, words) {
 }
 
 
-/* =========================================================
-   후보 검색
-========================================================= */
-
 function getCandidates(
   previousWord,
   usedWords,
@@ -122,7 +108,8 @@ function getCandidates(
 ) {
   const result = [];
 
-  previousWord = normalizeWord(previousWord);
+  previousWord =
+    normalizeWord(previousWord);
 
   if (!previousWord || !words) {
     return result;
@@ -147,11 +134,7 @@ function getCandidates(
     );
 
   for (const word of source) {
-    if (!word) {
-      continue;
-    }
-
-    if (used.has(word)) {
+    if (!word || used.has(word)) {
       continue;
     }
 
@@ -166,17 +149,174 @@ function getCandidates(
 }
 
 
+function getCandidatesFromChar(
+  char,
+  usedWords,
+  words,
+  dueum = {}
+) {
+  const result = [];
+
+  if (!char || !words) {
+    return result;
+  }
+
+  const used =
+    usedWords instanceof Set
+      ? usedWords
+      : new Set(usedWords || []);
+
+  const source =
+    words instanceof Set
+      ? words
+      : new Set(words);
+
+  const allowed =
+    new Set(
+      allowedFirstChars(
+        char,
+        dueum
+      )
+    );
+
+  for (const word of source) {
+    if (used.has(word)) continue;
+
+    if (allowed.has(word.at(0))) {
+      result.push(word);
+    }
+  }
+
+  return result;
+}
+
+
+/* =========================================================
+   공격 데이터
+========================================================= */
+
+function getAttackDepth(
+  word,
+  attackDepth = {}
+) {
+  const value =
+    attackDepth?.[word];
+
+  if (value == null) {
+    return null;
+  }
+
+  const n = Number(value);
+
+  return Number.isFinite(n)
+    ? n
+    : null;
+}
+
+
+function isWinningAttack(
+  word,
+  attackDepth = {}
+) {
+  const depth =
+    getAttackDepth(
+      word,
+      attackDepth
+    );
+
+  return (
+    depth != null &&
+    depth % 2 === 1
+  );
+}
+
+
+function isLosingAttack(
+  word,
+  attackDepth = {}
+) {
+  const depth =
+    getAttackDepth(
+      word,
+      attackDepth
+    );
+
+  return (
+    depth != null &&
+    depth % 2 === 0
+  );
+}
+
+
+/* =========================================================
+   단어 분석
+========================================================= */
+
+function analyzeWord(
+  word,
+  usedWords,
+  words,
+  attackDepth,
+  dueum
+) {
+  const nextUsed =
+    new Set(
+      usedWords || []
+    );
+
+  nextUsed.add(word);
+
+  const next =
+    getCandidates(
+      word,
+      nextUsed,
+      words,
+      dueum
+    );
+
+  const depth =
+    getAttackDepth(
+      word,
+      attackDepth
+    );
+
+  return {
+    word,
+
+    depth,
+
+    nextCount:
+      next.length,
+
+    oneShot:
+      next.length === 0,
+
+    winningAttack:
+      depth != null &&
+      depth % 2 === 1,
+
+    losingAttack:
+      depth != null &&
+      depth % 2 === 0
+  };
+}
+
+
 /* =========================================================
    게임 생성
 ========================================================= */
 
-function createGame() {
+function createGame({
+  startChar = "",
+  startPlayer = 0
+} = {}) {
   return {
+    startChar,
+
     currentWord: null,
 
-    // 0 = 첫 번째 플레이어
-    // 1 = 두 번째 플레이어
-    turn: 0,
+    turnPlayer:
+      startPlayer,
 
     history: [],
 
@@ -199,60 +339,76 @@ function playWord(
   game,
   word,
   words,
-  dueum = {}
+  dueum = {},
+  attackDepth = {}
 ) {
   if (!game) {
     return {
       ok: false,
-      reason: "게임 정보를 찾을 수 없습니다."
+      reason:
+        "게임 정보를 찾을 수 없습니다."
     };
   }
 
   if (game.finished) {
     return {
       ok: false,
-      reason: "이미 끝난 게임입니다."
+      reason:
+        "이미 끝난 게임입니다."
     };
   }
 
-  word = normalizeWord(word);
+  word =
+    normalizeWord(word);
 
   if (!word) {
     return {
       ok: false,
-      reason: "단어를 입력해주세요."
+      reason:
+        "단어를 입력해주세요."
     };
   }
-
-
-  /* ---------------------------------------------------------
-     단어 목록
-  --------------------------------------------------------- */
 
   if (!hasWord(word, words)) {
     return {
       ok: false,
-      reason: "단어 목록에 없는 단어입니다."
+      reason:
+        "단어 목록에 없는 단어입니다."
     };
   }
-
-
-  /* ---------------------------------------------------------
-     중복
-  --------------------------------------------------------- */
 
   if (game.usedWords.has(word)) {
     return {
       ok: false,
-      reason: "이미 사용한 단어입니다."
+      reason:
+        "이미 사용한 단어입니다."
     };
   }
 
+  /*
+   * 첫 단어
+   */
+  if (!game.currentWord) {
+    if (
+      game.startChar &&
+      !allowedFirstChars(
+        game.startChar,
+        dueum
+      ).includes(
+        word.at(0)
+      )
+    ) {
+      return {
+        ok: false,
+        reason:
+          `"${game.startChar}"으로 시작하는 단어가 아닙니다.`
+      };
+    }
+  }
 
-  /* ---------------------------------------------------------
-     연결
-  --------------------------------------------------------- */
-
+  /*
+   * 연결
+   */
   if (
     game.currentWord &&
     !canConnect(
@@ -264,61 +420,47 @@ function playWord(
     const last =
       game.currentWord.at(-1);
 
-    const allowed =
-      allowedFirstChars(
-        last,
-        dueum
-      );
-
     return {
       ok: false,
-
       reason:
-        allowed.length > 1
-          ? `"${last}" 다음에는 ${allowed.join(", ")}으로 시작해야 합니다.`
-          : `"${last}"으로 시작해야 합니다.`,
+        `"${last}" 다음에 연결할 수 없는 단어입니다.`,
 
-      allowed
+      allowed:
+        allowedFirstChars(
+          last,
+          dueum
+        )
     };
   }
 
-
-  /* ---------------------------------------------------------
-     단어 등록
-  --------------------------------------------------------- */
-
-  const playerIndex =
-    game.turn;
+  const player =
+    game.turnPlayer;
 
   game.currentWord =
     word;
 
-  game.usedWords.add(
-    word
-  );
+  game.usedWords.add(word);
 
   game.history.push({
     word,
-    player: playerIndex,
-    turn: game.history.length + 1
+    player,
+
+    turn:
+      game.history.length + 1,
+
+    depth:
+      getAttackDepth(
+        word,
+        attackDepth
+      )
   });
 
-
-  /* ---------------------------------------------------------
-     다음 플레이어
-  --------------------------------------------------------- */
-
-  game.turn =
-    game.turn === 0
+  game.turnPlayer =
+    player === 0
       ? 1
       : 0;
 
-
-  /* ---------------------------------------------------------
-     다음 플레이어 후보 검사
-  --------------------------------------------------------- */
-
-  const nextCandidates =
+  const next =
     getCandidates(
       word,
       game.usedWords,
@@ -326,57 +468,280 @@ function playWord(
       dueum
     );
 
-
-  if (nextCandidates.length === 0) {
+  if (!next.length) {
     game.finished = true;
 
     game.winner =
-      playerIndex;
+      player;
 
     game.loser =
-      game.turn;
+      game.turnPlayer;
 
     return {
       ok: true,
       finished: true,
-      winner: playerIndex,
-      loser: game.turn,
-      word
+
+      winner: player,
+      loser: game.turnPlayer,
+
+      word,
+
+      depth:
+        getAttackDepth(
+          word,
+          attackDepth
+        ),
+
+      nextCount: 0
     };
   }
-
 
   return {
     ok: true,
     finished: false,
+
     word,
-    nextTurn: game.turn
+
+    depth:
+      getAttackDepth(
+        word,
+        attackDepth
+      ),
+
+    nextTurn:
+      game.turnPlayer,
+
+    nextCount:
+      next.length
   };
 }
 
 
 /* =========================================================
-   공개 게임 상태
+   봇
 ========================================================= */
 
-function getPublicGameState(game) {
-  if (!game) {
+function scoreBotCandidate(
+  info,
+  strength = 0.5
+) {
+  let score = 0;
+
+  const depth =
+    info.depth ?? 0;
+
+  const nextCount =
+    info.nextCount;
+
+
+  /*
+   * 상대 선택지가 0개
+   * → 매우 강한 공격
+   */
+  if (info.oneShot) {
+    score +=
+      9000 * strength;
+  }
+
+
+  /*
+   * 공격 단어
+   */
+  if (info.winningAttack) {
+    score +=
+      1000 +
+      depth * 50;
+
+    /*
+     * 상대 선택지가 적을수록
+     * 공격 가치 증가
+     */
+    if (nextCount === 1) {
+      score += 800;
+    }
+
+    if (nextCount === 2) {
+      score += 400;
+    }
+  }
+
+
+  /*
+   * 패배 방향 공격 데이터는
+   * 위험한 수로 취급
+   */
+  if (info.losingAttack) {
+    score -= 500;
+    score -= depth * 15;
+  }
+
+
+  /*
+   * 선택지가 지나치게 많은 단어는
+   * 공격력이 낮은 것으로 간주
+   */
+  score +=
+    Math.max(
+      0,
+      20 - Math.min(nextCount, 20)
+    ) * 8;
+
+
+  /*
+   * 강도가 높으면 공격 선호
+   */
+  score +=
+    strength *
+    (
+      info.winningAttack
+        ? 1000
+        : 50
+    );
+
+  return score;
+}
+
+
+function chooseBotWord({
+  currentWord,
+  startChar,
+  usedWords,
+  words,
+  dueum,
+  attackDepth,
+  strength = 0.5
+}) {
+  const used =
+    usedWords instanceof Set
+      ? usedWords
+      : new Set(
+          usedWords || []
+        );
+
+  let candidates =
+    currentWord
+      ? getCandidates(
+          currentWord,
+          used,
+          words,
+          dueum
+        )
+      : getCandidatesFromChar(
+          startChar,
+          used,
+          words,
+          dueum
+        );
+
+  if (!candidates.length) {
     return null;
   }
 
+  let analyzed =
+    candidates.map(
+      word =>
+        analyzeWord(
+          word,
+          used,
+          words,
+          attackDepth,
+          dueum
+        )
+    );
+
+
+  /*
+   * 첫 수는 너무 강한 공격을 피한다.
+   */
+  if (!currentWord) {
+    const safe =
+      analyzed.filter(
+        info =>
+          !info.oneShot &&
+          !info.winningAttack
+      );
+
+    if (safe.length) {
+      analyzed = safe;
+    }
+  }
+
+
+  const scored =
+    analyzed.map(
+      info => ({
+        ...info,
+
+        score:
+          scoreBotCandidate(
+            info,
+            strength
+          )
+      })
+    );
+
+
+  scored.sort(
+    (a, b) =>
+      b.score - a.score
+  );
+
+
+  /*
+   * 난이도가 낮을수록
+   * 상위 후보를 많이 섞는다.
+   */
+  const poolSize =
+    strength >= 0.8
+      ? 2
+      : strength >= 0.65
+        ? 4
+        : strength >= 0.5
+          ? 6
+          : 10;
+
+  const pool =
+    scored.slice(
+      0,
+      Math.min(
+        poolSize,
+        scored.length
+      )
+    );
+
+  return pool[
+    Math.floor(
+      Math.random() *
+      pool.length
+    )
+  ].word;
+}
+
+
+/* =========================================================
+   공개 상태
+========================================================= */
+
+function getPublicGameState(game) {
+  if (!game) return null;
+
   return {
+    startChar:
+      game.startChar,
+
     currentWord:
       game.currentWord,
 
-    turn:
-      game.turn,
+    turnPlayer:
+      game.turnPlayer,
 
     history:
       game.history.map(
         item => ({
           word: item.word,
           player: item.player,
-          turn: item.turn
+          turn: item.turn,
+          depth: item.depth
         })
       ),
 
@@ -398,11 +763,24 @@ function getPublicGameState(game) {
 
 module.exports = {
   normalizeWord,
+
   allowedFirstChars,
   canConnect,
+
   hasWord,
   getCandidates,
+  getCandidatesFromChar,
+
+  getAttackDepth,
+  isWinningAttack,
+  isLosingAttack,
+
+  analyzeWord,
+
   createGame,
   playWord,
+
+  chooseBotWord,
+
   getPublicGameState
 };
