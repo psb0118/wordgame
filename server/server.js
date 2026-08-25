@@ -47,7 +47,7 @@ const io = new Server(server, {
 
 
 app.use(
-  express.static(ROOT)
+  express.static(CLIENT_DIR)
 );
 
 
