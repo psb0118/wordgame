@@ -30,7 +30,7 @@ const ROOT =
   path.join(__dirname, "..");
 
 const WORD_FILE =
-  path.join(__dirname, "word.txt");
+  path.join(ROOT, "data", "word.txt");
 
 
 /* =========================================================
