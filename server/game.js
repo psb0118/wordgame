@@ -1,8 +1,3 @@
-# game.js
-
-```js
-"use strict";
-
 /*
  * 끝말잇기 공통 게임 엔진
  *
@@ -10,7 +5,7 @@
  *   실제 사용 가능한 전체 단어 목록
  *
  * attack.txt
- *   현재 AI를 제거했으므로 게임 판정에 사용하지 않음
+ *   현재 AI를 제거했으므로 게임 판정에는 사용하지 않음
  */
 
 
@@ -34,19 +29,6 @@ function normalizeWord(word) {
    두음법칙
 ========================================================= */
 
-/*
- * 서버의 /api/data에서 실제 DUEUM 데이터를 받을 수 있도록
- * game.js 자체에서는 외부 두음 데이터를 주입받는다.
- *
- * dueum 형식:
- *
- * {
- *   "녀": ["여"],
- *   "년": ["연"],
- *   ...
- * }
- */
-
 function allowedFirstChars(lastChar, dueum = {}) {
   if (!lastChar) {
     return [];
@@ -54,8 +36,10 @@ function allowedFirstChars(lastChar, dueum = {}) {
 
   const result = new Set();
 
+  // 원래 글자
   result.add(lastChar);
 
+  // 정방향
   const alternatives = dueum[lastChar];
 
   if (Array.isArray(alternatives)) {
@@ -66,15 +50,7 @@ function allowedFirstChars(lastChar, dueum = {}) {
     }
   }
 
-  /*
-   * 역방향도 지원한다.
-   *
-   * 예:
-   * DUEUM["녀"] = ["여"]
-   *
-   * 마지막 글자가 "여"인 경우에도
-   * 필요하면 "녀"를 허용한다.
-   */
+  // 역방향
   for (const [from, values] of Object.entries(dueum)) {
     if (!Array.isArray(values)) {
       continue;
@@ -171,6 +147,10 @@ function getCandidates(
     );
 
   for (const word of source) {
+    if (!word) {
+      continue;
+    }
+
     if (used.has(word)) {
       continue;
     }
@@ -194,10 +174,8 @@ function createGame() {
   return {
     currentWord: null,
 
-    /*
-     * 0 = 첫 번째 플레이어
-     * 1 = 두 번째 플레이어
-     */
+    // 0 = 첫 번째 플레이어
+    // 1 = 두 번째 플레이어
     turn: 0,
 
     history: [],
@@ -294,24 +272,30 @@ function playWord(
 
     return {
       ok: false,
+
       reason:
         allowed.length > 1
           ? `"${last}" 다음에는 ${allowed.join(", ")}으로 시작해야 합니다.`
           : `"${last}"으로 시작해야 합니다.`,
+
       allowed
     };
   }
 
 
   /* ---------------------------------------------------------
-     등록
+     단어 등록
   --------------------------------------------------------- */
 
-  const playerIndex = game.turn;
+  const playerIndex =
+    game.turn;
 
-  game.currentWord = word;
+  game.currentWord =
+    word;
 
-  game.usedWords.add(word);
+  game.usedWords.add(
+    word
+  );
 
   game.history.push({
     word,
@@ -331,7 +315,7 @@ function playWord(
 
 
   /* ---------------------------------------------------------
-     다음 플레이어가 낼 수 있는 단어 검사
+     다음 플레이어 후보 검사
   --------------------------------------------------------- */
 
   const nextCandidates =
@@ -342,11 +326,15 @@ function playWord(
       dueum
     );
 
+
   if (nextCandidates.length === 0) {
     game.finished = true;
 
-    game.winner = playerIndex;
-    game.loser = game.turn;
+    game.winner =
+      playerIndex;
+
+    game.loser =
+      game.turn;
 
     return {
       ok: true,
@@ -368,7 +356,7 @@ function playWord(
 
 
 /* =========================================================
-   공개 상태
+   공개 게임 상태
 ========================================================= */
 
 function getPublicGameState(game) {
@@ -384,11 +372,13 @@ function getPublicGameState(game) {
       game.turn,
 
     history:
-      game.history.map(item => ({
-        word: item.word,
-        player: item.player,
-        turn: item.turn
-      })),
+      game.history.map(
+        item => ({
+          word: item.word,
+          player: item.player,
+          turn: item.turn
+        })
+      ),
 
     finished:
       game.finished,
@@ -416,4 +406,3 @@ module.exports = {
   playWord,
   getPublicGameState
 };
-```
