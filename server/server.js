@@ -14,7 +14,18 @@ const { Server } = require("socket.io");
 ========================================================= */
 
 const ROOT = path.join(__dirname, "..");
-const DATA_DIR = path.join(ROOT, "data");
+
+const CLIENT_DIR =
+  path.join(ROOT, "client");
+
+const DATA_DIR =
+  path.join(ROOT, "data");
+
+const WORD_FILE =
+  path.join(DATA_DIR, "word.txt");
+
+const ATTACK_FILE =
+  path.join(DATA_DIR, "attack.txt");
 
 const WORD_FILE = path.join(DATA_DIR, "word.txt");
 const ATTACK_FILE = path.join(DATA_DIR, "attack.txt");
