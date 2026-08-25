@@ -1,16 +1,34 @@
 "use strict";
 
 /* =========================================================
-   끝말잇기 AI - 최종 클라이언트
+   끝말잇기 AI - 통합 최종 script.js
+
+   기능
    ---------------------------------------------------------
-   - 데이터 1회 로드
-   - byFirst 캐시 사용
-   - 새 게임마다 전체 단어 재검색 X
-   - AI 1개: 끝말잇기 AI
+   싱글
+   - 랜덤 시작
+   - 빠른 시작
+   - 끝말잇기 AI
    - 두음법칙
-   - attack.txt 공격 깊이
-   - 상황별 AI 공격 강도
-   - 온라인 Socket.IO
+   - 공격 깊이 표시
+   - 중복 단어 방지
+   - 승/패/평균 통계
+   - localStorage 저장
+
+   온라인
+   - Socket.IO
+   - 방 생성
+   - 방 참가
+   - 방장 게임 시작
+   - 실시간 단어 전송
+   - 실시간 기록
+   - 차례 표시
+
+   데이터
+   - /api/data 1회 로드
+   - byFirst 캐시
+   - attackDepth 캐시
+   - 새 게임마다 전체 단어 검색 X
 ========================================================= */
 
 
@@ -20,7 +38,6 @@
 
 const $ = id => document.getElementById(id);
 
-const difficulty = $("difficulty");
 const startWordInput = $("startWord");
 const newStartButton = $("newStart");
 
@@ -62,23 +79,29 @@ const onlinePanel = $("online");
 
 
 /* =========================================================
-   전역 상태
+   데이터
 ========================================================= */
 
 let DATA = null;
 
 let byFirst = Object.create(null);
-let attackDepth = Object.create(null);
-let dueum = Object.create(null);
 
-let allWords = new Set();
+let attackDepth =
+  Object.create(null);
+
+let dueum =
+  Object.create(null);
+
+let startFirst = [];
 
 let dataReady = false;
 
+let dataLoading = null;
 
-/* ---------------------------------------------------------
-   싱글 게임
---------------------------------------------------------- */
+
+/* =========================================================
+   싱글 상태
+========================================================= */
 
 let singleGame = null;
 
@@ -92,14 +115,42 @@ let singleStats = {
 };
 
 
-/* ---------------------------------------------------------
-   온라인
---------------------------------------------------------- */
+/* =========================================================
+   온라인 상태
+========================================================= */
 
 let socket = null;
+
 let onlineRoom = null;
+
 let onlineStarted = false;
+
 let onlineMyIndex = -1;
+
+
+/* =========================================================
+   후보 캐시
+========================================================= */
+
+/*
+ * firstChar -> 실제 단어 배열
+ *
+ * 서버에서 이미 byFirst를 만들어 보내므로
+ * 여기서는 배열을 그대로 캐싱한다.
+ */
+
+const candidateCache =
+  new Map();
+
+
+/*
+ * 글자 -> 두음 적용 가능한 시작 글자
+ *
+ * 한 번 계산한 결과는 다시 계산하지 않는다.
+ */
+
+const dueumCache =
+  new Map();
 
 
 /* =========================================================
@@ -107,87 +158,134 @@ let onlineMyIndex = -1;
 ========================================================= */
 
 async function loadData() {
+
+  /*
+   * 이미 준비됨
+   */
   if (dataReady) {
     return true;
   }
 
-  try {
-    const response =
-      await fetch("/api/data", {
-        cache: "force-cache"
-      });
 
-    if (!response.ok) {
-      throw new Error(
-        `HTTP ${response.status}`
-      );
-    }
-
-    const data =
-      await response.json();
-
-    DATA = data;
-
-    byFirst =
-      data.byFirst ||
-      Object.create(null);
-
-    attackDepth =
-      data.attackDepth ||
-      Object.create(null);
-
-    dueum =
-      data.dueum ||
-      Object.create(null);
-
-
-    /*
-     * 전체 Set은 실제 단어 존재 여부가
-     * 필요할 때만 사용한다.
-     *
-     * 새 게임마다 만들지 않는다.
-     */
-    allWords = new Set();
-
-    for (const list of Object.values(byFirst)) {
-      if (!Array.isArray(list)) {
-        continue;
-      }
-
-      for (const word of list) {
-        allWords.add(word);
-      }
-    }
-
-    dataReady = true;
-
-    return true;
-
-  } catch (error) {
-
-    console.error(
-      "데이터 로드 실패:",
-      error
-    );
-
-    showMessage(
-      "단어 데이터를 불러오지 못했습니다.",
-      true
-    );
-
-    return false;
+  /*
+   * 동시에 여러 번 요청되는 것을 방지
+   *
+   * 새 게임 버튼을 연속으로 눌러도
+   * /api/data를 여러 번 요청하지 않는다.
+   */
+  if (dataLoading) {
+    return dataLoading;
   }
+
+
+  dataLoading =
+    (async () => {
+
+      try {
+
+        const response =
+          await fetch(
+            "/api/data",
+            {
+              method: "GET",
+              cache: "force-cache"
+            }
+          );
+
+
+        if (!response.ok) {
+          throw new Error(
+            `HTTP ${response.status}`
+          );
+        }
+
+
+        const data =
+          await response.json();
+
+
+        DATA = data || {};
+
+
+        byFirst =
+          data.byFirst ||
+          Object.create(null);
+
+
+        attackDepth =
+          data.attackDepth ||
+          Object.create(null);
+
+
+        dueum =
+          data.dueum ||
+          Object.create(null);
+
+
+        startFirst =
+          Array.isArray(data.startFirst)
+            ? data.startFirst
+            : Object.keys(byFirst);
+
+
+        /*
+         * 후보 캐시는 새 데이터에 맞춰 초기화
+         */
+        candidateCache.clear();
+
+        dueumCache.clear();
+
+
+        dataReady = true;
+
+
+        console.log(
+          "끝말잇기 데이터 준비 완료"
+        );
+
+
+        return true;
+
+      } catch (error) {
+
+        console.error(
+          "데이터 로드 실패:",
+          error
+        );
+
+
+        showMessage(
+          "단어 데이터를 불러오지 못했습니다.",
+          true
+        );
+
+
+        return false;
+
+      } finally {
+
+        dataLoading = null;
+      }
+
+    })();
+
+
+  return dataLoading;
 }
 
 
 /* =========================================================
-   기본 처리
+   기본 문자열 처리
 ========================================================= */
 
 function normalizeWord(word) {
-  if (typeof word !== "string") {
+
+  if (
+    typeof word !== "string"
+  ) {
     return "";
   }
+
 
   return word
     .trim()
@@ -201,58 +299,114 @@ function normalizeWord(word) {
 ========================================================= */
 
 function allowedFirstChars(lastChar) {
+
   if (!lastChar) {
     return [];
   }
 
+
+  if (
+    dueumCache.has(lastChar)
+  ) {
+    return dueumCache.get(lastChar);
+  }
+
+
   const result =
     new Set([lastChar]);
 
+
+  /*
+   * 정방향
+   *
+   * 예:
+   * 녀 -> 여
+   */
   const direct =
     dueum[lastChar];
 
-  if (Array.isArray(direct)) {
-    for (const char of direct) {
+
+  if (
+    Array.isArray(direct)
+  ) {
+
+    for (
+      const char of direct
+    ) {
+
       if (char) {
         result.add(char);
       }
     }
   }
 
+
   /*
-   * 역방향 두음
+   * 역방향
+   *
+   * 예:
+   * 여 -> 녀
    */
-  for (const [from, values] of Object.entries(dueum)) {
+  for (
+    const [from, values]
+    of Object.entries(dueum)
+  ) {
 
-    if (!Array.isArray(values)) {
-      continue;
-    }
+    if (
+      Array.isArray(values) &&
+      values.includes(lastChar)
+    ) {
 
-    if (values.includes(lastChar)) {
       result.add(from);
     }
   }
 
-  return [...result];
+
+  const resultArray =
+    [...result];
+
+
+  dueumCache.set(
+    lastChar,
+    resultArray
+  );
+
+
+  return resultArray;
 }
 
 
-function canConnect(previousWord, nextWord) {
+/* =========================================================
+   연결 검사
+========================================================= */
+
+function canConnect(
+  previousWord,
+  nextWord
+) {
+
   previousWord =
     normalizeWord(previousWord);
 
   nextWord =
     normalizeWord(nextWord);
 
-  if (!previousWord || !nextWord) {
+
+  if (
+    !previousWord ||
+    !nextWord
+  ) {
     return false;
   }
+
 
   const last =
     previousWord.at(-1);
 
+
   const first =
     nextWord.at(0);
+
 
   return allowedFirstChars(last)
     .includes(first);
@@ -260,168 +414,228 @@ function canConnect(previousWord, nextWord) {
 
 
 /* =========================================================
-   후보 캐시
+   시작 글자 후보
 ========================================================= */
 
-const candidateCache =
-  new Map();
-
-
-function getBaseCandidates(firstChar) {
+function getBaseCandidates(
+  firstChar
+) {
 
   if (!firstChar) {
     return [];
   }
 
-  if (candidateCache.has(firstChar)) {
-    return candidateCache.get(firstChar);
+
+  if (
+    candidateCache.has(firstChar)
+  ) {
+
+    return candidateCache.get(
+      firstChar
+    );
   }
 
-  const result = [];
 
   const list =
     byFirst[firstChar];
 
-  if (Array.isArray(list)) {
-    for (const word of list) {
-      result.push(word);
-    }
-  }
 
-  /*
-   * 캐시
-   */
+  const result =
+    Array.isArray(list)
+      ? list
+      : [];
+
+
   candidateCache.set(
     firstChar,
     result
   );
+
 
   return result;
 }
 
 
 /* =========================================================
-   실제 후보
+   후보 찾기
 ========================================================= */
 
 function getCandidates(
   previousWord,
   usedWords
 ) {
+
   previousWord =
     normalizeWord(previousWord);
+
 
   if (!previousWord) {
     return [];
   }
 
+
   const used =
     usedWords instanceof Set
       ? usedWords
-      : new Set(usedWords || []);
+      : new Set(
+          usedWords || []
+        );
+
 
   const chars =
     allowedFirstChars(
       previousWord.at(-1)
     );
 
+
   const result = [];
 
+
   /*
-   * 전체 단어가 아니라
-   * 허용된 첫 글자 후보만 검사
+   * 두음으로 허용된 글자만 검사
    */
-  for (const char of chars) {
+  for (
+    const char of chars
+  ) {
 
     const list =
       getBaseCandidates(char);
 
-    for (const word of list) {
 
-      if (used.has(word)) {
+    for (
+      const word of list
+    ) {
+
+      if (
+        used.has(word)
+      ) {
         continue;
       }
+
 
       result.push(word);
     }
   }
 
-  return result;
-}
-
-
-function getCandidatesFromChar(
-  char,
-  usedWords
-) {
-  const used =
-    usedWords instanceof Set
-      ? usedWords
-      : new Set(usedWords || []);
-
-  const chars =
-    allowedFirstChars(char);
-
-  const result = [];
-
-  for (const first of chars) {
-
-    const list =
-      getBaseCandidates(first);
-
-    for (const word of list) {
-
-      if (used.has(word)) {
-        continue;
-      }
-
-      result.push(word);
-    }
-  }
 
   return result;
 }
 
 
 /* =========================================================
-   공격 데이터
+   시작 글자에서 후보 찾기
+========================================================= */
+
+function getCandidatesFromChar(
+  char,
+  usedWords
+) {
+
+  if (!char) {
+    return [];
+  }
+
+
+  const used =
+    usedWords instanceof Set
+      ? usedWords
+      : new Set(
+          usedWords || []
+        );
+
+
+  const chars =
+    allowedFirstChars(char);
+
+
+  const result = [];
+
+
+  for (
+    const first of chars
+  ) {
+
+    const list =
+      getBaseCandidates(first);
+
+
+    for (
+      const word of list
+    ) {
+
+      if (
+        used.has(word)
+      ) {
+        continue;
+      }
+
+
+      result.push(word);
+    }
+  }
+
+
+  return result;
+}
+
+
+/* =========================================================
+   공격 깊이
 ========================================================= */
 
 function getAttackDepth(word) {
 
-  const value =
-    attackDepth[word];
-
-  if (value == null) {
+  if (!word) {
     return null;
   }
 
-  const n =
+
+  const value =
+    attackDepth[word];
+
+
+  if (
+    value == null
+  ) {
+    return null;
+  }
+
+
+  const number =
     Number(value);
 
-  return Number.isFinite(n)
-    ? n
+
+  return Number.isFinite(number)
+    ? number
     : null;
 }
 
 
+/* =========================================================
+   공격 종류
+========================================================= */
+
 function isWinningAttack(word) {
+
   const depth =
     getAttackDepth(word);
 
+
   return (
-    depth != null &&
+    depth !== null &&
     depth % 2 === 1
   );
 }
 
 
 function isLosingAttack(word) {
+
   const depth =
     getAttackDepth(word);
 
+
   return (
-    depth != null &&
+    depth !== null &&
     depth % 2 === 0
   );
 }
@@ -435,10 +649,13 @@ function analyzeCandidate(
   word,
   usedWords
 ) {
+
   const nextUsed =
     new Set(usedWords);
 
+
   nextUsed.add(word);
+
 
   const next =
     getCandidates(
@@ -446,11 +663,15 @@ function analyzeCandidate(
       nextUsed
     );
 
+
   const depth =
     getAttackDepth(word);
 
+
   return {
+
     word,
+
     depth,
 
     nextCount:
@@ -460,266 +681,183 @@ function analyzeCandidate(
       next.length === 0,
 
     winningAttack:
-      depth != null &&
+      depth !== null &&
       depth % 2 === 1,
 
     losingAttack:
-      depth != null &&
+      depth !== null &&
       depth % 2 === 0
   };
 }
 
 
 /* =========================================================
-   AI 강도
+   AI 점수
 ========================================================= */
-
-function getDifficultyStrength() {
-
-  const level =
-    Number(
-      difficulty?.value || 3
-    );
-
-  /*
-   * 너무 강하지 않도록
-   * 기본적으로 50% 근처를 목표로 한다.
-   */
-
-  switch (level) {
-
-    case 1:
-      return 0.25;
-
-    case 2:
-      return 0.38;
-
-    case 3:
-      return 0.50;
-
-    case 4:
-      return 0.65;
-
-    case 5:
-      return 0.78;
-
-    default:
-      return 0.50;
-  }
-}
-
-
-/* =========================================================
-   AI 승률 조절
-========================================================= */
-
-function getCurrentWinRate() {
-
-  if (!singleStats.games) {
-    return 0.50;
-  }
-
-  return (
-    singleStats.wins /
-    singleStats.games
-  );
-}
-
 
 /*
- * 현재 승률이 너무 높으면
- * AI를 약간 약하게 한다.
+ * AI는 무조건 공격 단어만 사용하지 않는다.
  *
- * 현재 승률이 낮으면
- * 공격을 조금 더 적극적으로 한다.
+ * 기본적으로:
+ * 1. 실제로 이길 수 있는 수
+ * 2. 상대 선택지가 적은 수
+ * 3. 적당히 안전한 일반 단어
+ * 순으로 고려한다.
+ *
+ * 단, 매번 1등만 고르지 않고
+ * 상위 후보에서 랜덤 선택한다.
  */
-function getAdjustedStrength() {
-
-  const base =
-    getDifficultyStrength();
-
-  const winRate =
-    getCurrentWinRate();
-
-  let strength = base;
-
-  if (winRate > 0.70) {
-    strength -= 0.18;
-  } else if (winRate > 0.60) {
-    strength -= 0.08;
-  } else if (winRate < 0.30) {
-    strength += 0.18;
-  } else if (winRate < 0.40) {
-    strength += 0.08;
-  }
-
-  return Math.max(
-    0.15,
-    Math.min(
-      0.90,
-      strength
-    )
-  );
-}
-
-
-/* =========================================================
-   AI 후보 점수
-========================================================= */
 
 function scoreCandidate(
   info,
-  strength,
   currentWord
 ) {
+
   let score = 0;
+
 
   const nextCount =
     info.nextCount;
+
 
   const depth =
     info.depth ?? 0;
 
 
-  /* -------------------------------------------------------
-     상대 선택지 0개
-     -> 매우 강한 공격
-  ------------------------------------------------------- */
+  /* =======================================================
+     한방
+  ======================================================= */
 
   if (info.oneShot) {
-    score += 9000;
 
-    /*
-     * 단, 너무 강한 AI를 방지한다.
-     * 낮은 난이도에서는 즉시 승리를 일부러
-     * 항상 고르지 않는다.
-     */
-    score +=
-      strength * 1000;
+    score += 10000;
   }
 
 
-  /* -------------------------------------------------------
-     상대 선택지 1개
-     -> 강한 공격
-  ------------------------------------------------------- */
-
-  else if (nextCount === 1) {
-    score += 1800;
-  }
-
-
-  /* -------------------------------------------------------
-     선택지가 적음
-  ------------------------------------------------------- */
-
-  else if (nextCount <= 3) {
-    score += 900;
-  }
-
-
-  /* -------------------------------------------------------
-     선택지가 많음
-     -> 중간 정도
-  ------------------------------------------------------- */
-
-  else if (nextCount >= 15) {
-    score += 120;
-  }
-
-  else {
-    score += 350;
-  }
-
-
-  /* -------------------------------------------------------
+  /* =======================================================
      공격 단어
-  ------------------------------------------------------- */
+  ======================================================= */
 
   if (info.winningAttack) {
 
+    /*
+     * 깊이가 높을수록 강한 공격
+     */
     score +=
-      700 +
-      depth * 65;
+      1200 +
+      depth * 70;
+
 
     /*
-     * 상대 선택지가 적을수록
-     * 공격 단어의 가치 상승
+     * 상대 선택지가 적으면
+     * 더욱 강력한 공격
      */
-    if (nextCount <= 3) {
-      score += 500;
+    if (
+      nextCount <= 2
+    ) {
+
+      score += 700;
+
+    } else if (
+      nextCount <= 5
+    ) {
+
+      score += 350;
     }
-
-    /*
-     * 강한 난이도일수록 공격 선호
-     */
-    score +=
-      strength * 1200;
   }
 
 
-  /* -------------------------------------------------------
-     양보/불리한 공격
-  ------------------------------------------------------- */
+  /* =======================================================
+     양보 단어
+  ======================================================= */
 
   if (info.losingAttack) {
 
     score -=
-      450 +
-      depth * 18;
-
-    /*
-     * 너무 강한 상황이면
-     * 일부러 약한 수를 고르는 데 활용
-     */
-    if (strength < 0.45) {
-      score += 250;
-    }
+      650 +
+      depth * 20;
   }
 
 
-  /* -------------------------------------------------------
-     내가 다음 턴에 막힐 가능성
-  ------------------------------------------------------- */
-
-  if (nextCount <= 1) {
-    score -=
-      (1 - strength) * 900;
-  }
-
-
-  /* -------------------------------------------------------
-     안전한 일반 단어
-  ------------------------------------------------------- */
+  /* =======================================================
+     상대 선택지
+  ======================================================= */
 
   if (
-    !info.winningAttack &&
-    !info.losingAttack &&
-    !info.oneShot
+    nextCount === 1
   ) {
+
+    score += 1800;
+
+  } else if (
+    nextCount <= 3
+  ) {
+
+    score += 900;
+
+  } else if (
+    nextCount <= 8
+  ) {
+
+    score += 450;
+
+  } else {
+
+    /*
+     * 너무 선택지가 많은 단어는
+     * 약간 낮게 평가
+     */
     score +=
       Math.min(
         nextCount,
         30
-      ) * 12;
+      ) * 8;
   }
 
 
-  /*
-   * 첫 수는 너무 강한 공격을 피한다.
-   */
+  /* =======================================================
+     첫 수
+  ======================================================= */
+
   if (!currentWord) {
 
-    if (info.oneShot) {
-      score -= 7000;
+    /*
+     * 첫 단어에서 공격/한방 방지
+     */
+    if (
+      info.oneShot
+    ) {
+
+      score -= 12000;
     }
 
-    if (info.winningAttack) {
-      score -= 1000;
+
+    if (
+      info.winningAttack
+    ) {
+
+      score -= 2500;
     }
 
-    if (info.losingAttack) {
-      score -= 300;
+
+    if (
+      info.losingAttack
+    ) {
+
+      score -= 800;
+    }
+
+
+    /*
+     * 일반 단어를 선호
+     */
+    if (
+      !info.winningAttack &&
+      !info.losingAttack &&
+      !info.oneShot
+    ) {
+
+      score += 1500;
     }
   }
 
@@ -729,7 +867,7 @@ function scoreCandidate(
 
 
 /* =========================================================
-   봇 선택
+   AI 선택
 ========================================================= */
 
 function chooseBotWord() {
@@ -738,13 +876,17 @@ function chooseBotWord() {
     return null;
   }
 
+
   const used =
     singleGame.usedWords;
 
 
   let candidates;
 
-  if (singleGame.currentWord) {
+
+  if (
+    singleGame.currentWord
+  ) {
 
     candidates =
       getCandidates(
@@ -762,20 +904,23 @@ function chooseBotWord() {
   }
 
 
-  if (!candidates.length) {
+  if (
+    !candidates.length
+  ) {
+
     return null;
   }
 
 
   /*
-   * 모든 후보를 분석한다.
-   *
-   * 여기서도 전체 word.txt가 아니라
-   * 현재 글자 후보만 분석한다.
+   * 후보 분석
    */
   const analyzed = [];
 
-  for (const word of candidates) {
+
+  for (
+    const word of candidates
+  ) {
 
     analyzed.push(
       analyzeCandidate(
@@ -786,21 +931,20 @@ function chooseBotWord() {
   }
 
 
-  const strength =
-    getAdjustedStrength();
-
-
   const scored =
-    analyzed.map(info => ({
-      ...info,
+    analyzed.map(
+      info => ({
 
-      score:
-        scoreCandidate(
-          info,
-          strength,
-          singleGame.currentWord
-        )
-    }));
+        ...info,
+
+        score:
+          scoreCandidate(
+            info,
+            singleGame.currentWord
+          )
+
+      })
+    );
 
 
   scored.sort(
@@ -810,30 +954,86 @@ function chooseBotWord() {
 
 
   /*
-   * 난이도별 선택 폭
+   * 상위 후보 중 랜덤 선택
+   *
+   * 항상 최선 수를 고르면
+   * AI가 지나치게 강해진다.
    */
-  let poolSize;
+  let poolSize = 7;
 
-  if (strength >= 0.75) {
-    poolSize = 2;
-  } else if (strength >= 0.60) {
-    poolSize = 4;
-  } else if (strength >= 0.40) {
-    poolSize = 7;
-  } else {
-    poolSize = 12;
+
+  /*
+   * 상황에 따른 강도
+   */
+  const games =
+    singleStats.games;
+
+
+  const aiWinRate =
+    games > 0
+      ? singleStats.wins / games
+      : 0.5;
+
+
+  /*
+   * AI가 너무 많이 이기면
+   * 선택 폭을 넓힌다.
+   */
+  if (
+    aiWinRate > 0.65
+  ) {
+
+    poolSize = 14;
+
+  } else if (
+    aiWinRate > 0.55
+  ) {
+
+    poolSize = 10;
   }
 
 
   /*
-   * 승률이 너무 높으면
-   * 후보 폭을 넓혀 자연스럽게 약한 수가
-   * 나올 가능성을 높인다.
+   * AI가 너무 많이 지고 있으면
+   * 조금 더 강하게 한다.
+   */
+  else if (
+    aiWinRate < 0.35
+  ) {
+
+    poolSize = 4;
+
+  } else if (
+    aiWinRate < 0.45
+  ) {
+
+    poolSize = 6;
+  }
+
+
+  /*
+   * 한방이 있으면 너무 쉽게 놓치지는 않는다.
+   *
+   * 단, 첫 단어에서는 제외.
    */
   if (
-    getCurrentWinRate() > 0.65
+    singleGame.currentWord
   ) {
-    poolSize += 5;
+
+    const oneShot =
+      scored.find(
+        info =>
+          info.oneShot
+      );
+
+
+    if (
+      oneShot &&
+      aiWinRate < 0.35
+    ) {
+
+      return oneShot.word;
+    }
   }
 
 
@@ -847,6 +1047,11 @@ function chooseBotWord() {
     );
 
 
+  if (!pool.length) {
+    return null;
+  }
+
+
   const selected =
     pool[
       Math.floor(
@@ -856,15 +1061,20 @@ function chooseBotWord() {
     ];
 
 
-  return selected
-    ? selected.word
-    : null;
+  return selected.word;
 }
 
 
 /* =========================================================
-   시작 단어
+   안전한 시작 단어
 ========================================================= */
+
+/*
+ * 시작 단어를 고를 때
+ * 공격 단어 전체를 검색하지 않는다.
+ *
+ * startFirst -> 해당 글자의 후보만 검사.
+ */
 
 function getRandomStartWord() {
 
@@ -872,21 +1082,26 @@ function getRandomStartWord() {
     return null;
   }
 
-  /*
-   * 전체 word.txt를 순회하지 않는다.
-   *
-   * startFirst가 있으면 그것을 사용한다.
-   */
-  const startFirst =
-    Array.isArray(DATA.startFirst) &&
-    DATA.startFirst.length
-      ? DATA.startFirst
-      : Object.keys(byFirst);
+
+  if (
+    !startFirst.length
+  ) {
+
+    startFirst =
+      Object.keys(byFirst);
+  }
+
+
+  if (
+    !startFirst.length
+  ) {
+
+    return null;
+  }
 
 
   /*
-   * 몇 개의 시작 글자 중에서
-   * 랜덤으로 하나를 선택
+   * 여러 시작 글자 중 랜덤 선택
    */
   const first =
     startFirst[
@@ -901,46 +1116,100 @@ function getRandomStartWord() {
     getBaseCandidates(first);
 
 
-  if (!list.length) {
+  if (
+    !list.length
+  ) {
+
     return null;
   }
 
 
   /*
-   * 공격/즉시 종료 단어는
-   * 시작 단어에서 피한다.
+   * 무작위 위치에서 시작해서
+   * 최대 일정 개수만 검사한다.
+   *
+   * 새 게임마다 전체 50만 단어를
+   * 처음부터 훑지 않는다.
    */
+  const maxCheck =
+    Math.min(
+      list.length,
+      80
+    );
+
+
   const safe = [];
 
-  for (const word of list) {
 
-    if (getAttackDepth(word) != null) {
+  const startIndex =
+    Math.floor(
+      Math.random() *
+      list.length
+    );
+
+
+  for (
+    let i = 0;
+    i < maxCheck;
+    i++
+  ) {
+
+    const word =
+      list[
+        (startIndex + i) %
+        list.length
+      ];
+
+
+    /*
+     * attack.txt에 있는 단어는
+     * 시작 단어에서 제외
+     */
+    if (
+      getAttackDepth(word) !== null
+    ) {
+
       continue;
     }
 
+
+    /*
+     * 한방 단어도 제외
+     */
     const next =
       getCandidates(
         word,
         new Set([word])
       );
 
-    if (!next.length) {
+
+    if (
+      next.length === 0
+    ) {
+
       continue;
     }
 
+
     safe.push(word);
 
+
     /*
-     * 충분히 찾으면 종료.
-     * 전체 목록을 끝까지 뒤지지 않는다.
+     * 8개 정도만 확보하면 충분
      */
-    if (safe.length >= 100) {
+    if (
+      safe.length >= 8
+    ) {
+
       break;
     }
   }
 
 
-  if (safe.length) {
+  if (
+    safe.length
+  ) {
+
     return safe[
       Math.floor(
         Math.random() *
@@ -951,8 +1220,8 @@ function getRandomStartWord() {
 
 
   /*
-   * 안전한 단어가 없다면
-   * 일반 후보 중 선택
+   * 혹시 안전한 단어가 없으면
+   * 일반 단어 중 랜덤 선택.
    */
   return list[
     Math.floor(
@@ -964,25 +1233,14 @@ function getRandomStartWord() {
 
 
 /* =========================================================
-   싱글 게임 생성
+   싱글 게임 객체
 ========================================================= */
 
-function createSingleGame() {
+function makeSingleGame(
+  start
+) {
 
-  const start =
-    getRandomStartWord();
-
-  if (!start) {
-    showMessage(
-      "시작 단어를 찾지 못했습니다.",
-      true
-    );
-
-    return false;
-  }
-
-
-  singleGame = {
+  return {
 
     startChar:
       start.at(0),
@@ -998,29 +1256,20 @@ function createSingleGame() {
     usedWords:
       new Set(),
 
-    finished: false,
+    finished:
+      false,
 
-    winner: null,
+    winner:
+      null,
 
-    loser: null
+    loser:
+      null
   };
-
-
-  startWordInput.value =
-    start;
-
-
-  /*
-   * 시작 단어를 실제 게임에 넣는다.
-   */
-  playSingleWord(start, 0);
-
-  return true;
 }
 
 
 /* =========================================================
-   싱글 단어 처리
+   싱글 단어 플레이
 ========================================================= */
 
 function playSingleWord(
@@ -1028,15 +1277,43 @@ function playSingleWord(
   player
 ) {
 
-  word =
-    normalizeWord(word);
+  if (
+    !singleGame ||
+    singleGame.finished
+  ) {
 
-  if (!word) {
     return false;
   }
 
 
-  if (!allWords.has(word)) {
+  word =
+    normalizeWord(word);
+
+
+  if (!word) {
+
+    return false;
+  }
+
+
+  /*
+   * 실제 단어 목록 확인
+   *
+   * byFirst를 이용하므로
+   * 50만 개 Set을 새로 만들 필요가 없다.
+   */
+  const first =
+    word.at(0);
+
+
+  const list =
+    getBaseCandidates(first);
+
+
+  if (
+    !list.includes(word)
+  ) {
+
     showMessage(
       "단어 목록에 없는 단어입니다.",
       true
@@ -1046,9 +1323,13 @@ function playSingleWord(
   }
 
 
+  /*
+   * 중복
+   */
   if (
     singleGame.usedWords.has(word)
   ) {
+
     showMessage(
       "이미 사용한 단어입니다.",
       true
@@ -1058,6 +1339,34 @@ function playSingleWord(
   }
 
 
+  /*
+   * 첫 단어
+   */
+  if (
+    singleGame.history.length === 0
+  ) {
+
+    if (
+      !allowedFirstChars(
+        singleGame.startChar
+      ).includes(
+        word.at(0)
+      )
+    ) {
+
+      showMessage(
+        `"${singleGame.startChar}"으로 시작하는 단어가 아닙니다.`,
+        true
+      );
+
+      return false;
+    }
+  }
+
+
+  /*
+   * 연결
+   */
   if (
     singleGame.currentWord &&
     !canConnect(
@@ -1069,30 +1378,46 @@ function playSingleWord(
     const last =
       singleGame.currentWord.at(-1);
 
+
     showMessage(
       `"${last}" 다음에 연결할 수 없는 단어입니다.`,
       true
     );
 
+
     return false;
   }
 
 
+  /*
+   * 등록
+   */
   singleGame.currentWord =
     word;
 
-  singleGame.usedWords.add(word);
+
+  singleGame.usedWords.add(
+    word
+  );
+
 
   singleGame.history.push({
+
     word,
+
     player,
+
     turn:
       singleGame.history.length + 1,
+
     depth:
       getAttackDepth(word)
   });
 
 
+  /*
+   * 다음 플레이어
+   */
   singleGame.turnPlayer =
     player === 0
       ? 1
@@ -1101,7 +1426,140 @@ function playSingleWord(
 
   updateSingleUI();
 
+
   return true;
+}
+
+
+/* =========================================================
+   싱글 게임 종료 검사
+========================================================= */
+
+function checkSingleFinished() {
+
+  if (
+    !singleGame ||
+    !singleGame.currentWord
+  ) {
+
+    return false;
+  }
+
+
+  const candidates =
+    getCandidates(
+      singleGame.currentWord,
+      singleGame.usedWords
+    );
+
+
+  if (
+    candidates.length > 0
+  ) {
+
+    return false;
+  }
+
+
+  const last =
+    singleGame.history.at(-1);
+
+
+  if (!last) {
+    return false;
+  }
+
+
+  singleGame.finished =
+    true;
+
+
+  singleGame.winner =
+    last.player;
+
+
+  singleGame.loser =
+    last.player === 0
+      ? 1
+      : 0;
+
+
+  finishSingleGame();
+
+
+  return true;
+}
+
+
+/* =========================================================
+   싱글 게임 종료
+========================================================= */
+
+function finishSingleGame() {
+
+  if (
+    !singleGame
+  ) {
+
+    return;
+  }
+
+
+  /*
+   * 이미 종료 처리된 게임 방지
+   */
+  if (
+    singleGame._counted
+  ) {
+
+    return;
+  }
+
+
+  singleGame._counted =
+    true;
+
+
+  singleStats.games++;
+
+
+  singleStats.totalTurns +=
+    singleGame.history.length;
+
+
+  /*
+   * winner 1 = AI
+   */
+  if (
+    singleGame.winner === 1
+  ) {
+
+    singleStats.wins++;
+
+  } else {
+
+    singleStats.losses++;
+  }
+
+
+  saveStats();
+  updateStats();
+
+
+  if (
+    singleGame.winner === 1
+  ) {
+
+    showMessage(
+      "끝말잇기 AI 승리"
+    );
+
+  } else {
+
+    showMessage(
+      "플레이어 승리"
+    );
+  }
 }
 
 
@@ -1111,28 +1569,49 @@ function playSingleWord(
 
 function sendSingleWord() {
 
-  if (!singleGame) {
+  if (
+    !singleGame
+  ) {
+
+    showMessage(
+      "먼저 새 게임을 시작해주세요.",
+      true
+    );
+
     return;
   }
+
 
   if (
-    singleGame.finished ||
-    singleThinking
+    singleGame.finished
   ) {
+
     return;
   }
 
 
+  if (
+    singleThinking
+  ) {
+
+    return;
+  }
+
+
+  /*
+   * 0 = 플레이어
+   */
   if (
     singleGame.turnPlayer !== 0
   ) {
+
     return;
   }
 
 
   const word =
     normalizeWord(
-      singleInput.value
+      singleInput?.value
     );
 
 
@@ -1141,6 +1620,10 @@ function sendSingleWord() {
   }
 
 
+  /*
+   * 입력창을 비우는 것은
+   * 실제 판정 전에 해도 된다.
+   */
   singleInput.value = "";
 
 
@@ -1152,32 +1635,46 @@ function sendSingleWord() {
 
 
   if (!success) {
-    return;
-  }
 
+    /*
+     * 잘못된 단어라면
+     * 다시 입력할 수 있도록 포커스
+     */
+    singleInput?.focus();
 
-  checkSingleFinished();
-
-
-  if (singleGame.finished) {
     return;
   }
 
 
   /*
-   * AI는 다음 이벤트 루프에서 실행.
-   * UI가 먼저 갱신되도록 한다.
+   * 내가 방금 게임을 끝냈는지 검사
    */
-  singleThinking = true;
+  if (
+    checkSingleFinished()
+  ) {
+
+    return;
+  }
+
+
+  /*
+   * AI 생각
+   */
+  singleThinking =
+    true;
+
 
   showMessage(
     "끝말잇기 AI가 생각 중..."
   );
 
 
+  /*
+   * UI 갱신 후 AI 실행
+   */
   setTimeout(
     botTurn,
-    30
+    20
   );
 }
 
@@ -1192,7 +1689,10 @@ function botTurn() {
     !singleGame ||
     singleGame.finished
   ) {
-    singleThinking = false;
+
+    singleThinking =
+      false;
+
     return;
   }
 
@@ -1200,7 +1700,10 @@ function botTurn() {
   if (
     singleGame.turnPlayer !== 1
   ) {
-    singleThinking = false;
+
+    singleThinking =
+      false;
+
     return;
   }
 
@@ -1209,123 +1712,99 @@ function botTurn() {
     chooseBotWord();
 
 
+  /*
+   * AI가 연결할 단어가 없음
+   */
   if (!word) {
 
-    singleGame.finished = true;
+    singleGame.finished =
+      true;
 
-    singleGame.winner = 0;
-    singleGame.loser = 1;
+    singleGame.winner =
+      0;
+
+    singleGame.loser =
+      1;
+
 
     finishSingleGame();
 
-    singleThinking = false;
+
+    singleThinking =
+      false;
+
 
     return;
   }
 
 
-  playSingleWord(
-    word,
-    1
+  /*
+   * AI 단어 입력
+   */
+  const success =
+    playSingleWord(
+      word,
+      1
+    );
+
+
+  if (!success) {
+
+    /*
+     * 이론상 발생하면
+     * 게임을 망가뜨리지 않고 종료.
+     */
+    console.error(
+      "AI 단어 처리 실패:",
+      word
+    );
+
+
+    singleGame.finished =
+      true;
+
+    singleGame.winner =
+      0;
+
+    singleGame.loser =
+      1;
+
+
+    finishSingleGame();
+
+
+    singleThinking =
+      false;
+
+
+    return;
+  }
+
+
+  singleThinking =
+    false;
+
+
+  /*
+   * AI가 방금 끝냈는지 검사
+   */
+  if (
+    checkSingleFinished()
+  ) {
+
+    return;
+  }
+
+
+  showMessage(
+    "당신의 차례입니다."
   );
 
 
-  singleThinking = false;
-
-
-  checkSingleFinished();
-
-
-  if (!singleGame.finished) {
-    showMessage(
-      "당신의 차례입니다."
-    );
-  }
-}
-
-
-/* =========================================================
-   게임 종료 검사
-========================================================= */
-
-function checkSingleFinished() {
-
-  if (!singleGame) {
-    return;
-  }
-
-
-  const candidates =
-    getCandidates(
-      singleGame.currentWord,
-      singleGame.usedWords
-    );
-
-
-  if (!candidates.length) {
-
-    const lastPlayer =
-      singleGame.history.at(-1)?.player;
-
-
-    singleGame.finished = true;
-
-    singleGame.winner =
-      lastPlayer;
-
-    singleGame.loser =
-      lastPlayer === 0
-        ? 1
-        : 0;
-
-
-    finishSingleGame();
-  }
-}
-
-
-/* =========================================================
-   싱글 종료 처리
-========================================================= */
-
-function finishSingleGame() {
-
-  if (!singleGame) {
-    return;
-  }
-
-
-  const winner =
-    singleGame.winner;
-
-
-  singleStats.games++;
-
-
-  singleStats.totalTurns +=
-    singleGame.history.length;
-
-
-  if (winner === 1) {
-    singleStats.wins++;
-  } else {
-    singleStats.losses++;
-  }
-
-
-  saveStats();
-  updateStats();
-
-
-  if (winner === 1) {
-    showMessage(
-      "끝말잇기 AI 승리"
-    );
-  } else {
-    showMessage(
-      "플레이어 승리"
-    );
-  }
+  /*
+   * 입력창 포커스
+   */
+  singleInput?.focus();
 }
 
 
@@ -1335,7 +1814,10 @@ function finishSingleGame() {
 
 function updateSingleUI() {
 
-  if (!singleGame) {
+  if (
+    !singleGame
+  ) {
+
     return;
   }
 
@@ -1344,26 +1826,52 @@ function updateSingleUI() {
     singleGame.currentWord;
 
 
-  lastEl.textContent =
-    current
-      ? current.at(-1)
-      : "-";
+  /*
+   * 끝 글자
+   */
+  if (lastEl) {
+
+    lastEl.textContent =
+      current
+        ? current.at(-1)
+        : "-";
+  }
 
 
-  turnEl.textContent =
-    singleGame.history.length;
+  /*
+   * 턴
+   */
+  if (turnEl) {
+
+    turnEl.textContent =
+      singleGame.history.length;
+  }
 
 
-  const depth =
-    current
-      ? getAttackDepth(current)
-      : null;
+  /*
+   * 공격 깊이
+   */
+  if (depthEl) {
+
+    const depth =
+      current
+        ? getAttackDepth(current)
+        : null;
 
 
-  depthEl.textContent =
-    depth != null
-      ? depth
-      : "-";
+    depthEl.textContent =
+      depth !== null
+        ? depth
+        : "-";
+  }
+
+
+  /*
+   * 기록
+   */
+  if (!historyEl) {
+    return;
+  }
 
 
   historyEl.innerHTML = "";
@@ -1376,21 +1884,28 @@ function updateSingleUI() {
     const div =
       document.createElement("div");
 
+
     div.className =
       item.player === 0
         ? "playerWord"
         : "aiWord";
 
 
+    const name =
+      item.player === 0
+        ? "나"
+        : "끝말잇기 AI";
+
+
     div.textContent =
-      `${item.turn}. ${
-        item.player === 0
-          ? "나"
-          : "끝말잇기 AI"
-      } : ${item.word}`;
+      `${item.turn}. ${name} : ${item.word}`;
 
 
-    if (item.depth != null) {
+    if (
+      item.depth !== null &&
+      item.depth !== undefined
+    ) {
+
       div.textContent +=
         ` [깊이 ${item.depth}]`;
     }
@@ -1398,6 +1913,124 @@ function updateSingleUI() {
 
     historyEl.appendChild(div);
   }
+
+
+  /*
+   * 기록창은 항상 최신 기록으로 이동
+   */
+  historyEl.scrollTop =
+    historyEl.scrollHeight;
+}
+
+
+/* =========================================================
+   새 게임
+========================================================= */
+
+async function startNewGame() {
+
+  /*
+   * 게임 도중에도 바로 새 게임 가능
+   */
+  singleThinking =
+    false;
+
+
+  showMessage(
+    "새 게임 준비 중..."
+  );
+
+
+  /*
+   * 데이터가 없다면 최초 1회만 로드
+   */
+  const ok =
+    await loadData();
+
+
+  if (!ok) {
+    return;
+  }
+
+
+  /*
+   * 여기부터는 매우 빠르게 실행
+   */
+  const start =
+    getRandomStartWord();
+
+
+  if (!start) {
+
+    showMessage(
+      "시작 단어를 찾지 못했습니다.",
+      true
+    );
+
+    return;
+  }
+
+
+  /*
+   * 이전 게임 완전 제거
+   */
+  singleGame =
+    makeSingleGame(start);
+
+
+  startWordInput.value =
+    start;
+
+
+  /*
+   * 시작 단어 등록
+   */
+  const success =
+    playSingleWord(
+      start,
+      0
+    );
+
+
+  if (!success) {
+
+    showMessage(
+      "시작 단어를 등록하지 못했습니다.",
+      true
+    );
+
+    return;
+  }
+
+
+  /*
+   * 시작 단어 때문에 바로 끝났다면
+   * 다음 게임을 기다린다.
+   */
+  if (
+    checkSingleFinished()
+  ) {
+
+    return;
+  }
+
+
+  showMessage(
+    "당신의 차례입니다."
+  );
+
+
+  singleInput?.focus();
+}
+
+
+/* =========================================================
+   랜덤 시작
+========================================================= */
+
+async function randomStart() {
+
+  await startNewGame();
 }
 
 
@@ -1414,8 +2047,10 @@ function showMessage(
     return;
   }
 
+
   messageEl.textContent =
     text || "";
+
 
   messageEl.classList.toggle(
     "error",
@@ -1430,12 +2065,22 @@ function showMessage(
 
 function saveStats() {
 
-  localStorage.setItem(
-    "kkeul-ai-stats",
-    JSON.stringify(
-      singleStats
-    )
-  );
+  try {
+
+    localStorage.setItem(
+      "kkeul-ai-stats",
+      JSON.stringify(
+        singleStats
+      )
+    );
+
+  } catch (error) {
+
+    console.warn(
+      "통계 저장 실패:",
+      error
+    );
+  }
 }
 
 
@@ -1457,6 +2102,7 @@ function loadStats() {
     ) {
 
       singleStats = {
+
         wins:
           Number(saved.wins) || 0,
 
@@ -1471,152 +2117,69 @@ function loadStats() {
       };
     }
 
-  } catch {
-    /*
-     * 저장 데이터가 깨졌으면
-     * 기본값으로 시작
-     */
+  } catch (error) {
+
+    console.warn(
+      "통계 불러오기 실패:",
+      error
+    );
   }
 }
 
 
 function updateStats() {
 
-  winsEl.textContent =
-    singleStats.wins;
+  if (winsEl) {
 
-  lossesEl.textContent =
-    singleStats.losses;
-
-  gamesEl.textContent =
-    singleStats.games;
+    winsEl.textContent =
+      singleStats.wins;
+  }
 
 
-  if (singleStats.games) {
+  if (lossesEl) {
+
+    lossesEl.textContent =
+      singleStats.losses;
+  }
+
+
+  if (gamesEl) {
+
+    gamesEl.textContent =
+      singleStats.games;
+  }
+
+
+  if (avgEl) {
 
     avgEl.textContent =
-      (
-        singleStats.totalTurns /
-        singleStats.games
-      ).toFixed(1);
+      singleStats.games > 0
 
-  } else {
+        ? (
+            singleStats.totalTurns /
+            singleStats.games
+          ).toFixed(1)
 
-    avgEl.textContent =
-      "-";
+        : "-";
   }
 
 
-  const rate =
-    singleStats.games
-      ? (
-          singleStats.wins /
-          singleStats.games
-        ) * 100
-      : 0;
+  if (winrateEl) {
+
+    const rate =
+      singleStats.games > 0
+
+        ? (
+            singleStats.wins /
+            singleStats.games
+          ) * 100
+
+        : 50;
 
 
-  winrateEl.textContent =
-    `${rate.toFixed(0)}%`;
-}
-
-
-/* =========================================================
-   새 게임
-========================================================= */
-
-async function startNewGame() {
-
-  if (!dataReady) {
-
-    showMessage(
-      "단어 데이터를 준비하는 중..."
-    );
-
-    const ok =
-      await loadData();
-
-    if (!ok) {
-      return;
-    }
+    winrateEl.textContent =
+      `${rate.toFixed(0)}%`;
   }
-
-
-  /*
-   * 준비 완료 후 즉시 생성.
-   */
-  createSingleGame();
-
-
-  singleInput.focus();
-}
-
-
-/* =========================================================
-   랜덤 시작
-========================================================= */
-
-async function randomStart() {
-
-  if (!dataReady) {
-
-    const ok =
-      await loadData();
-
-    if (!ok) {
-      return;
-    }
-  }
-
-
-  const start =
-    getRandomStartWord();
-
-
-  if (!start) {
-    return;
-  }
-
-
-  startWordInput.value =
-    start;
-
-
-  /*
-   * 새 게임을 만들고
-   * 랜덤 시작 단어를 지정한다.
-   */
-  singleGame = {
-
-    startChar:
-      start.at(0),
-
-    currentWord:
-      null,
-
-    turnPlayer:
-      0,
-
-    history: [],
-
-    usedWords:
-      new Set(),
-
-    finished: false,
-
-    winner: null,
-
-    loser: null
-  };
-
-
-  playSingleWord(
-    start,
-    0
-  );
-
-
-  singleInput.focus();
 }
 
 
@@ -1626,34 +2189,43 @@ async function randomStart() {
 
 function switchTab(mode) {
 
-  tabs.forEach(button => {
+  tabs.forEach(
+    button => {
 
-    button.classList.toggle(
-      "active",
-      button.dataset.mode === mode
-    );
-  });
+      button.classList.toggle(
+        "active",
+        button.dataset.mode === mode
+      );
+    }
+  );
 
 
-  if (mode === "single") {
+  if (
+    mode === "single"
+  ) {
 
-    singlePanel.classList.remove(
+    singlePanel?.classList.remove(
       "hidden"
     );
 
-    onlinePanel.classList.add(
+    onlinePanel?.classList.add(
       "hidden"
     );
+
+
+    singleInput?.focus();
+
 
   } else {
 
-    singlePanel.classList.add(
+    singlePanel?.classList.add(
       "hidden"
     );
 
-    onlinePanel.classList.remove(
+    onlinePanel?.classList.remove(
       "hidden"
     );
+
 
     connectSocket();
   }
@@ -1661,13 +2233,13 @@ function switchTab(mode) {
 
 
 /* =========================================================
-   Socket.IO
+   Socket.IO 연결
 ========================================================= */
 
 function connectSocket() {
 
   if (socket) {
-    return;
+    return socket;
   }
 
 
@@ -1675,142 +2247,308 @@ function connectSocket() {
     typeof io !== "function"
   ) {
 
-    onlineMessage.textContent =
-      "Socket.IO를 불러오지 못했습니다.";
+    if (onlineMessage) {
 
-    return;
+      onlineMessage.textContent =
+        "Socket.IO를 불러오지 못했습니다.";
+    }
+
+
+    return null;
   }
 
 
   socket =
-    io();
+    io({
+      transports: [
+        "websocket",
+        "polling"
+      ]
+    });
 
+
+  /* -------------------------------------------------------
+     연결
+  ------------------------------------------------------- */
 
   socket.on(
     "connect",
     () => {
 
-      onlineMessage.textContent =
-        "서버에 연결되었습니다.";
+      if (onlineMessage) {
+
+        onlineMessage.textContent =
+          "서버에 연결되었습니다.";
+      }
     }
   );
 
+
+  /* -------------------------------------------------------
+     연결 종료
+  ------------------------------------------------------- */
 
   socket.on(
     "disconnect",
     () => {
 
-      onlineMessage.textContent =
-        "서버 연결이 끊어졌습니다.";
+      onlineStarted =
+        false;
+
+
+      if (onlineMessage) {
+
+        onlineMessage.textContent =
+          "서버 연결이 끊어졌습니다.";
+      }
     }
   );
 
+
+  /* -------------------------------------------------------
+     방 생성
+  ------------------------------------------------------- */
 
   socket.on(
     "roomCreated",
     data => {
 
-      roomCodeInput.value =
-        data.code;
+      if (!data) {
+        return;
+      }
 
-      onlineMessage.textContent =
-        `방 생성 완료: ${data.code}`;
+
+      if (
+        data.code &&
+        roomCodeInput
+      ) {
+
+        roomCodeInput.value =
+          data.code;
+      }
+
+
+      if (onlineMessage) {
+
+        onlineMessage.textContent =
+          `방 생성 완료: ${data.code}`;
+      }
     }
   );
 
+
+  /* -------------------------------------------------------
+     방 참가
+  ------------------------------------------------------- */
 
   socket.on(
     "joinedRoom",
     data => {
 
-      roomCodeInput.value =
-        data.code;
+      if (!data) {
+        return;
+      }
 
-      onlineMessage.textContent =
-        `방 참가 완료: ${data.code}`;
+
+      if (
+        data.code &&
+        roomCodeInput
+      ) {
+
+        roomCodeInput.value =
+          data.code;
+      }
+
+
+      if (onlineMessage) {
+
+        onlineMessage.textContent =
+          `방 참가 완료: ${data.code}`;
+      }
     }
   );
 
+
+  /* -------------------------------------------------------
+     방 상태
+  ------------------------------------------------------- */
 
   socket.on(
     "roomState",
     state => {
 
-      onlineRoom = state;
-
-      updateOnlineRoom(state);
-    }
-  );
+      onlineRoom =
+        state || null;
 
 
-  socket.on(
-    "onlineStarted",
-    () => {
-
-      onlineStarted = true;
-
-      onlineMessage.textContent =
-        "게임이 시작되었습니다.";
-    }
-  );
-
-
-  socket.on(
-    "wordPlayed",
-    data => {
-
-      addOnlineHistory(
-        data.word,
-        data.player,
-        data.nextTurn
+      updateOnlineRoom(
+        state
       );
     }
   );
 
 
+  /* -------------------------------------------------------
+     온라인 게임 시작
+  ------------------------------------------------------- */
+
+  socket.on(
+    "onlineStarted",
+    state => {
+
+      onlineStarted =
+        true;
+
+
+      if (state) {
+
+        onlineRoom =
+          state;
+
+        updateOnlineRoom(
+          state
+        );
+      }
+
+
+      if (onlineMessage) {
+
+        onlineMessage.textContent =
+          "게임이 시작되었습니다.";
+      }
+
+
+      onlineInput?.focus();
+    }
+  );
+
+
+  /* -------------------------------------------------------
+     단어 입력 성공
+  ------------------------------------------------------- */
+
+  socket.on(
+    "wordPlayed",
+    data => {
+
+      if (!data) {
+        return;
+      }
+
+
+      addOnlineHistory(
+        data.word,
+        data.player,
+        data.nextTurn,
+        data.depth
+      );
+    }
+  );
+
+
+  /* -------------------------------------------------------
+     단어 입력 실패
+  ------------------------------------------------------- */
+
   socket.on(
     "wordRejected",
     data => {
 
-      onlineMessage.textContent =
-        data.reason ||
-        "단어를 사용할 수 없습니다.";
+      if (onlineMessage) {
+
+        onlineMessage.textContent =
+          data?.reason ||
+          "단어를 사용할 수 없습니다.";
+      }
+
+
+      onlineInput?.focus();
     }
   );
 
+
+  /* -------------------------------------------------------
+     게임 종료
+  ------------------------------------------------------- */
 
   socket.on(
     "gameFinished",
     data => {
 
-      onlineStarted = false;
+      onlineStarted =
+        false;
 
-      onlineMessage.textContent =
-        data.winner === onlineMyIndex
-          ? "승리했습니다."
-          : "게임이 끝났습니다.";
+
+      const winner =
+        data?.winner;
+
+
+      if (
+        winner === onlineMyIndex
+      ) {
+
+        onlineMessage.textContent =
+          "승리했습니다.";
+
+      } else {
+
+        onlineMessage.textContent =
+          "게임이 끝났습니다.";
+      }
     }
   );
 
+
+  /* -------------------------------------------------------
+     방 메시지
+  ------------------------------------------------------- */
 
   socket.on(
     "roomMessage",
     message => {
 
-      onlineMessage.textContent =
-        message;
+      if (onlineMessage) {
+
+        onlineMessage.textContent =
+          message || "";
+      }
     }
   );
 
+
+  /* -------------------------------------------------------
+     에러
+  ------------------------------------------------------- */
 
   socket.on(
     "errorMessage",
     message => {
 
-      onlineMessage.textContent =
-        message;
+      if (onlineMessage) {
+
+        onlineMessage.textContent =
+          message || "오류가 발생했습니다.";
+      }
     }
   );
+
+
+  /*
+   * 서버가 error 이벤트를 직접 보내는 경우
+   */
+  socket.on(
+    "error",
+    error => {
+
+      console.error(
+        "Socket 오류:",
+        error
+      );
+    }
+  );
+
+
+  return socket;
 }
 
 
@@ -1820,42 +2558,82 @@ function connectSocket() {
 
 function updateOnlineRoom(state) {
 
-  if (!state) {
-    roomInfo.textContent = "";
+  if (!roomInfo) {
     return;
   }
 
 
-  roomInfo.innerHTML = "";
+  if (!state) {
+
+    roomInfo.textContent =
+      "";
+
+    onlineMyIndex =
+      -1;
+
+    startOnlineButton?.classList.add(
+      "hidden"
+    );
+
+    return;
+  }
 
 
-  const title =
-    document.createElement("div");
-
-  title.textContent =
-    `방 코드: ${state.code}`;
-
-  roomInfo.appendChild(title);
+  roomInfo.innerHTML =
+    "";
 
 
-  state.players.forEach(
+  if (
+    state.code
+  ) {
+
+    const title =
+      document.createElement("div");
+
+
+    title.textContent =
+      `방 코드: ${state.code}`;
+
+
+    roomInfo.appendChild(
+      title
+    );
+  }
+
+
+  const players =
+    Array.isArray(state.players)
+      ? state.players
+      : [];
+
+
+  onlineMyIndex =
+    -1;
+
+
+  players.forEach(
     (player, index) => {
 
       const row =
         document.createElement("div");
 
+
       row.textContent =
         `${index === 0 ? "방장" : "플레이어"}: ${
-          player.name
+          player.name || "Player"
         }`;
 
-      roomInfo.appendChild(row);
+
+      roomInfo.appendChild(
+        row
+      );
 
 
       if (
         socket &&
         player.id === socket.id
       ) {
+
         onlineMyIndex =
           index;
       }
@@ -1863,19 +2641,24 @@ function updateOnlineRoom(state) {
   );
 
 
+  /*
+   * 방장이고 2명이 모였으며
+   * 아직 시작하지 않았다면
+   * 시작 버튼 표시
+   */
   if (
-    state.players.length === 2 &&
+    players.length === 2 &&
     onlineMyIndex === 0 &&
     !state.started
   ) {
 
-    startOnlineButton.classList.remove(
+    startOnlineButton?.classList.remove(
       "hidden"
     );
 
   } else {
 
-    startOnlineButton.classList.add(
+    startOnlineButton?.classList.add(
       "hidden"
     );
   }
@@ -1889,22 +2672,79 @@ function updateOnlineRoom(state) {
 function addOnlineHistory(
   word,
   player,
-  nextTurn
+  nextTurn,
+  depth
 ) {
+
+  if (!onlineHistory) {
+    return;
+  }
+
 
   const div =
     document.createElement("div");
 
+
   div.textContent =
-    `${player === 0 ? "플레이어 1" : "플레이어 2"} : ${word}`;
+    `${
+      player === 0
+        ? "플레이어 1"
+        : "플레이어 2"
+    } : ${word}`;
 
-  onlineHistory.appendChild(div);
+
+  if (
+    depth !== null &&
+    depth !== undefined
+  ) {
+
+    div.textContent +=
+      ` [깊이 ${depth}]`;
+  }
 
 
-  onlineMessage.textContent =
+  onlineHistory.appendChild(
+    div
+  );
+
+
+  onlineHistory.scrollTop =
+    onlineHistory.scrollHeight;
+
+
+  if (onlineMessage) {
+
+    onlineMessage.textContent =
+      nextTurn === onlineMyIndex
+
+        ? "내 차례입니다."
+
+        : "상대방 차례입니다.";
+  }
+
+
+  if (
     nextTurn === onlineMyIndex
-      ? "내 차례입니다."
-      : "상대방 차례입니다.";
+  ) {
+
+    onlineInput?.focus();
+  }
+}
+
+
+/* =========================================================
+   온라인 기록 초기화
+========================================================= */
+
+function clearOnlineHistory() {
+
+  if (
+    onlineHistory
+  ) {
+
+    onlineHistory.innerHTML =
+      "";
+  }
 }
 
 
@@ -1914,22 +2754,33 @@ function addOnlineHistory(
 
 function createOnlineRoom() {
 
-  connectSocket();
+  const s =
+    connectSocket();
 
-  if (!socket) {
+
+  if (!s) {
     return;
   }
 
 
   const name =
     normalizeWord(
-      nameInput.value
+      nameInput?.value
     ) || "Player";
 
 
-  socket.emit(
+  clearOnlineHistory();
+
+
+  onlineStarted =
+    false;
+
+
+  s.emit(
     "createRoom",
-    { name }
+    {
+      name
+    }
   );
 }
 
@@ -1940,23 +2791,33 @@ function createOnlineRoom() {
 
 function joinOnlineRoom() {
 
-  connectSocket();
+  const s =
+    connectSocket();
 
-  if (!socket) {
+
+  if (!s) {
     return;
   }
 
 
   const code =
-    roomCodeInput.value
+    String(
+      roomCodeInput?.value || ""
+    )
       .trim()
       .toUpperCase();
 
 
   if (!code) {
 
-    onlineMessage.textContent =
-      "방 코드를 입력해주세요.";
+    if (onlineMessage) {
+
+      onlineMessage.textContent =
+        "방 코드를 입력해주세요.";
+    }
+
+
+    roomCodeInput?.focus();
 
     return;
   }
@@ -1964,11 +2825,18 @@ function joinOnlineRoom() {
 
   const name =
     normalizeWord(
-      nameInput.value
+      nameInput?.value
     ) || "Player";
 
 
-  socket.emit(
+  clearOnlineHistory();
+
+
+  onlineStarted =
+    false;
+
+
+  s.emit(
     "joinRoom",
     {
       code,
@@ -1979,21 +2847,21 @@ function joinOnlineRoom() {
 
 
 /* =========================================================
-   온라인 시작
+   온라인 게임 시작
 ========================================================= */
 
 function startOnlineGame() {
 
-  if (!socket) {
+  const s =
     connectSocket();
-  }
 
-  if (!socket) {
+
+  if (!s) {
     return;
   }
 
 
-  socket.emit(
+  s.emit(
     "startOnline"
   );
 }
@@ -2009,13 +2877,14 @@ function sendOnlineWord() {
     !socket ||
     !onlineStarted
   ) {
+
     return;
   }
 
 
   const word =
     normalizeWord(
-      onlineInput.value
+      onlineInput?.value
     );
 
 
@@ -2024,7 +2893,8 @@ function sendOnlineWord() {
   }
 
 
-  onlineInput.value = "";
+  onlineInput.value =
+    "";
 
 
   socket.emit(
@@ -2042,128 +2912,174 @@ function sendOnlineWord() {
 
 function bindEvents() {
 
-  /*
-   * 탭
-   */
-  tabs.forEach(button => {
+  /* -------------------------------------------------------
+     탭
+  ------------------------------------------------------- */
 
-    button.addEventListener(
-      "click",
-      () => {
+  tabs.forEach(
+    button => {
 
-        switchTab(
-          button.dataset.mode
-        );
-      }
-    );
-  });
+      button.addEventListener(
+        "click",
+        () => {
 
-
-  /*
-   * 싱글
-   */
-  if (singleSend) {
-
-    singleSend.addEventListener(
-      "click",
-      sendSingleWord
-    );
-  }
-
-
-  if (singleInput) {
-
-    singleInput.addEventListener(
-      "keydown",
-      event => {
-
-        if (
-          event.key === "Enter"
-        ) {
-
-          event.preventDefault();
-
-          sendSingleWord();
+          switchTab(
+            button.dataset.mode
+          );
         }
+      );
+    }
+  );
+
+
+  /* -------------------------------------------------------
+     싱글 입력 버튼
+  ------------------------------------------------------- */
+
+  singleSend?.addEventListener(
+    "click",
+    sendSingleWord
+  );
+
+
+  /* -------------------------------------------------------
+     싱글 Enter
+  ------------------------------------------------------- */
+
+  singleInput?.addEventListener(
+    "keydown",
+    event => {
+
+      if (
+        event.key === "Enter"
+      ) {
+
+        event.preventDefault();
+
+        sendSingleWord();
       }
-    );
-  }
+    }
+  );
 
 
-  if (restartButton) {
+  /* -------------------------------------------------------
+     새 게임
+  ------------------------------------------------------- */
 
-    restartButton.addEventListener(
-      "click",
-      startNewGame
-    );
-  }
-
-
-  if (newStartButton) {
-
-    newStartButton.addEventListener(
-      "click",
-      randomStart
-    );
-  }
+  restartButton?.addEventListener(
+    "click",
+    startNewGame
+  );
 
 
-  /*
-   * 온라인
-   */
-  if (createButton) {
+  /* -------------------------------------------------------
+     랜덤 시작
+  ------------------------------------------------------- */
 
-    createButton.addEventListener(
-      "click",
-      createOnlineRoom
-    );
-  }
+  newStartButton?.addEventListener(
+    "click",
+    randomStart
+  );
 
 
-  if (joinButton) {
+  /* -------------------------------------------------------
+     온라인 방 생성
+  ------------------------------------------------------- */
 
-    joinButton.addEventListener(
-      "click",
-      joinOnlineRoom
-    );
-  }
-
-
-  if (startOnlineButton) {
-
-    startOnlineButton.addEventListener(
-      "click",
-      startOnlineGame
-    );
-  }
+  createButton?.addEventListener(
+    "click",
+    createOnlineRoom
+  );
 
 
-  if (onlineSend) {
+  /* -------------------------------------------------------
+     온라인 방 참가
+  ------------------------------------------------------- */
 
-    onlineSend.addEventListener(
-      "click",
-      sendOnlineWord
-    );
-  }
+  joinButton?.addEventListener(
+    "click",
+    joinOnlineRoom
+  );
 
 
-  if (onlineInput) {
+  /* -------------------------------------------------------
+     온라인 게임 시작
+  ------------------------------------------------------- */
 
-    onlineInput.addEventListener(
-      "keydown",
-      event => {
+  startOnlineButton?.addEventListener(
+    "click",
+    startOnlineGame
+  );
 
-        if (
-          event.key === "Enter"
-        ) {
 
-          event.preventDefault();
+  /* -------------------------------------------------------
+     온라인 입력
+  ------------------------------------------------------- */
 
-          sendOnlineWord();
-        }
+  onlineSend?.addEventListener(
+    "click",
+    sendOnlineWord
+  );
+
+
+  /* -------------------------------------------------------
+     온라인 Enter
+  ------------------------------------------------------- */
+
+  onlineInput?.addEventListener(
+    "keydown",
+    event => {
+
+      if (
+        event.key === "Enter"
+      ) {
+
+        event.preventDefault();
+
+        sendOnlineWord();
       }
-    );
-  }
+    }
+  );
+
+
+  /* -------------------------------------------------------
+     방 코드 Enter
+  ------------------------------------------------------- */
+
+  roomCodeInput?.addEventListener(
+    "keydown",
+    event => {
+
+      if (
+        event.key === "Enter"
+      ) {
+
+        event.preventDefault();
+
+        joinOnlineRoom();
+      }
+    }
+  );
+
+
+  /* -------------------------------------------------------
+     이름 Enter
+  ------------------------------------------------------- */
+
+  nameInput?.addEventListener(
+    "keydown",
+    event => {
+
+      if (
+        event.key === "Enter"
+      ) {
+
+        event.preventDefault();
+
+        createOnlineRoom();
+      }
+    }
+  );
 }
 
 
@@ -2171,25 +3087,33 @@ function bindEvents() {
    초기화
 ========================================================= */
 
-async function init() {
+function init() {
 
+  /*
+   * 통계는 즉시 로드
+   */
   loadStats();
+
   updateStats();
 
+
+  /*
+   * 버튼 이벤트 즉시 연결
+   */
   bindEvents();
 
 
   /*
-   * 페이지를 열자마자
-   * 데이터 전체를 로드하지 않는다.
-   *
-   * 싱글 탭을 실제로 사용할 때 로드한다.
-   *
-   * 따라서 처음 페이지 표시가 빠르다.
+   * 처음부터 무거운 데이터 로드 X
    */
   showMessage(
     "새 게임을 눌러 시작하세요."
   );
+
+
+  /*
+   * 온라인은 실제 탭을 누를 때 연결
+   */
 }
 
 
@@ -2197,7 +3121,16 @@ async function init() {
    시작
 ========================================================= */
 
-document.addEventListener(
-  "DOMContentLoaded",
-  init
-);
+if (
+  document.readyState === "loading"
+) {
+
+  document.addEventListener(
+    "DOMContentLoaded",
+    init
+  );
+
+} else {
+
+  init();
+}
