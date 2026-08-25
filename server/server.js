@@ -8,7 +8,7 @@ const {
   normalizeWord,
   createGame,
   playWord
-} = require("../game");
+} = require("./game");
 
 
 /* =========================================================
