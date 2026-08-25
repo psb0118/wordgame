@@ -1,311 +1,223 @@
-"use strict";
+const socket = io();
 
 
 /* =========================================================
-   전역 상태
+   기본
 ========================================================= */
 
-let apiData = null;
+const $ = id =>
+  document.getElementById(id);
 
-let singleId = null;
-
-let singleState = null;
-
-let singleDifficulty = 3;
-
-let onlineState = null;
-
-let socket = null;
-
-let stats = {
-  wins: 0,
-  losses: 0,
-  games: 0,
-  totalTurns: 0
-};
+let currentMode = "single";
+let myPlayerIndex = null;
+let currentTurn = 0;
+let singleBusy = false;
 
 
 /* =========================================================
-   DOM
+   통계
 ========================================================= */
 
-const $ =
-  id =>
-    document.getElementById(id);
+let stats = JSON.parse(
+  localStorage.getItem("kkeulStats") ||
+  '{"wins":0,"losses":0,"games":0,"totalTurns":0}'
+);
 
+function saveStats() {
+  localStorage.setItem(
+    "kkeulStats",
+    JSON.stringify(stats)
+  );
 
-/* =========================================================
-   메시지
-========================================================= */
-
-function message(text) {
-  $("message").textContent =
-    text || "";
+  updateStats();
 }
 
-
-function onlineMessage(text) {
-  $("onlineMessage").textContent =
-    text || "";
-}
-
-
-/* =========================================================
-   API 데이터
-========================================================= */
-
-async function loadData() {
-  try {
-    const res =
-      await fetch(
-        "/api/data"
-      );
-
-    apiData =
-      await res.json();
-
-    console.log(
-      "게임 데이터 로드:",
-      apiData
-    );
-
-  } catch (err) {
-    console.error(err);
-
-    message(
-      "게임 데이터를 불러오지 못했습니다."
-    );
-  }
-}
-
-
-/* =========================================================
-   싱글 UI
-========================================================= */
-
-function renderSingle() {
-  if (!singleState) {
-    return;
-  }
-
-
-  const current =
-    singleState.currentWord;
-
-
-  $("startWord").value =
-    current || "-";
-
-
-  $("last").textContent =
-    current
-      ? current.at(-1)
-      : "-";
-
-
-  $("turn").textContent =
-    singleState.history?.length ||
-    0;
-
-
-  const last =
-    singleState.history?.at(-1);
-
-
-  $("depth").textContent =
-    last?.depth ??
-    "-";
-
-
-  const history =
-    singleState.history || [];
-
-
-  $("history").innerHTML =
-    history
-      .map(
-        item => `
-          <div class="historyItem">
-            <span>
-              ${escapeHtml(item.word)}
-            </span>
-
-            <small>
-              ${
-                item.player === 0
-                  ? "플레이어"
-                  : "AI"
-              }
-
-              ${
-                item.depth != null
-                  ? ` · 깊이 ${item.depth}`
-                  : ""
-              }
-            </small>
-          </div>
-        `
-      )
-      .join("");
-
+function updateStats() {
 
   $("wins").textContent =
     stats.wins;
 
-
   $("losses").textContent =
     stats.losses;
-
 
   $("games").textContent =
     stats.games;
 
-
   $("avg").textContent =
     stats.games
-      ? (
+      ? Math.round(
           stats.totalTurns /
           stats.games
-        ).toFixed(1)
+        )
       : "-";
 
-
-  const winRate =
+  const rate =
     stats.games
-      ? (
+      ? Math.round(
           stats.wins /
           stats.games *
           100
         )
       : 0;
 
-
   $("winrate").textContent =
-    `${winRate.toFixed(0)}%`;
+    `${rate}%`;
 }
+
+updateStats();
 
 
 /* =========================================================
-   HTML escape
+   모드 전환
 ========================================================= */
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
+document
+  .querySelectorAll(".tabs button")
+  .forEach(button => {
+
+    button.addEventListener(
+      "click",
+      () => {
+
+        document
+          .querySelectorAll(
+            ".tabs button"
+          )
+          .forEach(b =>
+            b.classList.remove(
+              "active"
+            )
+          );
+
+        button.classList.add(
+          "active"
+        );
+
+        currentMode =
+          button.dataset.mode;
+
+        $("single")
+          .classList.toggle(
+            "hidden",
+            currentMode !== "single"
+          );
+
+        $("online")
+          .classList.toggle(
+            "hidden",
+            currentMode !== "online"
+          );
+      }
+    );
+  });
 
 
 /* =========================================================
-   싱글 게임 시작
+   싱글 UI
 ========================================================= */
 
-async function startSingle() {
-  singleDifficulty =
-    Number(
-      $("difficulty").value
-    ) || 3;
+function setMessage(text) {
+  $("message").textContent = text;
+}
+
+function addHistory(word, player, depth) {
+
+  const item =
+    document.createElement("div");
+
+  item.className =
+    `historyItem player${player}`;
+
+  item.textContent =
+    `${player === 0 ? "나" : "AI"}: ${word}` +
+    (depth != null
+      ? ` · 깊이 ${depth}`
+      : "");
+
+  $("history")
+    .appendChild(item);
+
+  $("history").scrollTop =
+    $("history").scrollHeight;
+}
 
 
-  message(
-    "새 게임을 시작하는 중..."
-  );
+function updateSingleState(data) {
 
+  if (data.currentWord) {
+    $("last").textContent =
+      data.currentWord.at(-1);
+  }
 
-  $("singleInput").disabled =
-    true;
+  if (data.history) {
+    $("turn").textContent =
+      data.history.length;
+  }
 
-  $("singleSend").disabled =
-    true;
+  if (data.depth != null) {
+    $("depth").textContent =
+      data.depth;
+  }
 
-
-  try {
-    const res =
-      await fetch(
-        "/api/single/start",
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json"
-          },
-
-          body:
-            JSON.stringify({
-              difficulty:
-                singleDifficulty
-            })
-        }
-      );
-
-
-    const data =
-      await res.json();
-
-
-    if (!data.ok) {
-      throw new Error(
-        data.message ||
-        "게임 시작 실패"
-      );
-    }
-
-
-    singleId =
-      data.id;
-
-    singleState =
-      data.state;
-
-
-    stats.games++;
-
-
-    renderSingle();
-
-
-    $("singleInput").disabled =
-      false;
-
-    $("singleSend").disabled =
-      false;
-
-
-    $("singleInput").focus();
-
-
-    message(
-      `시작 단어: ${data.startWord} — 당신의 차례`
-    );
-
-  } catch (err) {
-    console.error(err);
-
-    message(
-      err.message ||
-      "게임 시작에 실패했습니다."
-    );
+  if (data.nextCount != null) {
+    $("message").textContent =
+      `다음 선택지 ${data.nextCount}개`;
   }
 }
+
+
+/* =========================================================
+   새 게임
+========================================================= */
+
+function newSingleGame() {
+
+  if (singleBusy) return;
+
+  singleBusy = true;
+
+  $("history").innerHTML = "";
+  $("last").textContent = "-";
+  $("turn").textContent = "0";
+  $("depth").textContent = "-";
+  $("startWord").value = "";
+
+  setMessage(
+    "새 게임을 준비하는 중..."
+  );
+
+  socket.emit(
+    "singleNewGame",
+    {
+      difficulty:
+        Number(
+          $("difficulty").value
+        )
+    }
+  );
+}
+
+
+$("newStart")
+  .addEventListener(
+    "click",
+    newSingleGame
+  );
+
+$("restart")
+  .addEventListener(
+    "click",
+    newSingleGame
+  );
 
 
 /* =========================================================
    싱글 단어 입력
 ========================================================= */
 
-async function sendSingleWord() {
-  if (!singleId) {
-    message(
-      "먼저 새 게임을 시작해주세요."
-    );
+function sendSingleWord() {
 
-    return;
-  }
-
+  if (singleBusy) return;
 
   const input =
     $("singleInput");
@@ -313,628 +225,12 @@ async function sendSingleWord() {
   const word =
     input.value.trim();
 
-
-  if (!word) {
-    return;
-  }
-
+  if (!word) return;
 
   input.value = "";
 
-
-  input.disabled =
-    true;
-
-  $("singleSend").disabled =
-    true;
-
-
-  try {
-    const res =
-      await fetch(
-        "/api/single/play",
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json"
-          },
-
-          body:
-            JSON.stringify({
-              id:
-                singleId,
-
-              word
-            })
-        }
-      );
-
-
-    const data =
-      await res.json();
-
-
-    if (!data.ok) {
-      message(
-        data.reason ||
-        "단어를 사용할 수 없습니다."
-      );
-
-      return;
-    }
-
-
-    singleState =
-      data.state;
-
-
-    renderSingle();
-
-
-    /*
-     * 플레이어 승리
-     */
-    if (
-      data.finished &&
-      data.result?.winner === 0
-    ) {
-      stats.wins++;
-
-      stats.totalTurns +=
-        singleState.history.length;
-
-      renderSingle();
-
-      message(
-        "승리했습니다."
-      );
-
-      return;
-    }
-
-
-    /*
-     * AI가 끝낸 경우
-     */
-    if (
-      data.finished &&
-      data.botResult?.winner === 1
-    ) {
-      stats.losses++;
-
-      stats.totalTurns +=
-        singleState.history.length;
-
-      renderSingle();
-
-      message(
-        `AI가 ${data.botWord}로 승리했습니다.`
-      );
-
-      return;
-    }
-
-
-    /*
-     * AI가 단어를 냈음
-     */
-    if (data.botWord) {
-
-      const depth =
-        data.botDepth != null
-          ? ` · 공격 깊이 ${data.botDepth}`
-          : "";
-
-
-      const choices =
-        data.botNextCount != null
-          ? ` · 다음 선택지 ${data.botNextCount}개`
-          : "";
-
-
-      message(
-        `AI: ${data.botWord}${depth}${choices} — 당신의 차례`
-      );
-    }
-
-
-  } catch (err) {
-    console.error(err);
-
-    message(
-      "서버와 통신 중 오류가 발생했습니다."
-    );
-
-  } finally {
-
-    input.disabled =
-      false;
-
-    $("singleSend").disabled =
-      false;
-
-    input.focus();
-  }
-}
-
-
-/* =========================================================
-   Socket.IO
-========================================================= */
-
-function connectSocket() {
-
-  if (socket) {
-    return;
-  }
-
-
-  socket =
-    io();
-
-
-  socket.on(
-    "connect",
-    () => {
-
-      console.log(
-        "Socket.IO 연결:",
-        socket.id
-      );
-
-      onlineMessage(
-        "서버에 연결되었습니다."
-      );
-    }
-  );
-
-
-  socket.on(
-    "disconnect",
-    () => {
-
-      onlineMessage(
-        "서버 연결이 끊어졌습니다."
-      );
-    }
-  );
-
-
-  socket.on(
-    "errorMessage",
-    text => {
-
-      onlineMessage(
-        text
-      );
-    }
-  );
-
-
-  socket.on(
-    "roomMessage",
-    text => {
-
-      onlineMessage(
-        text
-      );
-    }
-  );
-
-
-  socket.on(
-    "roomCreated",
-    data => {
-
-      $("roomCode").value =
-        data.code;
-
-
-      onlineMessage(
-        `방이 생성되었습니다. 코드: ${data.code}`
-      );
-    }
-  );
-
-
-  socket.on(
-    "joinedRoom",
-    data => {
-
-      $("roomCode").value =
-        data.code;
-
-
-      onlineMessage(
-        "방에 참가했습니다."
-      );
-    }
-  );
-
-
-  socket.on(
-    "roomState",
-    state => {
-
-      onlineState =
-        state;
-
-      renderRoom();
-    }
-  );
-
-
-  socket.on(
-    "onlineStarted",
-    data => {
-
-      onlineMessage(
-        `게임 시작! "${data.startChar}"으로 시작하는 단어를 입력하세요.`
-      );
-
-      renderRoom();
-    }
-  );
-
-
-  socket.on(
-    "wordPlayed",
-    data => {
-
-      onlineState =
-        data.state;
-
-      renderOnlineHistory();
-
-
-      const myIndex =
-        getMyPlayerIndex();
-
-
-      if (
-        data.player ===
-        myIndex
-      ) {
-        onlineMessage(
-          `${data.word} 입력 완료`
-        );
-      } else {
-        onlineMessage(
-          `상대: ${data.word}`
-        );
-      }
-
-
-      renderRoom();
-    }
-  );
-
-
-  socket.on(
-    "wordRejected",
-    data => {
-
-      onlineMessage(
-        data.reason
-      );
-    }
-  );
-
-
-  socket.on(
-    "gameFinished",
-    data => {
-
-      onlineState =
-        data.state;
-
-      renderRoom();
-
-
-      const myIndex =
-        getMyPlayerIndex();
-
-
-      if (
-        data.winner ===
-        myIndex
-      ) {
-        onlineMessage(
-          "승리했습니다."
-        );
-      } else {
-        onlineMessage(
-          "패배했습니다."
-        );
-      }
-    }
-  );
-}
-
-
-/* =========================================================
-   방 UI
-========================================================= */
-
-function getMyPlayerIndex() {
-
-  if (
-    !onlineState ||
-    !onlineState.players
-  ) {
-    return -1;
-  }
-
-
-  return onlineState.players
-    .findIndex(
-      p =>
-        p.id ===
-        socket?.id
-    );
-}
-
-
-function renderRoom() {
-
-  if (!onlineState) {
-    $("roomInfo").innerHTML =
-      "";
-
-    $("startOnline")
-      .classList.add(
-        "hidden"
-      );
-
-    return;
-  }
-
-
-  const players =
-    onlineState.players || [];
-
-
-  $("roomInfo").innerHTML =
-    `
-      <div>
-        방 코드:
-        <strong>
-          ${escapeHtml(onlineState.code)}
-        </strong>
-      </div>
-
-      <div>
-        플레이어:
-        ${players
-          .map(
-            (p, index) =>
-              `<span>
-                ${escapeHtml(p.name)}
-                ${index === 0 ? " (방장)" : ""}
-              </span>`
-          )
-          .join(" · ")}
-      </div>
-
-      ${
-        onlineState.game
-          ? `
-            <div>
-              현재 단어:
-              <strong>
-                ${
-                  escapeHtml(
-                    onlineState.game.currentWord ||
-                    "-"
-                  )
-                }
-              </strong>
-            </div>
-
-            <div>
-              ${
-                onlineState.game.turnPlayer ===
-                getMyPlayerIndex()
-                  ? "내 차례"
-                  : "상대 차례"
-              }
-            </div>
-          `
-          : ""
-      }
-    `;
-
-
-  /*
-   * 방장이고 2명이면 시작 버튼
-   */
-  const isHost =
-    players[0]?.id ===
-    socket?.id;
-
-
-  if (
-    isHost &&
-    players.length === 2 &&
-    !onlineState.started
-  ) {
-    $("startOnline")
-      .classList.remove(
-        "hidden"
-      );
-  } else {
-    $("startOnline")
-      .classList.add(
-        "hidden"
-      );
-  }
-
-
-  /*
-   * 입력 가능 여부
-   */
-  const myTurn =
-    onlineState.started &&
-    onlineState.game &&
-    onlineState.game.turnPlayer ===
-      getMyPlayerIndex();
-
-
-  $("onlineInput").disabled =
-    !myTurn;
-
-  $("onlineSend").disabled =
-    !myTurn;
-}
-
-
-function renderOnlineHistory() {
-
-  const history =
-    onlineState?.game?.history ||
-    [];
-
-
-  $("onlineHistory").innerHTML =
-    history
-      .map(
-        item => `
-          <div class="historyItem">
-            <span>
-              ${escapeHtml(item.word)}
-            </span>
-
-            <small>
-              ${
-                item.player === 0
-                  ? "플레이어 1"
-                  : "플레이어 2"
-              }
-
-              ${
-                item.depth != null
-                  ? ` · 깊이 ${item.depth}`
-                  : ""
-              }
-            </small>
-          </div>
-        `
-      )
-      .join("");
-}
-
-
-/* =========================================================
-   온라인 방 만들기
-========================================================= */
-
-function createRoom() {
-
-  connectSocket();
-
-
-  const name =
-    $("name").value.trim() ||
-    "Player";
-
-
   socket.emit(
-    "createRoom",
-    {
-      name
-    }
-  );
-}
-
-
-/* =========================================================
-   온라인 방 참가
-========================================================= */
-
-function joinRoom() {
-
-  connectSocket();
-
-
-  const name =
-    $("name").value.trim() ||
-    "Player";
-
-
-  const code =
-    $("roomCode")
-      .value
-      .trim()
-      .toUpperCase();
-
-
-  if (!code) {
-    onlineMessage(
-      "방 코드를 입력해주세요."
-    );
-
-    return;
-  }
-
-
-  socket.emit(
-    "joinRoom",
-    {
-      name,
-      code
-    }
-  );
-}
-
-
-/* =========================================================
-   온라인 시작
-========================================================= */
-
-function startOnline() {
-
-  if (!socket) {
-    connectSocket();
-  }
-
-
-  socket.emit(
-    "startOnline"
-  );
-}
-
-
-/* =========================================================
-   온라인 단어 입력
-========================================================= */
-
-function sendOnlineWord() {
-
-  if (!socket) {
-    return;
-  }
-
-
-  const input =
-    $("onlineInput");
-
-
-  const word =
-    input.value.trim();
-
-
-  if (!word) {
-    return;
-  }
-
-
-  input.value = "";
-
-
-  socket.emit(
-    "playWord",
+    "singlePlay",
     {
       word
     }
@@ -942,219 +238,527 @@ function sendOnlineWord() {
 }
 
 
+$("singleSend")
+  .addEventListener(
+    "click",
+    sendSingleWord
+  );
+
+
+$("singleInput")
+  .addEventListener(
+    "keydown",
+    e => {
+
+      if (e.key === "Enter") {
+        e.preventDefault();
+        sendSingleWord();
+      }
+    }
+  );
+
+
 /* =========================================================
-   탭
+   싱글 시작됨
 ========================================================= */
 
-function setupTabs() {
+socket.on(
+  "singleStarted",
+  data => {
 
-  document
-    .querySelectorAll(
-      ".tabs button"
-    )
-    .forEach(
-      button => {
+    singleBusy = false;
 
-        button.addEventListener(
-          "click",
-          () => {
+    $("startWord").value =
+      data.startWord;
 
-            const mode =
-              button.dataset.mode;
+    $("last").textContent =
+      data.startWord.at(-1);
 
+    $("turn").textContent =
+      data.history.length;
 
-            document
-              .querySelectorAll(
-                ".tabs button"
-              )
-              .forEach(
-                b =>
-                  b.classList.remove(
-                    "active"
-                  )
-              );
+    $("history").innerHTML = "";
 
+    data.history.forEach(
+      item =>
+        addHistory(
+          item.word,
+          item.player,
+          item.depth
+        )
+    );
 
-            button.classList.add(
-              "active"
-            );
+    if (data.nextCount != null) {
+      $("message").textContent =
+        `AI 차례 · 선택지 ${data.nextCount}개`;
+    }
 
-
-            $("single")
-              .classList.toggle(
-                "hidden",
-                mode !== "single"
-              );
+    $("singleInput").focus();
+  }
+);
 
 
-            $("online")
-              .classList.toggle(
-                "hidden",
-                mode !== "online"
-              );
+/* =========================================================
+   싱글 단어 처리
+========================================================= */
+
+socket.on(
+  "singleWordPlayed",
+  data => {
+
+    addHistory(
+      data.word,
+      data.player,
+      data.depth
+    );
+
+    $("turn").textContent =
+      data.history.length;
+
+    $("last").textContent =
+      data.word.at(-1);
+
+    if (data.player === 0) {
+
+      setMessage(
+        `AI가 생각 중...`
+      );
+
+      singleBusy = true;
+
+    } else {
+
+      singleBusy = false;
+
+      setMessage(
+        `내 차례 · 선택지 ${data.nextCount ?? 0}개`
+      );
+
+      $("singleInput").focus();
+    }
+
+    if (data.depth != null) {
+      $("depth").textContent =
+        data.depth;
+    }
+  }
+);
 
 
-            if (
-              mode === "online"
-            ) {
-              connectSocket();
-            }
-          }
+/* =========================================================
+   싱글 오류
+========================================================= */
+
+socket.on(
+  "singleError",
+  message => {
+
+    singleBusy = false;
+
+    setMessage(message);
+  }
+);
+
+
+/* =========================================================
+   단어 거부
+========================================================= */
+
+socket.on(
+  "wordRejected",
+  data => {
+
+    if (
+      data.mode === "online"
+    ) {
+      $("onlineMessage")
+        .textContent =
+          data.reason;
+
+      return;
+    }
+
+    singleBusy = false;
+
+    setMessage(
+      data.reason
+    );
+
+    $("singleInput").focus();
+  }
+);
+
+
+/* =========================================================
+   싱글 종료
+========================================================= */
+
+socket.on(
+  "singleFinished",
+  data => {
+
+    singleBusy = false;
+
+    const turns =
+      data.history.length;
+
+    stats.games++;
+    stats.totalTurns += turns;
+
+    if (data.winner === 0) {
+
+      stats.wins++;
+
+      setMessage(
+        "승리! 게임이 끝났습니다."
+      );
+
+    } else {
+
+      stats.losses++;
+
+      setMessage(
+        "AI 승리! 다시 도전해보세요."
+      );
+    }
+
+    saveStats();
+  }
+);
+
+
+/* =========================================================
+   온라인
+========================================================= */
+
+function onlineMessage(text) {
+  $("onlineMessage")
+    .textContent = text;
+}
+
+
+$("create")
+  .addEventListener(
+    "click",
+    () => {
+
+      const name =
+        $("name").value.trim() ||
+        "Player";
+
+      socket.emit(
+        "createRoom",
+        { name }
+      );
+    }
+  );
+
+
+$("join")
+  .addEventListener(
+    "click",
+    () => {
+
+      const name =
+        $("name").value.trim() ||
+        "Player";
+
+      const code =
+        $("roomCode")
+          .value
+          .trim()
+          .toUpperCase();
+
+      if (!code) {
+        onlineMessage(
+          "방 코드를 입력해주세요."
         );
+
+        return;
       }
-    );
-}
+
+      socket.emit(
+        "joinRoom",
+        {
+          name,
+          code
+        }
+      );
+    }
+  );
+
+
+$("startOnline")
+  .addEventListener(
+    "click",
+    () => {
+
+      socket.emit(
+        "startOnline"
+      );
+    }
+  );
+
+
+$("onlineSend")
+  .addEventListener(
+    "click",
+    () => {
+
+      const input =
+        $("onlineInput");
+
+      const word =
+        input.value.trim();
+
+      if (!word) return;
+
+      input.value = "";
+
+      socket.emit(
+        "playWord",
+        { word }
+      );
+    }
+  );
+
+
+$("onlineInput")
+  .addEventListener(
+    "keydown",
+    e => {
+
+      if (e.key === "Enter") {
+        e.preventDefault();
+
+        $("onlineSend")
+          .click();
+      }
+    }
+  );
 
 
 /* =========================================================
-   버튼 연결
+   온라인 방 생성
 ========================================================= */
 
-function setupButtons() {
+socket.on(
+  "roomCreated",
+  data => {
 
-  /*
-   * 싱글
-   */
-  $("newStart")
-    .addEventListener(
-      "click",
-      startSingle
+    $("roomCode").value =
+      data.code;
+
+    onlineMessage(
+      `방 생성 완료 · ${data.code}`
     );
+  }
+);
 
 
-  $("restart")
-    .addEventListener(
-      "click",
-      startSingle
+socket.on(
+  "joinedRoom",
+  data => {
+
+    $("roomCode").value =
+      data.code;
+
+    onlineMessage(
+      `방 참가 완료 · ${data.code}`
     );
-
-
-  $("singleSend")
-    .addEventListener(
-      "click",
-      sendSingleWord
-    );
-
-
-  $("singleInput")
-    .addEventListener(
-      "keydown",
-      event => {
-
-        if (
-          event.key ===
-          "Enter"
-        ) {
-          event.preventDefault();
-
-          sendSingleWord();
-        }
-      }
-    );
-
-
-  $("difficulty")
-    .addEventListener(
-      "change",
-      () => {
-
-        singleDifficulty =
-          Number(
-            $("difficulty").value
-          ) || 3;
-
-        /*
-         * 다음 게임부터 적용
-         */
-        message(
-          `AI 난이도 Lv.${singleDifficulty}`
-        );
-      }
-    );
-
-
-  /*
-   * 온라인
-   */
-  $("create")
-    .addEventListener(
-      "click",
-      createRoom
-    );
-
-
-  $("join")
-    .addEventListener(
-      "click",
-      joinRoom
-    );
-
-
-  $("startOnline")
-    .addEventListener(
-      "click",
-      startOnline
-    );
-
-
-  $("onlineSend")
-    .addEventListener(
-      "click",
-      sendOnlineWord
-    );
-
-
-  $("onlineInput")
-    .addEventListener(
-      "keydown",
-      event => {
-
-        if (
-          event.key ===
-          "Enter"
-        ) {
-          event.preventDefault();
-
-          sendOnlineWord();
-        }
-      }
-    );
-
-
-  $("roomCode")
-    .addEventListener(
-      "keydown",
-      event => {
-
-        if (
-          event.key ===
-          "Enter"
-        ) {
-          joinRoom();
-        }
-      }
-    );
-}
+  }
+);
 
 
 /* =========================================================
-   시작
+   방 상태
 ========================================================= */
 
-async function init() {
+socket.on(
+  "roomState",
+  room => {
 
-  setupTabs();
+    $("roomInfo").innerHTML = "";
 
-  setupButtons();
+    const title =
+      document.createElement("div");
 
-  await loadData();
+    title.textContent =
+      `방 코드: ${room.code}`;
 
-  /*
-   * 첫 화면에서 바로
-   * 싱글 게임 준비
-   */
-  await startSingle();
-}
+    $("roomInfo")
+      .appendChild(title);
 
 
-init();
+    room.players.forEach(
+      player => {
+
+        const div =
+          document.createElement("div");
+
+        div.textContent =
+          `${player.index === 0 ? "방장" : "플레이어"}: ${player.name}`;
+
+        $("roomInfo")
+          .appendChild(div);
+
+        if (
+          player.id === socket.id
+        ) {
+          myPlayerIndex =
+            player.index;
+        }
+      }
+    );
+
+
+    const canStart =
+      room.players.length === 2 &&
+      myPlayerIndex === 0 &&
+      !room.started;
+
+    $("startOnline")
+      .classList.toggle(
+        "hidden",
+        !canStart
+      );
+
+
+    if (room.game) {
+
+      currentTurn =
+        room.game.turnPlayer;
+
+      if (
+        room.game.currentWord
+      ) {
+        $("onlineMessage")
+          .textContent =
+            currentTurn === myPlayerIndex
+              ? "내 차례입니다."
+              : "상대방 차례입니다.";
+      }
+    }
+  }
+);
+
+
+/* =========================================================
+   온라인 시작
+========================================================= */
+
+socket.on(
+  "onlineStarted",
+  data => {
+
+    $("onlineHistory")
+      .innerHTML = "";
+
+    currentTurn =
+      data.turnPlayer;
+
+    onlineMessage(
+      currentTurn === myPlayerIndex
+        ? "게임 시작! 내 차례입니다."
+        : "게임 시작! 상대방 차례입니다."
+    );
+  }
+);
+
+
+/* =========================================================
+   온라인 단어
+========================================================= */
+
+socket.on(
+  "wordPlayed",
+  data => {
+
+    if (
+      data.mode === "single"
+    ) {
+      return;
+    }
+
+    const item =
+      document.createElement("div");
+
+    item.textContent =
+      `${data.player === myPlayerIndex ? "나" : "상대"}: ${data.word}` +
+      (data.depth != null
+        ? ` · 깊이 ${data.depth}`
+        : "");
+
+    $("onlineHistory")
+      .appendChild(item);
+
+    $("onlineHistory").scrollTop =
+      $("onlineHistory").scrollHeight;
+
+    currentTurn =
+      data.nextTurn;
+
+    onlineMessage(
+      currentTurn === myPlayerIndex
+        ? "내 차례입니다."
+        : "상대방 차례입니다."
+    );
+  }
+);
+
+
+/* =========================================================
+   온라인 종료
+========================================================= */
+
+socket.on(
+  "gameFinished",
+  data => {
+
+    const winner =
+      data.winner === myPlayerIndex;
+
+    onlineMessage(
+      winner
+        ? "승리했습니다!"
+        : "게임에서 졌습니다."
+    );
+  }
+);
+
+
+/* =========================================================
+   공통 오류
+========================================================= */
+
+socket.on(
+  "errorMessage",
+  message => {
+
+    onlineMessage(message);
+  }
+);
+
+socket.on(
+  "roomMessage",
+  message => {
+
+    onlineMessage(message);
+  }
+);
+
+
+/* =========================================================
+   연결 상태
+========================================================= */
+
+socket.on(
+  "connect",
+  () => {
+
+    console.log(
+      "Socket.IO 연결:",
+      socket.id
+    );
+  }
+);
