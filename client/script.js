@@ -2519,13 +2519,34 @@ socket.on(
   );
 
 
-  socket.on(
-    "wordPlayed",
-    data => {
+socket.on(
+  "wordPlayed",
+  data => {
 
-      if (!data) {
-        return;
-      }
+    addOnlineHistory(
+      data.word,
+      data.player,
+      data.nextTurn
+    );
+
+    if (data.nextTurn === onlineMyIndex) {
+
+      onlineInput.disabled = false;
+
+      onlineMessage.textContent =
+        "내 차례입니다. 단어를 입력하세요.";
+
+      onlineInput.focus();
+
+    } else {
+
+      onlineInput.disabled = true;
+
+      onlineMessage.textContent =
+        "상대방 차례입니다.";
+    }
+  }
+);
 
 
       /*
@@ -2581,38 +2602,38 @@ socket.on(
   );
 
 
-  socket.on(
-    "gameFinished",
-    data => {
+socket.on(
+  "onlineStarted",
+  data => {
 
-      onlineStarted = false;
+    onlineStarted = true;
 
+    onlineMessage.textContent =
+      "게임이 시작되었습니다.";
 
-      if (onlineMessage) {
+    if (
+      data &&
+      typeof data.turnPlayer === "number"
+    ) {
+      onlineMyIndex =
+        data.turnPlayer;
+    }
 
-        if (
-          data &&
-          data.winner ===
-            onlineMyIndex
-        ) {
-
-          onlineMessage.textContent =
-            "승리했습니다.";
-
-        } else if (
-          data &&
-          data.winner != null
-        ) {
-
-          onlineMessage.textContent =
-            "패배했습니다.";
-
-        } else {
-
-          onlineMessage.textContent =
-            "게임이 끝났습니다.";
-        }
+    if (
+      onlineRoom &&
+      typeof onlineRoom.turnPlayer === "number"
+    ) {
+      if (
+        onlineRoom.turnPlayer === onlineMyIndex
+      ) {
+        onlineInput.disabled = false;
+        onlineInput.focus();
+      } else {
+        onlineInput.disabled = true;
       }
+    }
+  }
+);
 
 
       updateInputState();
