@@ -400,9 +400,7 @@ app.use(
    기본 페이지
 ========================================================= */
 
-app.get(
-  "*",
-  (req, res) => {
+app.get("/{*splat}", (req, res) => {
 
     res.sendFile(
       path.join(
