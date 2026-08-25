@@ -1,5 +1,3 @@
-# server/server.js
-
 ```js
 "use strict";
 
