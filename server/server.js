@@ -8,23 +8,37 @@ const {
   normalizeWord,
   createGame,
   playWord,
-  chooseBotWord,
-  getCandidates,
-  getAttackDepth
+  chooseBotWord
 } = require("./game");
 
 const app = express();
+
 const server = http.createServer(app);
+
 const io = new Server(server);
 
-const PORT = process.env.PORT || 3000;
+const PORT =
+  process.env.PORT || 3000;
 
-const ROOT = path.join(__dirname, "..");
-const CLIENT_DIR = path.join(ROOT, "client");
-const DATA_DIR = path.join(ROOT, "data");
 
-const WORD_FILE = path.join(DATA_DIR, "word.txt");
-const ATTACK_FILE = path.join(DATA_DIR, "attack.txt");
+/* =========================================================
+   프로젝트 경로
+========================================================= */
+
+const ROOT =
+  path.join(__dirname, "..");
+
+const CLIENT_DIR =
+  path.join(ROOT, "client");
+
+const DATA_DIR =
+  path.join(ROOT, "data");
+
+const WORD_FILE =
+  path.join(DATA_DIR, "word.txt");
+
+const ATTACK_FILE =
+  path.join(DATA_DIR, "attack.txt");
 
 
 /* =========================================================
