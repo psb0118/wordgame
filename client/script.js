@@ -2434,19 +2434,37 @@ function connectSocket() {
   );
 
 
-  socket.on(
-    "roomState",
-    state => {
+socket.on(
+  "roomState",
+  state => {
 
-      onlineRoom =
-        state || null;
+    onlineRoom = state;
 
+    // 서버의 실제 게임 시작 상태를 동기화
+    onlineStarted = !!state.started;
 
-      updateOnlineRoom(
-        state
-      );
+    updateOnlineRoom(state);
+
+    if (onlineStarted) {
+      if (state.turnPlayer === onlineMyIndex) {
+        onlineMessage.textContent =
+          "내 차례입니다. 단어를 입력하세요.";
+
+        if (onlineInput) {
+          onlineInput.disabled = false;
+          onlineInput.focus();
+        }
+      } else {
+        onlineMessage.textContent =
+          "상대방 차례입니다.";
+
+        if (onlineInput) {
+          onlineInput.disabled = true;
+        }
+      }
     }
-  );
+  }
+);
 
 
   socket.on(
