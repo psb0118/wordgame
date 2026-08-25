@@ -1709,10 +1709,9 @@ io.on(
 app.get(
   "/",
   (req, res) => {
-
     res.sendFile(
       path.join(
-        ROOT,
+        CLIENT_DIR,
         "index.html"
       )
     );
