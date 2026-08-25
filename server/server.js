@@ -1,5 +1,3 @@
-"use strict";
-
 const express = require("express");
 const http = require("http");
 const path = require("path");
@@ -8,41 +6,25 @@ const { Server } = require("socket.io");
 
 const {
   normalizeWord,
-  allowedFirstChars,
-  getCandidates,
-  getAttackDepth,
   createGame,
   playWord,
   chooseBotWord,
-  getPublicGameState
+  getCandidates,
+  getAttackDepth
 } = require("./game");
-
-
-/* =========================================================
-   기본 설정
-========================================================= */
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-const PORT =
-  process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
-const ROOT =
-  path.join(__dirname, "..");
+const ROOT = path.join(__dirname, "..");
+const CLIENT_DIR = path.join(ROOT, "client");
+const DATA_DIR = path.join(ROOT, "data");
 
-const CLIENT_DIR =
-  path.join(ROOT, "client");
-
-const DATA_DIR =
-  path.join(ROOT, "data");
-
-const WORD_FILE =
-  path.join(DATA_DIR, "word.txt");
-
-const ATTACK_FILE =
-  path.join(DATA_DIR, "attack.txt");
+const WORD_FILE = path.join(DATA_DIR, "word.txt");
+const ATTACK_FILE = path.join(DATA_DIR, "attack.txt");
 
 
 /* =========================================================
@@ -76,217 +58,85 @@ const DUEUM = {
 
 
 /* =========================================================
-   단어 데이터
+   단어 로드
 ========================================================= */
 
-let WORDS = new Set();
-
-let WORD_INDEX = {};
-
-let ATTACK_DEPTH = {};
-
-
-/* =========================================================
-   word.txt 로드
-========================================================= */
-
-function loadWords() {
+function loadWordFile() {
   if (!fs.existsSync(WORD_FILE)) {
-    console.error(
-      "word.txt를 찾을 수 없습니다:",
-      WORD_FILE
-    );
-
-    process.exit(1);
-  }
-
-  const text =
-    fs.readFileSync(
-      WORD_FILE,
-      "utf8"
-    );
-
-  WORDS =
-    new Set(
-      text
-        .split(/\r?\n/)
-        .map(normalizeWord)
-        .filter(Boolean)
-    );
-
-
-  WORD_INDEX = {};
-
-
-  for (const word of WORDS) {
-    const first =
-      word.at(0);
-
-    if (!first) {
-      continue;
-    }
-
-    if (!WORD_INDEX[first]) {
-      WORD_INDEX[first] = [];
-    }
-
-    WORD_INDEX[first].push(word);
-  }
-
-
-  /*
-   * 가나다순 정렬
-   */
-
-  for (
-    const first of Object.keys(
-      WORD_INDEX
-    )
-  ) {
-    WORD_INDEX[first].sort(
-      (a, b) =>
-        a.localeCompare(
-          b,
-          "ko"
-        )
+    throw new Error(
+      `word.txt를 찾을 수 없습니다: ${WORD_FILE}`
     );
   }
 
+  const text = fs.readFileSync(
+    WORD_FILE,
+    "utf8"
+  );
 
-  console.log(
-    `word.txt 로드 완료: ${WORDS.size.toLocaleString()}개`
+  return new Set(
+    text
+      .split(/\r?\n/)
+      .map(normalizeWord)
+      .filter(Boolean)
   );
 }
 
 
 /* =========================================================
-   attack.txt 파서
+   attack.txt 파싱
 ========================================================= */
 
-/*
- * 입력 형식:
- *
- * [가]
- * 깊이 1 : 가녘, 가믐, 가마솣
- * 깊이 3 : 가레갊, 가걔
- *
- * 결과:
- *
- * ATTACK_DEPTH["가녘"] = 1
- * ATTACK_DEPTH["가믐"] = 1
- * ATTACK_DEPTH["가레갊"] = 3
- */
-
-function loadAttackWords() {
-  if (!fs.existsSync(ATTACK_FILE)) {
-    console.warn(
-      "attack.txt를 찾을 수 없습니다:",
-      ATTACK_FILE
-    );
-
-    ATTACK_DEPTH = {};
-
-    return;
-  }
-
-
-  const text =
-    fs.readFileSync(
-      ATTACK_FILE,
-      "utf8"
-    );
-
-
-  const lines =
-    text.split(/\r?\n/);
-
-
+function loadAttackFile() {
   const result = {};
 
+  if (!fs.existsSync(ATTACK_FILE)) {
+    console.warn(
+      "attack.txt를 찾을 수 없습니다. 공격 데이터 없이 실행합니다."
+    );
 
-  for (const rawLine of lines) {
-    const line =
-      rawLine.trim();
+    return result;
+  }
 
+  const text = fs.readFileSync(
+    ATTACK_FILE,
+    "utf8"
+  );
 
-    if (!line) {
-      continue;
-    }
+  const lines = text.split(/\r?\n/);
 
+  for (const line of lines) {
+    const match = line.match(
+      /^깊이\s+(\d+)\s*:\s*(.*)$/
+    );
 
-    /*
-     * [가]
-     * 같은 그룹 표시이므로
-     * 실제 데이터 처리에는 필요 없음.
-     */
+    if (!match) continue;
 
-    if (
-      line.startsWith("[") &&
-      line.endsWith("]")
-    ) {
-      continue;
-    }
+    const depth = Number(match[1]);
 
-
-    /*
-     * 깊이 N : 단어1, 단어2
-     */
-
-    const match =
-      line.match(
-        /^깊이\s+(\d+)\s*:\s*(.*)$/
-      );
-
-
-    if (!match) {
-      continue;
-    }
-
-
-    const depth =
-      Number(match[1]);
-
-
-    if (!Number.isFinite(depth)) {
-      continue;
-    }
-
-
-    const words =
-      match[2]
-        .split(",")
-        .map(normalizeWord)
-        .filter(Boolean);
-
+    const words = match[2]
+      .split(",")
+      .map(normalizeWord)
+      .filter(Boolean);
 
     for (const word of words) {
-      /*
-       * 공격 파일에 있는 단어만 저장
-       */
-
       result[word] = depth;
     }
   }
 
-
-  ATTACK_DEPTH =
-    result;
-
-
   console.log(
-    `attack.txt 로드 완료: ${Object.keys(
-      ATTACK_DEPTH
-    ).length.toLocaleString()}개`
+    `attack.txt 로드 완료: ${Object.keys(result).length.toLocaleString()}개`
   );
+
+  return result;
 }
 
 
-/* =========================================================
-   데이터 로드
-========================================================= */
+const WORDS = loadWordFile();
+const ATTACK_DEPTH = loadAttackFile();
 
-loadWords();
-loadAttackWords();
+console.log(
+  `word.txt 로드 완료: ${WORDS.size.toLocaleString()}개`
+);
 
 
 /* =========================================================
@@ -294,417 +144,176 @@ loadAttackWords();
 ========================================================= */
 
 app.use(
-  express.json()
+  express.static(CLIENT_DIR)
 );
 
-app.use(
-  express.static(
-    CLIENT_DIR
-  )
-);
-
-
-app.get(
-  "/",
-  (req, res) => {
-    res.sendFile(
-      path.join(
-        CLIENT_DIR,
-        "index.html"
-      )
-    );
-  }
-);
+app.get("/", (req, res) => {
+  res.sendFile(
+    path.join(CLIENT_DIR, "index.html")
+  );
+});
 
 
 /* =========================================================
-   데이터 API
+   API
 ========================================================= */
 
-app.get(
-  "/api/data",
-  (req, res) => {
-    res.json({
-      ready: true,
+app.get("/health", (req, res) => {
+  res.json({
+    ok: true,
+    words: WORDS.size,
+    attacks: Object.keys(ATTACK_DEPTH).length
+  });
+});
 
-      wordCount:
-        WORDS.size,
 
-      /*
-       * 클라이언트에는 전체 단어를
-       * 보내지 않는다.
-       *
-       * 싱글 AI는 서버에서 처리한다.
-       */
-
-      attackDepth:
-        ATTACK_DEPTH,
-
-      dueum:
-        DUEUM,
-
-      startFirst: [
-        "가",
-        "나",
-        "다",
-        "마",
-        "사",
-        "자",
-        "기",
-        "시"
-      ]
-    });
-  }
-);
+app.get("/api/data", (req, res) => {
+  res.json({
+    ready: true,
+    wordCount: WORDS.size,
+    attackCount: Object.keys(ATTACK_DEPTH).length,
+    dueum: DUEUM
+  });
+});
 
 
 /* =========================================================
-   Health Check
+   온라인 방
 ========================================================= */
 
-app.get(
-  "/health",
-  (req, res) => {
-    res.json({
-      ok: true,
+const rooms = new Map();
 
-      words:
-        WORDS.size,
+function makeRoomCode() {
+  const chars =
+    "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-      attacks:
-        Object.keys(
-          ATTACK_DEPTH
-        ).length,
+  let code;
 
-      rooms:
-        rooms.size
-    });
-  }
-);
+  do {
+    code = "";
 
-
-/* =========================================================
-   싱글 게임 API
-========================================================= */
-
-app.post(
-  "/api/single/start",
-  (req, res) => {
-    const difficulty =
-      Math.max(
-        1,
-        Math.min(
-          5,
-          Number(
-            req.body?.difficulty
-          ) || 3
-        )
-      );
-
-
-    const startFirst =
-      [
-        "가",
-        "나",
-        "다",
-        "마",
-        "사",
-        "자",
-        "기",
-        "시"
-      ];
-
-
-    const startChar =
-      startFirst[
+    for (let i = 0; i < 6; i++) {
+      code += chars[
         Math.floor(
-          Math.random() *
-          startFirst.length
+          Math.random() * chars.length
         )
       ];
+    }
+  } while (rooms.has(code));
+
+  return code;
+}
 
 
-    const game =
-      createGame({
-        startChar,
-        startPlayer: 0
-      });
+function getRoom(socket) {
+  if (!socket.roomCode) {
+    return null;
+  }
+
+  return rooms.get(
+    socket.roomCode
+  ) || null;
+}
 
 
-    /*
-     * 서버는 게임 ID를 만들고
-     * 메모리에 보관한다.
-     */
+function roomState(room) {
+  return {
+    code: room.code,
 
-    const id =
-      Math.random()
-        .toString(36)
-        .slice(2) +
-      Date.now()
-        .toString(36);
+    started: room.started,
+
+    players: room.players.map(
+      (p, i) => ({
+        id: p.id,
+        name: p.name,
+        index: i
+      })
+    ),
+
+    game: room.game
+      ? {
+          currentWord:
+            room.game.currentWord,
+
+          turnPlayer:
+            room.game.turnPlayer,
+
+          history:
+            room.game.history
+        }
+      : null
+  };
+}
 
 
-    singleGames.set(
-      id,
-      {
-        game,
-        difficulty
-      }
+function broadcastRoom(room) {
+  io.to(room.code).emit(
+    "roomState",
+    roomState(room)
+  );
+}
+
+
+/* =========================================================
+   싱글 게임
+========================================================= */
+
+function randomStartWord() {
+  /*
+   * 첫 단어가 바로 끝내는 공격 단어가 되지 않도록 한다.
+   */
+
+  const candidates = [];
+
+  for (const word of WORDS) {
+    if (ATTACK_DEPTH[word] != null) {
+      continue;
+    }
+
+    const test = createGame({
+      startChar: ""
+    });
+
+    const result = playWord(
+      test,
+      word,
+      WORDS,
+      DUEUM,
+      ATTACK_DEPTH
     );
 
-
-    /*
-     * 너무 오래된 게임 방지
-     */
-
     if (
-      singleGames.size > 1000
+      result.ok &&
+      !result.finished
     ) {
-      const first =
-        singleGames.keys().next().value;
-
-      singleGames.delete(first);
+      candidates.push(word);
     }
 
-
-    res.json({
-      ok: true,
-
-      id,
-
-      startChar,
-
-      state:
-        getPublicGameState(
-          game
-        )
-    });
+    /*
+     * 충분히 찾았으면 더 돌지 않는다.
+     */
+    if (candidates.length >= 300) {
+      break;
+    }
   }
-);
 
-
-/* =========================================================
-   싱글 단어 입력
-========================================================= */
-
-app.post(
-  "/api/single/play",
-  (req, res) => {
-    const id =
-      typeof req.body?.id === "string"
-        ? req.body.id
-        : "";
-
-
-    const item =
-      singleGames.get(id);
-
-
-    if (!item) {
-      return res.json({
-        ok: false,
-        reason:
-          "게임을 찾을 수 없습니다."
-      });
-    }
-
-
-    const {
-      game,
-      difficulty
-    } = item;
-
-
-    /*
-     * 플레이어 차례인지 검사
-     */
-
-    if (
-      game.turnPlayer !== 0
-    ) {
-      return res.json({
-        ok: false,
-        reason:
-          "지금은 AI의 차례입니다."
-      });
-    }
-
-
-    const result =
-      playWord(
-        game,
-        req.body?.word,
-        WORDS,
-        DUEUM,
-        ATTACK_DEPTH,
-        WORD_INDEX
-      );
-
-
-    if (!result.ok) {
-      return res.json(
-        result
-      );
-    }
-
-
-    /*
-     * 플레이어가 바로 승리
-     */
-
-    if (result.finished) {
-      return res.json({
-        ok: true,
-
-        finished: true,
-
-        result,
-
-        state:
-          getPublicGameState(
-            game
-          )
-      });
-    }
-
-
-    /*
-     * AI 차례
-     */
-
-    const aiWord =
-      chooseBotWord({
-        currentWord:
-          game.currentWord,
-
-        startChar:
-          game.startChar,
-
-        usedWords:
-          game.usedWords,
-
-        words:
-          WORDS,
-
-        dueum:
-          DUEUM,
-
-        attackDepth:
-          ATTACK_DEPTH,
-
-        wordIndex:
-          WORD_INDEX,
-
-        strength:
-          getDifficultyStrength(
-            difficulty
-          ),
-
-        botWinRate:
-          getBotWinRate(
-            game
-          )
-      });
-
-
-    /*
-     * AI가 낼 수가 없음
-     */
-
-    if (!aiWord) {
-      game.finished = true;
-
-      game.winner = 0;
-      game.loser = 1;
-
-      return res.json({
-        ok: true,
-
-        finished: true,
-
-        result: {
-          ok: true,
-          finished: true,
-          winner: 0,
-          loser: 1
-        },
-
-        aiWord: null,
-
-        state:
-          getPublicGameState(
-            game
-          )
-      });
-    }
-
-
-    /*
-     * AI 단어 실제 적용
-     */
-
-    const aiResult =
-      playWord(
-        game,
-        aiWord,
-        WORDS,
-        DUEUM,
-        ATTACK_DEPTH,
-        WORD_INDEX
-      );
-
-
-    if (!aiResult.ok) {
-      console.error(
-        "AI 단어 적용 실패:",
-        aiResult
-      );
-
-      return res.json({
-        ok: false,
-        reason:
-          "AI 단어 처리 중 오류가 발생했습니다."
-      });
-    }
-
-
-    res.json({
-      ok: true,
-
-      playerResult:
-        result,
-
-      aiWord,
-
-      aiResult,
-
-      finished:
-        aiResult.finished,
-
-      state:
-        getPublicGameState(
-          game
-        )
-    });
+  if (!candidates.length) {
+    return [...WORDS][
+      Math.floor(
+        Math.random() * WORDS.size
+      )
+    ];
   }
-);
+
+  return candidates[
+    Math.floor(
+      Math.random() * candidates.length
+    )
+  ];
+}
 
 
-/* =========================================================
-   싱글 게임 데이터
-========================================================= */
-
-const singleGames =
-  new Map();
-
-
-/*
- * 난이도 → 강도
- */
-
-function getDifficultyStrength(
-  difficulty
-) {
+function getStrength(difficulty) {
   switch (Number(difficulty)) {
     case 1:
       return 0.25;
@@ -716,10 +325,10 @@ function getDifficultyStrength(
       return 0.50;
 
     case 4:
-      return 0.70;
+      return 0.65;
 
     case 5:
-      return 0.90;
+      return 0.80;
 
     default:
       return 0.50;
@@ -727,529 +336,244 @@ function getDifficultyStrength(
 }
 
 
-/*
- * 현재까지의 봇 승률
- *
- * 단일 게임 중에는
- * 아직 실제 누적 전적이 없으므로
- * 기본값 50%.
- */
-
-function getBotWinRate(game) {
-  if (!game.games) {
-    return 0.5;
-  }
-
-  const total =
-    game.botWins +
-    game.playerWins;
-
-  if (!total) {
-    return 0.5;
-  }
-
-  return (
-    game.botWins /
-    total
-  );
-}
-
-
-/* =========================================================
-   온라인 방
-========================================================= */
-
-const rooms =
-  new Map();
-
-
-function makeRoomCode() {
-  const chars =
-    "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-  let code;
-
-  do {
-    code = "";
-
-    for (
-      let i = 0;
-      i < 6;
-      i++
-    ) {
-      code +=
-        chars[
-          Math.floor(
-            Math.random() *
-            chars.length
-          )
-        ];
-    }
-  } while (
-    rooms.has(code)
-  );
-
-  return code;
-}
-
-
-function getRoom(socket) {
-  if (!socket.roomCode) {
-    return null;
-  }
-
-  return (
-    rooms.get(
-      socket.roomCode
-    ) || null
-  );
-}
-
-
-/* =========================================================
-   방 상태
-========================================================= */
-
-function getRoomState(room) {
-  return {
-    code:
-      room.code,
-
-    started:
-      room.started,
-
-    players:
-      room.players.map(
-        (player, index) => ({
-          id:
-            player.id,
-
-          name:
-            player.name,
-
-          index
-        })
-      ),
-
-    game:
-      room.game
-        ? getPublicGameState(
-            room.game
-          )
-        : null
-  };
-}
-
-
-function broadcastRoom(room) {
-  io
-    .to(room.code)
-    .emit(
-      "roomState",
-      getRoomState(room)
-    );
-}
-
-
-/* =========================================================
-   방 나가기
-========================================================= */
-
-function leaveRoom(socket) {
-  const room =
-    getRoom(socket);
-
-  if (!room) {
-    return;
-  }
-
-
-  room.players =
-    room.players.filter(
-      player =>
-        player.id !==
-        socket.id
-    );
-
-
-  socket.leave(
-    room.code
-  );
-
-  socket.roomCode =
-    null;
-
-
-  if (
-    room.players.length === 0
-  ) {
-    rooms.delete(
-      room.code
-    );
-
-    return;
-  }
-
-
-  room.started =
-    false;
-
-  room.game =
-    null;
-
-
-  const remaining =
-    room.players[0];
-
-
-  const remainingSocket =
-    io.sockets.sockets.get(
-      remaining.id
-    );
-
-
-  if (remainingSocket) {
-    remainingSocket.emit(
-      "roomMessage",
-      "상대방이 방을 나갔습니다."
-    );
-  }
-
-
-  broadcastRoom(
-    room
-  );
-}
-
-
 /* =========================================================
    Socket.IO
 ========================================================= */
 
-io.on(
-  "connection",
-  socket => {
+io.on("connection", socket => {
 
-    console.log(
-      "접속:",
-      socket.id
-    );
+  console.log(
+    "접속:",
+    socket.id
+  );
 
 
-    /* -----------------------------------------------------
-       방 만들기
-    ----------------------------------------------------- */
+  /* =======================================================
+     싱글 게임 시작
+  ======================================================= */
 
-    socket.on(
-      "createRoom",
-      data => {
+  socket.on(
+    "singleNewGame",
+    data => {
 
-        if (socket.roomCode) {
-          socket.emit(
-            "errorMessage",
-            "이미 방에 참가하고 있습니다."
-          );
+      const difficulty =
+        Number(data?.difficulty) || 3;
 
-          return;
-        }
+      const startWord =
+        randomStartWord();
 
+      const game =
+        createGame();
 
-        const name =
-          typeof data?.name === "string" &&
-          data.name.trim()
-            ? data.name
-                .trim()
-                .slice(0, 20)
-            : "Player";
+      /*
+       * 시작 단어를 플레이어가 먼저 낸 것으로 처리
+       */
 
-
-        const code =
-          makeRoomCode();
-
-
-        const room = {
-          code,
-
-          players: [
-            {
-              id:
-                socket.id,
-
-              name
-            }
-          ],
-
-          started: false,
-
-          game: null
-        };
-
-
-        rooms.set(
-          code,
-          room
+      const result =
+        playWord(
+          game,
+          startWord,
+          WORDS,
+          DUEUM,
+          ATTACK_DEPTH
         );
 
-
-        socket.join(
-          code
-        );
-
-        socket.roomCode =
-          code;
-
-
+      if (!result.ok) {
         socket.emit(
-          "roomCreated",
+          "singleError",
+          "게임 시작에 실패했습니다."
+        );
+
+        return;
+      }
+
+      socket.singleGame = game;
+
+      socket.singleDifficulty =
+        difficulty;
+
+      socket.emit(
+        "singleStarted",
+        {
+          startWord,
+          difficulty,
+
+          currentWord:
+            game.currentWord,
+
+          turnPlayer:
+            game.turnPlayer,
+
+          history:
+            game.history,
+
+          depth:
+            getAttackDepth(
+              startWord,
+              ATTACK_DEPTH
+            ),
+
+          nextCount:
+            result.nextCount
+        }
+      );
+    }
+  );
+
+
+  /* =======================================================
+     싱글 단어 입력
+  ======================================================= */
+
+  socket.on(
+    "singlePlay",
+    data => {
+
+      const game =
+        socket.singleGame;
+
+      if (!game) {
+        socket.emit(
+          "singleError",
+          "먼저 새 게임을 시작해주세요."
+        );
+
+        return;
+      }
+
+      /*
+       * 플레이어 = 0
+       * AI = 1
+       */
+
+      if (game.turnPlayer !== 0) {
+        socket.emit(
+          "singleError",
+          "지금은 AI의 차례입니다."
+        );
+
+        return;
+      }
+
+      const word =
+        normalizeWord(data?.word);
+
+      const result =
+        playWord(
+          game,
+          word,
+          WORDS,
+          DUEUM,
+          ATTACK_DEPTH
+        );
+
+      if (!result.ok) {
+        socket.emit(
+          "wordRejected",
           {
-            code
+            mode: "single",
+            reason: result.reason,
+            allowed: result.allowed || []
           }
         );
 
-
-        broadcastRoom(
-          room
-        );
+        return;
       }
-    );
 
-
-    /* -----------------------------------------------------
-       방 참가
-    ----------------------------------------------------- */
-
-    socket.on(
-      "joinRoom",
-      data => {
-
-        if (socket.roomCode) {
-          socket.emit(
-            "errorMessage",
-            "이미 방에 참가하고 있습니다."
-          );
-
-          return;
+      socket.emit(
+        "singleWordPlayed",
+        {
+          word,
+          player: 0,
+          depth:
+            result.depth,
+          nextCount:
+            result.nextCount,
+          history:
+            game.history
         }
+      );
 
 
-        const code =
-          typeof data?.code === "string"
-            ? data.code
-                .trim()
-                .toUpperCase()
-            : "";
+      /*
+       * 플레이어가 AI를 끝냈음
+       */
 
-
-        const name =
-          typeof data?.name === "string" &&
-          data.name.trim()
-            ? data.name
-                .trim()
-                .slice(0, 20)
-            : "Player";
-
-
-        const room =
-          rooms.get(code);
-
-
-        if (!room) {
-          socket.emit(
-            "errorMessage",
-            "존재하지 않는 방입니다."
-          );
-
-          return;
-        }
-
-
-        if (
-          room.players.length >= 2
-        ) {
-          socket.emit(
-            "errorMessage",
-            "방이 가득 찼습니다."
-          );
-
-          return;
-        }
-
-
-        room.players.push({
-          id:
-            socket.id,
-
-          name
-        });
-
-
-        socket.join(
-          code
-        );
-
-        socket.roomCode =
-          code;
-
+      if (result.finished) {
 
         socket.emit(
-          "joinedRoom",
+          "singleFinished",
           {
-            code
+            winner: 0,
+            loser: 1,
+            history:
+              game.history
           }
         );
 
-
-        broadcastRoom(
-          room
-        );
+        return;
       }
-    );
 
 
-    /* -----------------------------------------------------
-       온라인 시작
-    ----------------------------------------------------- */
+      /*
+       * AI 생각 시간
+       */
 
-    socket.on(
-      "startOnline",
-      () => {
-
-        const room =
-          getRoom(socket);
-
-
-        if (!room) {
-          socket.emit(
-            "errorMessage",
-            "먼저 방에 참가해주세요."
-          );
-
-          return;
-        }
-
+      setTimeout(() => {
 
         if (
-          room.players.length !== 2
+          !socket.singleGame ||
+          socket.singleGame !== game ||
+          game.finished
         ) {
-          socket.emit(
-            "errorMessage",
-            "플레이어 2명이 필요합니다."
-          );
+          return;
+        }
 
+        if (game.turnPlayer !== 1) {
           return;
         }
 
 
-        if (
-          room.players[0].id !==
-          socket.id
-        ) {
-          socket.emit(
-            "errorMessage",
-            "방장만 게임을 시작할 수 있습니다."
+        const strength =
+          getStrength(
+            socket.singleDifficulty
           );
 
-          return;
-        }
 
+        const aiWord =
+          chooseBotWord({
+            currentWord:
+              game.currentWord,
 
-        /*
-         * 온라인은 방장이 먼저
-         */
+            usedWords:
+              game.usedWords,
 
-        room.game =
-          createGame({
-            startChar: "",
-            startPlayer: 0
+            words:
+              WORDS,
+
+            dueum:
+              DUEUM,
+
+            attackDepth:
+              ATTACK_DEPTH,
+
+            strength
           });
 
 
-        room.started =
-          true;
+        if (!aiWord) {
 
+          game.finished = true;
+          game.winner = 0;
+          game.loser = 1;
 
-        io
-          .to(room.code)
-          .emit(
-            "onlineStarted"
-          );
-
-
-        broadcastRoom(
-          room
-        );
-      }
-    );
-
-
-    /* -----------------------------------------------------
-       온라인 단어 입력
-    ----------------------------------------------------- */
-
-    socket.on(
-      "playWord",
-      data => {
-
-        const room =
-          getRoom(socket);
-
-
-        if (!room) {
           socket.emit(
-            "errorMessage",
-            "방에 참가하지 않았습니다."
-          );
-
-          return;
-        }
-
-
-        if (
-          !room.started ||
-          !room.game
-        ) {
-          socket.emit(
-            "errorMessage",
-            "게임이 시작되지 않았습니다."
-          );
-
-          return;
-        }
-
-
-        const playerIndex =
-          room.players.findIndex(
-            player =>
-              player.id ===
-              socket.id
-          );
-
-
-        if (
-          playerIndex < 0
-        ) {
-          socket.emit(
-            "errorMessage",
-            "플레이어 정보를 찾을 수 없습니다."
-          );
-
-          return;
-        }
-
-
-        /*
-         * 서버에서 차례 검사
-         */
-
-        if (
-          room.game.turnPlayer !==
-          playerIndex
-        ) {
-          socket.emit(
-            "wordRejected",
+            "singleFinished",
             {
-              reason:
-                "지금은 당신의 차례가 아닙니다."
+              winner: 0,
+              loser: 1,
+              history:
+                game.history
             }
           );
 
@@ -1257,163 +581,483 @@ io.on(
         }
 
 
-        const result =
+        const aiResult =
           playWord(
-            room.game,
-            data?.word,
+            game,
+            aiWord,
             WORDS,
             DUEUM,
-            ATTACK_DEPTH,
-            WORD_INDEX
+            ATTACK_DEPTH
           );
 
 
-        if (!result.ok) {
+        if (!aiResult.ok) {
           socket.emit(
-            "wordRejected",
-            {
-              reason:
-                result.reason,
-
-              allowed:
-                result.allowed || []
-            }
+            "singleError",
+            "AI 처리 중 오류가 발생했습니다."
           );
 
           return;
         }
 
 
-        /*
-         * 모두에게 정상 입력 전달
-         */
+        socket.emit(
+          "singleWordPlayed",
+          {
+            word: aiWord,
 
-        io
-          .to(room.code)
-          .emit(
-            "wordPlayed",
-            {
-              word:
-                result.word,
+            player: 1,
 
-              player:
-                playerIndex,
+            depth:
+              aiResult.depth,
 
-              depth:
-                result.depth,
+            nextCount:
+              aiResult.nextCount,
 
-              currentWord:
-                room.game.currentWord,
+            history:
+              game.history
+          }
+        );
 
-              history:
-                room.game.history,
-
-              nextTurn:
-                room.game.turnPlayer
-            }
-          );
-
-
-        /*
-         * 게임 종료
-         */
 
         if (
-          result.finished
+          aiResult.finished
         ) {
-          room.started =
-            false;
 
+          socket.emit(
+            "singleFinished",
+            {
+              winner:
+                aiResult.winner,
 
-          io
-            .to(room.code)
-            .emit(
-              "gameFinished",
-              {
-                winner:
-                  result.winner,
+              loser:
+                aiResult.loser,
 
-                loser:
-                  result.loser,
-
-                history:
-                  room.game.history
-              }
-            );
-
-
-          broadcastRoom(
-            room
+              history:
+                game.history
+            }
           );
 
           return;
         }
 
+      }, 350);
+    }
+  );
 
-        broadcastRoom(
-          room
+
+  /* =======================================================
+     온라인 방 만들기
+  ======================================================= */
+
+  socket.on(
+    "createRoom",
+    data => {
+
+      if (socket.roomCode) {
+        socket.emit(
+          "errorMessage",
+          "이미 방에 참가하고 있습니다."
         );
+
+        return;
       }
-    );
+
+      const name =
+        typeof data?.name === "string" &&
+        data.name.trim()
+          ? data.name.trim().slice(0, 20)
+          : "Player";
+
+      const code =
+        makeRoomCode();
+
+      const room = {
+        code,
+
+        players: [
+          {
+            id: socket.id,
+            name
+          }
+        ],
+
+        started: false,
+
+        game: null
+      };
+
+      rooms.set(
+        code,
+        room
+      );
+
+      socket.join(code);
+      socket.roomCode = code;
+
+      socket.emit(
+        "roomCreated",
+        { code }
+      );
+
+      broadcastRoom(room);
+    }
+  );
 
 
-    /* -----------------------------------------------------
-       방 나가기
-    ----------------------------------------------------- */
+  /* =======================================================
+     온라인 방 참가
+  ======================================================= */
 
-    socket.on(
-      "leaveRoom",
-      () => {
-        leaveRoom(
-          socket
+  socket.on(
+    "joinRoom",
+    data => {
+
+      if (socket.roomCode) {
+        socket.emit(
+          "errorMessage",
+          "이미 방에 참가하고 있습니다."
         );
+
+        return;
       }
-    );
 
+      const code =
+        typeof data?.code === "string"
+          ? data.code.trim().toUpperCase()
+          : "";
 
-    /* -----------------------------------------------------
-       연결 종료
-    ----------------------------------------------------- */
+      const name =
+        typeof data?.name === "string" &&
+        data.name.trim()
+          ? data.name.trim().slice(0, 20)
+          : "Player";
 
-    socket.on(
-      "disconnect",
-      () => {
+      const room =
+        rooms.get(code);
 
-        console.log(
-          "접속 종료:",
-          socket.id
+      if (!room) {
+        socket.emit(
+          "errorMessage",
+          "존재하지 않는 방입니다."
         );
 
-        leaveRoom(
-          socket
-        );
+        return;
       }
-    );
-  }
-);
+
+      if (room.players.length >= 2) {
+        socket.emit(
+          "errorMessage",
+          "방이 가득 찼습니다."
+        );
+
+        return;
+      }
+
+      room.players.push({
+        id: socket.id,
+        name
+      });
+
+      socket.join(code);
+      socket.roomCode = code;
+
+      socket.emit(
+        "joinedRoom",
+        { code }
+      );
+
+      broadcastRoom(room);
+    }
+  );
+
+
+  /* =======================================================
+     온라인 시작
+  ======================================================= */
+
+  socket.on(
+    "startOnline",
+    () => {
+
+      const room =
+        getRoom(socket);
+
+      if (!room) {
+        socket.emit(
+          "errorMessage",
+          "먼저 방에 참가해주세요."
+        );
+
+        return;
+      }
+
+      if (room.players.length !== 2) {
+        socket.emit(
+          "errorMessage",
+          "플레이어 2명이 필요합니다."
+        );
+
+        return;
+      }
+
+      if (
+        room.players[0].id !==
+        socket.id
+      ) {
+        socket.emit(
+          "errorMessage",
+          "방장만 게임을 시작할 수 있습니다."
+        );
+
+        return;
+      }
+
+      room.game =
+        createGame();
+
+      room.started = true;
+
+      io.to(room.code).emit(
+        "onlineStarted",
+        {
+          turnPlayer:
+            room.game.turnPlayer
+        }
+      );
+
+      broadcastRoom(room);
+    }
+  );
+
+
+  /* =======================================================
+     온라인 단어 입력
+  ======================================================= */
+
+  socket.on(
+    "playWord",
+    data => {
+
+      const room =
+        getRoom(socket);
+
+      if (!room) {
+        socket.emit(
+          "errorMessage",
+          "방에 참가하지 않았습니다."
+        );
+
+        return;
+      }
+
+      if (
+        !room.started ||
+        !room.game
+      ) {
+        socket.emit(
+          "errorMessage",
+          "게임이 시작되지 않았습니다."
+        );
+
+        return;
+      }
+
+      const playerIndex =
+        room.players.findIndex(
+          p =>
+            p.id === socket.id
+        );
+
+      if (
+        playerIndex !==
+        room.game.turnPlayer
+      ) {
+        socket.emit(
+          "wordRejected",
+          {
+            mode: "online",
+            reason:
+              "지금은 당신의 차례가 아닙니다."
+          }
+        );
+
+        return;
+      }
+
+      const result =
+        playWord(
+          room.game,
+          data?.word,
+          WORDS,
+          DUEUM,
+          ATTACK_DEPTH
+        );
+
+      if (!result.ok) {
+        socket.emit(
+          "wordRejected",
+          {
+            mode: "online",
+            reason: result.reason,
+            allowed:
+              result.allowed || []
+          }
+        );
+
+        return;
+      }
+
+      io.to(room.code).emit(
+        "wordPlayed",
+        {
+          word: result.word,
+
+          player:
+            playerIndex,
+
+          depth:
+            result.depth,
+
+          nextCount:
+            result.nextCount,
+
+          history:
+            room.game.history,
+
+          nextTurn:
+            room.game.turnPlayer
+        }
+      );
+
+
+      if (result.finished) {
+
+        room.started = false;
+
+        io.to(room.code).emit(
+          "gameFinished",
+          {
+            winner:
+              result.winner,
+
+            loser:
+              result.loser,
+
+            history:
+              room.game.history
+          }
+        );
+
+        broadcastRoom(room);
+        return;
+      }
+
+      broadcastRoom(room);
+    }
+  );
+
+
+  /* =======================================================
+     방 나가기
+  ======================================================= */
+
+  socket.on(
+    "leaveRoom",
+    () => {
+
+      const room =
+        getRoom(socket);
+
+      if (!room) return;
+
+      room.players =
+        room.players.filter(
+          p =>
+            p.id !== socket.id
+        );
+
+      socket.leave(room.code);
+      socket.roomCode = null;
+
+      if (!room.players.length) {
+        rooms.delete(room.code);
+        return;
+      }
+
+      room.started = false;
+      room.game = null;
+
+      io.to(room.code).emit(
+        "roomMessage",
+        "상대방이 방을 나갔습니다."
+      );
+
+      broadcastRoom(room);
+    }
+  );
+
+
+  /* =======================================================
+     연결 종료
+  ======================================================= */
+
+  socket.on(
+    "disconnect",
+    () => {
+
+      console.log(
+        "접속 종료:",
+        socket.id
+      );
+
+      const room =
+        getRoom(socket);
+
+      if (!room) return;
+
+      room.players =
+        room.players.filter(
+          p =>
+            p.id !== socket.id
+        );
+
+      if (!room.players.length) {
+        rooms.delete(room.code);
+        return;
+      }
+
+      room.started = false;
+      room.game = null;
+
+      io.to(room.code).emit(
+        "roomMessage",
+        "상대방이 나갔습니다."
+      );
+
+      broadcastRoom(room);
+    }
+  );
+});
 
 
 /* =========================================================
-   서버 시작
+   시작
 ========================================================= */
 
 server.listen(
   PORT,
-  "0.0.0.0",
   () => {
-
     console.log(
       `끝말잇기 서버 실행: ${PORT}`
     );
 
     console.log(
-      `단어 수: ${WORDS.size.toLocaleString()}`
+      `단어: ${WORDS.size.toLocaleString()}개`
     );
 
     console.log(
-      `공격 단어 수: ${Object.keys(
-        ATTACK_DEPTH
-      ).length.toLocaleString()}`
+      `공격: ${Object.keys(ATTACK_DEPTH).length.toLocaleString()}개`
     );
   }
 );
