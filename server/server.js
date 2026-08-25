@@ -298,17 +298,19 @@ function leaveRoom(socket) {
    정적 파일
 ========================================================= */
 
-app.use(
-  express.static(ROOT)
-);
+const CLIENT_DIR =
+  path.join(ROOT, "client");
 
+app.use(
+  express.static(CLIENT_DIR)
+);
 
 app.get(
   "/",
   (req, res) => {
     res.sendFile(
       path.join(
-        ROOT,
+        CLIENT_DIR,
         "index.html"
       )
     );
