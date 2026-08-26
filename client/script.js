@@ -1,33 +1,43 @@
 "use strict";
 
 /* =========================================================
-   끝말잇기
    client/script.js
 
-   server/server.js와 이벤트 완전 통일
+   server/server.js와 이벤트 완전 대응
 
+   CLIENT -> SERVER
+   ---------------------------------------------------------
    room:create
-   room:created
-
    room:join
+   room:state
+   game:word
+   game:submit
+   game:restart
+   room:leave
+
+   SERVER -> CLIENT
+   ---------------------------------------------------------
+   server:ready
+   room:created
    room:joined
    room:ready
    room:error
-
-   room:state
-   room:leave
-   room:playerLeft
-
+   game:state
    game:word
    game:error
-   game:state
-   game:started
    game:finished
+   game:started
+   room:playerLeft
+   game:submit:redirect
+========================================================= */
 
-   server:ready
+
+/* =========================================================
+   Socket.IO
 ========================================================= */
 
 const socket = io();
+
 
 /* =========================================================
    두음법칙
@@ -83,58 +93,49 @@ const DUEUM = {
   "륭": ["륭", "융"]
 };
 
+
 /* =========================================================
-   상태
+   기본 상태
 ========================================================= */
 
-let socketConnected =
-  false;
+let socketConnected = false;
 
-let roomId =
-  null;
+let roomId = null;
+let playerIndex = null;
 
-let playerIndex =
-  null;
+let gameState = null;
 
-let gameState =
-  null;
+let myNickname = "플레이어";
 
-let myNickname =
-  "플레이어";
+let localHistory = [];
+let localUsedWords = new Set();
 
-let localUsedWords =
-  new Set();
+let isSubmitting = false;
 
-let isSubmitting =
-  false;
+let isAutoStarting = false;
+
+let wordListCache = null;
+
 
 /* =========================================================
    DOM
 ========================================================= */
 
 function $(selector) {
-  return document.querySelector(
-    selector
-  );
+  return document.querySelector(selector);
 }
 
 function $all(selector) {
-  return [
-    ...document.querySelectorAll(
-      selector
-    )
-  ];
+  return [...document.querySelectorAll(selector)];
 }
 
+
 /* =========================================================
-   정규화
+   문자열 정규화
 ========================================================= */
 
 function normalizeWord(word) {
-  if (
-    typeof word !==
-    "string"
-  ) {
+  if (typeof word !== "string") {
     return "";
   }
 
@@ -144,415 +145,104 @@ function normalizeWord(word) {
     .normalize("NFC");
 }
 
+
 /* =========================================================
-   두음 허용
+   두음법칙
 ========================================================= */
 
-function allowedFirstChars(
-  lastChar
-) {
-  lastChar =
-    normalizeWord(
-      lastChar
-    );
+function allowedFirstChars(lastChar) {
+  lastChar = normalizeWord(lastChar);
 
   if (!lastChar) {
     return [];
   }
 
-  const result =
-    new Set();
+  const result = new Set();
 
-  result.add(
-    lastChar
-  );
+  /*
+   * 원래 글자
+   */
+  result.add(lastChar);
 
-  const direct =
-    DUEUM[lastChar];
+  /*
+   * 직접 매핑
+   */
+  const direct = DUEUM[lastChar];
 
-  if (
-    Array.isArray(direct)
-  ) {
-    for (
-      const char
-      of direct
-    ) {
+  if (Array.isArray(direct)) {
+    for (const char of direct) {
       if (char) {
         result.add(char);
       }
     }
   }
 
-  for (
-    const [from, values]
-    of Object.entries(DUEUM)
-  ) {
-    if (
-      !Array.isArray(values)
-    ) {
+  /*
+   * 역방향 매핑
+   */
+  for (const [from, values] of Object.entries(DUEUM)) {
+    if (!Array.isArray(values)) {
       continue;
     }
 
-    if (
-      values.includes(
-        lastChar
-      )
-    ) {
+    if (values.includes(lastChar)) {
       result.add(from);
     }
   }
 
-  return [
-    ...result
-  ];
+  return [...result];
 }
 
+
 /* =========================================================
-   연결
+   연결 판정
 ========================================================= */
 
-function canConnect(
-  previousWord,
-  nextWord
-) {
-  previousWord =
-    normalizeWord(
-      previousWord
-    );
+function canConnect(previousWord, nextWord) {
+  previousWord = normalizeWord(previousWord);
+  nextWord = normalizeWord(nextWord);
 
-  nextWord =
-    normalizeWord(
-      nextWord
-    );
-
-  if (
-    !previousWord ||
-    !nextWord
-  ) {
+  if (!previousWord || !nextWord) {
     return false;
   }
 
-  const last =
-    previousWord.at(-1);
+  const last = previousWord.at(-1);
+  const first = nextWord.at(0);
 
-  const first =
-    nextWord.at(0);
-
-  return allowedFirstChars(
-    last
-  ).includes(
-    first
-  );
+  return allowedFirstChars(last).includes(first);
 }
 
-/* =========================================================
-   UI
-========================================================= */
-
-function setText(
-  selectors,
-  value
-) {
-  for (
-    const selector
-    of selectors
-  ) {
-    const element =
-      $(selector);
-
-    if (element) {
-      element.textContent =
-        value;
-    }
-  }
-}
-
-function setDisabled(
-  selectors,
-  disabled
-) {
-  for (
-    const selector
-    of selectors
-  ) {
-    const element =
-      $(selector);
-
-    if (element) {
-      element.disabled =
-        disabled;
-    }
-  }
-}
-
-/* =========================================================
-   메시지
-========================================================= */
-
-function showMessage(
-  message,
-  type = "info"
-) {
-  const text =
-    String(
-      message ?? ""
-    );
-
-  const selectors = [
-    "#message",
-    "#status",
-    "#gameMessage",
-    ".message",
-    ".status"
-  ];
-
-  for (
-    const selector
-    of selectors
-  ) {
-    const element =
-      $(selector);
-
-    if (!element) {
-      continue;
-    }
-
-    element.textContent =
-      text;
-
-    element.dataset.type =
-      type;
-
-    return;
-  }
-
-  console.log(
-    `[${type}] ${text}`
-  );
-}
-
-/* =========================================================
-   닉네임
-========================================================= */
-
-function getNickname() {
-  const selectors = [
-    "#nickname",
-    "#nicknameInput",
-    "input[name='nickname']"
-  ];
-
-  for (
-    const selector
-    of selectors
-  ) {
-    const element =
-      $(selector);
-
-    if (element) {
-      return (
-        normalizeWord(
-          element.value
-        ) ||
-        "플레이어"
-      );
-    }
-  }
-
-  return "플레이어";
-}
-
-/* =========================================================
-   시작 글자
-========================================================= */
-
-function getStartChar() {
-  const selectors = [
-    "#startChar",
-    "#startCharInput",
-    "input[name='startChar']"
-  ];
-
-  for (
-    const selector
-    of selectors
-  ) {
-    const element =
-      $(selector);
-
-    if (element) {
-      return (
-        normalizeWord(
-          element.value
-        ).at(0) || ""
-      );
-    }
-  }
-
-  return "";
-}
-
-/* =========================================================
-   최대 인원
-========================================================= */
-
-function getMaxPlayers() {
-  const selectors = [
-    "#maxPlayers",
-    "#maxPlayer",
-    "#playerLimit",
-    "input[name='maxPlayers']",
-    "select[name='maxPlayers']"
-  ];
-
-  for (
-    const selector
-    of selectors
-  ) {
-    const element =
-      $(selector);
-
-    if (element) {
-      const value =
-        Number(
-          element.value
-        );
-
-      if (
-        Number.isFinite(
-          value
-        )
-      ) {
-        return Math.min(
-          20,
-          Math.max(
-            2,
-            Math.floor(value)
-          )
-        );
-      }
-    }
-  }
-
-  return 2;
-}
-
-/* =========================================================
-   방 코드
-========================================================= */
-
-function getRoomCode() {
-  const selectors = [
-    "#roomIdInput",
-    "#roomCodeInput",
-    "#roomInput",
-    "input[name='roomId']",
-    "input[name='roomCode']"
-  ];
-
-  for (
-    const selector
-    of selectors
-  ) {
-    const element =
-      $(selector);
-
-    if (element) {
-      return String(
-        element.value ||
-        ""
-      )
-        .trim()
-        .toUpperCase();
-    }
-  }
-
-  return "";
-}
-
-/* =========================================================
-   입력창
-========================================================= */
-
-function getWordInput() {
-  const selectors = [
-    "#wordInput",
-    "#inputWord",
-    "#word",
-    "input[name='word']"
-  ];
-
-  for (
-    const selector
-    of selectors
-  ) {
-    const input =
-      $(selector);
-
-    if (input) {
-      return input;
-    }
-  }
-
-  return null;
-}
-
-function clearWordInput() {
-  const input =
-    getWordInput();
-
-  if (input) {
-    input.value = "";
-
-    if (
-      !input.disabled
-    ) {
-      input.focus();
-    }
-  }
-}
 
 /* =========================================================
    플레이어
 ========================================================= */
 
 function getMyPlayer() {
-  if (
-    !gameState ||
-    playerIndex === null
-  ) {
+  if (!gameState || playerIndex === null) {
     return null;
   }
 
   return (
-    gameState.players
-      ?.find(
-        player =>
-          player.playerIndex ===
-          playerIndex
-      ) ||
-    null
+    gameState.players?.find(
+      player =>
+        player.playerIndex === playerIndex
+    ) || null
   );
 }
 
-function getOpponentPlayers() {
-  if (
-    !gameState ||
-    playerIndex === null
-  ) {
-    return [];
+function getOpponentPlayer() {
+  if (!gameState || playerIndex === null) {
+    return null;
   }
 
   return (
-    gameState.players
-      ?.filter(
-        player =>
-          player.playerIndex !==
-          playerIndex
-      ) ||
-    []
+    gameState.players?.find(
+      player =>
+        player.playerIndex !== playerIndex
+    ) || null
   );
 }
+
 
 /* =========================================================
    내 턴
@@ -564,15 +254,76 @@ function isMyTurn() {
   }
 
   return (
-    gameState.turnPlayer ===
-      playerIndex &&
+    gameState.turnPlayer === playerIndex &&
     gameState.playerCount >= 2 &&
     !gameState.finished
   );
 }
 
+
 /* =========================================================
-   방 코드 표시
+   UI
+========================================================= */
+
+function setText(selectors, value) {
+  for (const selector of selectors) {
+    const element = $(selector);
+
+    if (!element) {
+      continue;
+    }
+
+    element.textContent = value;
+  }
+}
+
+function setDisabled(selectors, disabled) {
+  for (const selector of selectors) {
+    const element = $(selector);
+
+    if (!element) {
+      continue;
+    }
+
+    element.disabled = disabled;
+  }
+}
+
+
+/* =========================================================
+   메시지
+========================================================= */
+
+function showMessage(message, type = "info") {
+  const text = String(message ?? "");
+
+  const selectors = [
+    "#message",
+    "#status",
+    "#gameMessage",
+    ".message",
+    ".status"
+  ];
+
+  for (const selector of selectors) {
+    const element = $(selector);
+
+    if (!element) {
+      continue;
+    }
+
+    element.textContent = text;
+    element.dataset.type = type;
+
+    return;
+  }
+
+  console.log(`[${type}] ${text}`);
+}
+
+
+/* =========================================================
+   방 코드
 ========================================================= */
 
 function renderRoomId() {
@@ -586,6 +337,7 @@ function renderRoomId() {
   );
 }
 
+
 /* =========================================================
    플레이어 표시
 ========================================================= */
@@ -596,14 +348,20 @@ function renderPlayers() {
   }
 
   const players =
-    gameState.players ||
-    [];
+    Array.isArray(gameState.players)
+      ? gameState.players
+      : [];
 
   const me =
     players.find(
       player =>
-        player.playerIndex ===
-        playerIndex
+        player.playerIndex === playerIndex
+    );
+
+  const opponent =
+    players.find(
+      player =>
+        player.playerIndex !== playerIndex
     );
 
   setText(
@@ -612,15 +370,8 @@ function renderPlayers() {
       "#playerName",
       "[data-player-name]"
     ],
-    me?.nickname ||
-      myNickname
+    me?.nickname || myNickname
   );
-
-  /*
-   * 기존 2인 UI 호환
-   */
-  const opponents =
-    getOpponentPlayers();
 
   setText(
     [
@@ -628,14 +379,7 @@ function renderPlayers() {
       "#enemyName",
       "[data-opponent-name]"
     ],
-    opponents.length
-      ? opponents
-          .map(
-            p =>
-              p.nickname
-          )
-          .join(", ")
-      : "상대방 대기 중"
+    opponent?.nickname || "상대방 대기 중"
   );
 
   setText(
@@ -643,83 +387,10 @@ function renderPlayers() {
       "#playerCount",
       "[data-player-count]"
     ],
-    `${players.length}/${gameState.maxPlayers || 2}`
+    `${players.length}/2`
   );
-
-  /*
-   * N명 플레이어 목록
-   */
-  const selectors = [
-    "#players",
-    "#playerList",
-    "[data-player-list]"
-  ];
-
-  let container =
-    null;
-
-  for (
-    const selector
-    of selectors
-  ) {
-    const element =
-      $(selector);
-
-    if (element) {
-      container =
-        element;
-
-      break;
-    }
-  }
-
-  if (!container) {
-    return;
-  }
-
-  container.innerHTML =
-    "";
-
-  const sorted =
-    [...players].sort(
-      (a, b) =>
-        a.playerIndex -
-        b.playerIndex
-    );
-
-  for (
-    const player
-    of sorted
-  ) {
-    const row =
-      document.createElement(
-        "div"
-      );
-
-    row.className =
-      "player-item";
-
-    const turnMark =
-      gameState.turnPlayer ===
-      player.playerIndex &&
-      !gameState.finished
-        ? " ▶"
-        : "";
-
-    const meMark =
-      player.playerIndex ===
-      playerIndex
-        ? " (나)"
-        : "";
-
-    row.textContent =
-      `${player.playerIndex + 1}. ${player.nickname}${meMark}${turnMark}`;
-
-    container.appendChild(
-      row
-    );
-  }
 }
+
 
 /* =========================================================
    현재 단어
@@ -727,8 +398,7 @@ function renderPlayers() {
 
 function renderCurrentWord() {
   const word =
-    gameState?.currentWord ||
-    "";
+    gameState?.currentWord || "";
 
   setText(
     [
@@ -741,6 +411,7 @@ function renderCurrentWord() {
   );
 }
 
+
 /* =========================================================
    턴
 ========================================================= */
@@ -750,28 +421,18 @@ function renderTurn() {
     return;
   }
 
-  if (
-    gameState.finished
-  ) {
+  if (gameState.finished) {
     if (
-      gameState.winner ===
-      playerIndex
+      gameState.winner !== null &&
+      gameState.winner === playerIndex
     ) {
       showMessage(
         "게임에서 승리했습니다.",
         "win"
       );
     } else {
-      const winner =
-        gameState.players
-          ?.find(
-            p =>
-              p.playerIndex ===
-              gameState.winner
-          );
-
       showMessage(
-        `게임 종료 — ${winner?.nickname || "다른 플레이어"} 승리`,
+        "게임에서 패배했습니다.",
         "lose"
       );
     }
@@ -779,10 +440,7 @@ function renderTurn() {
     return;
   }
 
-  if (
-    gameState.playerCount <
-    2
-  ) {
+  if (gameState.playerCount < 2) {
     showMessage(
       "상대방을 기다리는 중입니다.",
       "waiting"
@@ -791,38 +449,182 @@ function renderTurn() {
     return;
   }
 
-  const current =
-    gameState.players
-      ?.find(
-        p =>
-          p.playerIndex ===
-          gameState.turnPlayer
-      );
-
-  if (
-    gameState.turnPlayer ===
-    playerIndex
-  ) {
+  if (isMyTurn()) {
     showMessage(
       "당신의 차례입니다.",
       "my-turn"
     );
   } else {
+    const opponent =
+      getOpponentPlayer();
+
     showMessage(
-      `${current?.nickname || "플레이어"}의 차례입니다.`,
+      `${opponent?.nickname || "상대방"}의 차례입니다.`,
       "opponent-turn"
     );
   }
 }
+
+
+/* =========================================================
+   입력창
+========================================================= */
+
+function getWordInput() {
+  const selectors = [
+    "#wordInput",
+    "#inputWord",
+    "#word",
+    "input[name='word']"
+  ];
+
+  for (const selector of selectors) {
+    const input = $(selector);
+
+    if (input) {
+      return input;
+    }
+  }
+
+  return null;
+}
+
+function clearWordInput() {
+  const input =
+    getWordInput();
+
+  if (!input) {
+    return;
+  }
+
+  input.value = "";
+  input.focus();
+}
+
+
+/* =========================================================
+   입력 상태
+========================================================= */
+
+function updateInputState() {
+  const input =
+    getWordInput();
+
+  const disabled =
+    !socketConnected ||
+    !roomId ||
+    !gameState ||
+    gameState.playerCount < 2 ||
+    gameState.finished ||
+    !isMyTurn() ||
+    isSubmitting ||
+    isAutoStarting;
+
+  if (input) {
+    input.disabled = disabled;
+  }
+
+  setDisabled(
+    [
+      "#submitWord",
+      "#submitButton",
+      "#wordSubmit",
+      "#sendWord",
+      "#submit"
+    ],
+    disabled
+  );
+}
+
+
+/* =========================================================
+   기록
+========================================================= */
+
+function renderHistory() {
+  const history =
+    Array.isArray(gameState?.history)
+      ? gameState.history
+      : [];
+
+  localHistory =
+    history.slice();
+
+  localUsedWords =
+    new Set(
+      history
+        .map(item =>
+          normalizeWord(item.word)
+        )
+        .filter(Boolean)
+    );
+
+  const selectors = [
+    "#history",
+    "#wordHistory",
+    "#gameHistory",
+    "[data-history]"
+  ];
+
+  let container = null;
+
+  for (const selector of selectors) {
+    const element = $(selector);
+
+    if (element) {
+      container = element;
+      break;
+    }
+  }
+
+  if (!container) {
+    return;
+  }
+
+  container.innerHTML = "";
+
+  for (const item of history) {
+    const row =
+      document.createElement("div");
+
+    row.className =
+      "history-item";
+
+    const playerName =
+      gameState.players?.find(
+        player =>
+          player.playerIndex ===
+          item.player
+      )?.nickname ||
+      `플레이어 ${Number(item.player) + 1}`;
+
+    const depth =
+      item.depth !== null &&
+      item.depth !== undefined
+        ? ` (깊이 ${item.depth})`
+        : "";
+
+    row.textContent =
+      `${item.turn}. ${playerName}: ${item.word}${depth}`;
+
+    container.appendChild(row);
+  }
+
+  container.scrollTop =
+    container.scrollHeight;
+}
+
 
 /* =========================================================
    두음 정보
 ========================================================= */
 
 function renderDueumInfo() {
-  if (
-    !gameState?.currentWord
-  ) {
+  if (!gameState) {
+    return;
+  }
+
+  if (!gameState.currentWord) {
     setText(
       [
         "#allowedChars",
@@ -839,9 +641,7 @@ function renderDueumInfo() {
     gameState.currentWord.at(-1);
 
   const allowed =
-    allowedFirstChars(
-      last
-    );
+    allowedFirstChars(last);
 
   setText(
     [
@@ -853,136 +653,17 @@ function renderDueumInfo() {
   );
 }
 
-/* =========================================================
-   기록
-========================================================= */
-
-function renderHistory() {
-  const history =
-    gameState?.history ||
-    [];
-
-  localUsedWords =
-    new Set(
-      history.map(
-        item =>
-          item.word
-      )
-    );
-
-  const selectors = [
-    "#history",
-    "#wordHistory",
-    "#gameHistory",
-    "[data-history]"
-  ];
-
-  let container =
-    null;
-
-  for (
-    const selector
-    of selectors
-  ) {
-    const element =
-      $(selector);
-
-    if (element) {
-      container =
-        element;
-
-      break;
-    }
-  }
-
-  if (!container) {
-    return;
-  }
-
-  container.innerHTML =
-    "";
-
-  for (
-    const item
-    of history
-  ) {
-    const row =
-      document.createElement(
-        "div"
-      );
-
-    row.className =
-      "history-item";
-
-    const depth =
-      item.depth !==
-        null &&
-      item.depth !==
-        undefined
-        ? ` (깊이 ${item.depth})`
-        : "";
-
-    row.textContent =
-      `${item.turn}. ${item.nickname || `플레이어 ${item.player + 1}`}: ${item.word}${depth}`;
-
-    container.appendChild(
-      row
-    );
-  }
-
-  container.scrollTop =
-    container.scrollHeight;
-}
-
-/* =========================================================
-   입력 상태
-========================================================= */
-
-function updateInputState() {
-  const input =
-    getWordInput();
-
-  const disabled =
-    !socketConnected ||
-    !roomId ||
-    !gameState ||
-    gameState.playerCount <
-      2 ||
-    gameState.finished ||
-    !isMyTurn() ||
-    isSubmitting;
-
-  if (input) {
-    input.disabled =
-      disabled;
-  }
-
-  setDisabled(
-    [
-      "#submitWord",
-      "#submitButton",
-      "#wordSubmit",
-      "#sendWord",
-      "#submit",
-      "[data-action='submit-word']"
-    ],
-    disabled
-  );
-}
 
 /* =========================================================
    전체 상태
 ========================================================= */
 
-function renderGameState(
-  state
-) {
+function renderGameState(state) {
   if (!state) {
     return;
   }
 
-  gameState =
-    state;
+  gameState = state;
 
   if (state.roomId) {
     roomId =
@@ -997,6 +678,96 @@ function renderGameState(
   renderDueumInfo();
   updateInputState();
 }
+
+
+/* =========================================================
+   닉네임
+========================================================= */
+
+function getNickname() {
+  const selectors = [
+    "#nickname",
+    "#nicknameInput",
+    "input[name='nickname']"
+  ];
+
+  for (const selector of selectors) {
+    const element = $(selector);
+
+    if (!element) {
+      continue;
+    }
+
+    return (
+      normalizeWord(
+        element.value
+      ) || "플레이어"
+    );
+  }
+
+  return "플레이어";
+}
+
+
+/* =========================================================
+   시작 글자
+========================================================= */
+
+function getStartChar() {
+  const selectors = [
+    "#startChar",
+    "#startCharInput",
+    "input[name='startChar']"
+  ];
+
+  for (const selector of selectors) {
+    const element = $(selector);
+
+    if (!element) {
+      continue;
+    }
+
+    return (
+      normalizeWord(
+        element.value
+      ).at(0) || ""
+    );
+  }
+
+  return "";
+}
+
+
+/* =========================================================
+   방 코드
+========================================================= */
+
+function getRoomCode() {
+  const selectors = [
+    "#roomIdInput",
+    "#roomCodeInput",
+    "#roomInput",
+    "input[name='roomId']",
+    "input[name='roomCode']"
+  ];
+
+  for (const selector of selectors) {
+    const element = $(selector);
+
+    if (!element) {
+      continue;
+    }
+
+    return String(
+      element.value || ""
+    )
+      .trim()
+      .toUpperCase();
+  }
+
+  return "";
+}
+
 
 /* =========================================================
    방 생성
@@ -1018,9 +789,6 @@ function createRoom() {
   const startChar =
     getStartChar();
 
-  const maxPlayers =
-    getMaxPlayers();
-
   myNickname =
     nickname;
 
@@ -1028,13 +796,11 @@ function createRoom() {
     "room:create",
     {
       nickname,
-
-      startChar,
-
-      maxPlayers
+      startChar
     }
   );
 }
+
 
 /* =========================================================
    방 입장
@@ -1071,13 +837,12 @@ function joinRoom() {
   socket.emit(
     "room:join",
     {
-      roomId:
-        roomCode,
-
+      roomId: roomCode,
       nickname
     }
   );
 }
+
 
 /* =========================================================
    단어 제출
@@ -1085,6 +850,10 @@ function joinRoom() {
 
 function submitWord() {
   if (isSubmitting) {
+    return;
+  }
+
+  if (isAutoStarting) {
     return;
   }
 
@@ -1115,15 +884,16 @@ function submitWord() {
     return;
   }
 
-  if (
-    gameState.playerCount <
-    2
-  ) {
+  if (gameState.playerCount < 2) {
     showMessage(
       "상대방을 기다리는 중입니다.",
       "waiting"
     );
 
+    return;
+  }
+
+  if (gameState.finished) {
     return;
   }
 
@@ -1140,6 +910,11 @@ function submitWord() {
     getWordInput();
 
   if (!input) {
+    showMessage(
+      "단어 입력창을 찾을 수 없습니다.",
+      "error"
+    );
+
     return;
   }
 
@@ -1158,13 +933,9 @@ function submitWord() {
   }
 
   /*
-   * 중복 빠른 검사
+   * 클라이언트 빠른 중복 검사
    */
-  if (
-    localUsedWords.has(
-      word
-    )
-  ) {
+  if (localUsedWords.has(word)) {
     showMessage(
       "이미 사용한 단어입니다.",
       "error"
@@ -1174,11 +945,9 @@ function submitWord() {
   }
 
   /*
-   * 연결 빠른 검사
+   * 연결 검사
    */
-  if (
-    gameState.currentWord
-  ) {
+  if (gameState.currentWord) {
     if (
       !canConnect(
         gameState.currentWord,
@@ -1195,9 +964,12 @@ function submitWord() {
 
       return;
     }
-  } else if (
-    gameState.startChar
-  ) {
+  }
+
+  /*
+   * 첫 단어 시작 글자 검사
+   */
+  else if (gameState.startChar) {
     const allowed =
       allowedFirstChars(
         gameState.startChar
@@ -1218,10 +990,9 @@ function submitWord() {
   }
 
   /*
-   * 실제 서버 제출
+   * 서버가 최종 판정
    */
-  isSubmitting =
-    true;
+  isSubmitting = true;
 
   updateInputState();
 
@@ -1233,11 +1004,59 @@ function submitWord() {
   );
 }
 
+
+/* =========================================================
+   game:submit 호환
+========================================================= */
+
+function submitWordLegacy() {
+  if (isSubmitting) {
+    return;
+  }
+
+  const input =
+    getWordInput();
+
+  if (!input) {
+    return;
+  }
+
+  const word =
+    normalizeWord(
+      input.value
+    );
+
+  if (!word) {
+    return;
+  }
+
+  isSubmitting = true;
+
+  updateInputState();
+
+  socket.emit(
+    "game:submit",
+    {
+      word
+    }
+  );
+}
+
+
 /* =========================================================
    재시작
 ========================================================= */
 
 function restartGame() {
+  if (!socketConnected) {
+    showMessage(
+      "서버에 연결되어 있지 않습니다.",
+      "error"
+    );
+
+    return;
+  }
+
   if (!roomId) {
     showMessage(
       "먼저 방에 들어가주세요.",
@@ -1246,6 +1065,21 @@ function restartGame() {
 
     return;
   }
+
+  if (
+    !gameState ||
+    gameState.playerCount < 2
+  ) {
+    showMessage(
+      "상대방이 있어야 새 게임을 시작할 수 있습니다.",
+      "error"
+    );
+
+    return;
+  }
+
+  isSubmitting = false;
+  isAutoStarting = false;
 
   socket.emit(
     "game:restart",
@@ -1256,8 +1090,9 @@ function restartGame() {
   );
 }
 
+
 /* =========================================================
-   나가기
+   방 나가기
 ========================================================= */
 
 function leaveRoom() {
@@ -1269,22 +1104,20 @@ function leaveRoom() {
     "room:leave"
   );
 
-  roomId =
-    null;
+  roomId = null;
+  playerIndex = null;
+  gameState = null;
 
-  playerIndex =
-    null;
-
-  gameState =
-    null;
-
+  localHistory = [];
   localUsedWords =
     new Set();
 
-  isSubmitting =
-    false;
+  isSubmitting = false;
+  isAutoStarting = false;
 
   renderRoomId();
+
+  renderCurrentWord();
 
   updateInputState();
 
@@ -1294,8 +1127,9 @@ function leaveRoom() {
   );
 }
 
+
 /* =========================================================
-   상태 요청
+   방 상태 요청
 ========================================================= */
 
 function requestRoomState() {
@@ -1308,15 +1142,354 @@ function requestRoomState() {
   );
 }
 
+
 /* =========================================================
-   Socket.IO connect
+   단어 목록 가져오기
+========================================================= */
+
+async function loadWordList() {
+  if (Array.isArray(wordListCache)) {
+    return wordListCache;
+  }
+
+  const candidates = [
+    "/word.txt",
+    "/data/word.txt",
+    "/public/word.txt"
+  ];
+
+  for (const url of candidates) {
+    try {
+      const response =
+        await fetch(
+          `${url}?v=${Date.now()}`
+        );
+
+      if (!response.ok) {
+        continue;
+      }
+
+      const text =
+        await response.text();
+
+      const words = [];
+
+      for (
+        const line of
+        text.split(/\r?\n/)
+      ) {
+        const trimmed =
+          line.trim();
+
+        if (!trimmed) {
+          continue;
+        }
+
+        const word =
+          normalizeWord(
+            trimmed.split(/\s+/)[0]
+          );
+
+        if (word) {
+          words.push(word);
+        }
+      }
+
+      if (words.length > 0) {
+        wordListCache =
+          words;
+
+        console.log(
+          `[WORD LIST] ${words.length.toLocaleString()}개 로드`
+        );
+
+        return words;
+      }
+    } catch (error) {
+      console.warn(
+        `[WORD LIST] ${url} 로드 실패`,
+        error
+      );
+    }
+  }
+
+  console.warn(
+    "[WORD LIST] 클라이언트에서 단어 목록을 불러오지 못했습니다."
+  );
+
+  return [];
+}
+
+
+/* =========================================================
+   첫 단어 후보
+========================================================= */
+
+function getStartCandidates(words) {
+  if (!Array.isArray(words)) {
+    return [];
+  }
+
+  const startChar =
+    gameState?.startChar || "";
+
+  const used =
+    localUsedWords;
+
+  const candidates = [];
+
+  for (const word of words) {
+    if (!word) {
+      continue;
+    }
+
+    if (used.has(word)) {
+      continue;
+    }
+
+    /*
+     * 시작 글자가 지정되어 있으면
+     * 두음법칙까지 적용
+     */
+    if (startChar) {
+      const allowed =
+        allowedFirstChars(
+          startChar
+        );
+
+      if (
+        !allowed.includes(
+          word.at(0)
+        )
+      ) {
+        continue;
+      }
+    }
+
+    candidates.push(word);
+  }
+
+  return candidates;
+}
+
+
+/* =========================================================
+   첫 단어 선택
+========================================================= */
+
+function chooseAutomaticStartWord(words) {
+  const candidates =
+    getStartCandidates(words);
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  /*
+   * 가능한 한 너무 짧은/이상한 시작어를 피하고
+   * 일반적인 단어를 우선한다.
+   *
+   * 최종 유효성은 서버가 검사한다.
+   */
+  const filtered =
+    candidates.filter(
+      word =>
+        word.length >= 2
+    );
+
+  const pool =
+    filtered.length > 0
+      ? filtered
+      : candidates;
+
+  const index =
+    Math.floor(
+      Math.random() *
+      pool.length
+    );
+
+  return pool[index] || null;
+}
+
+
+/* =========================================================
+   자동 첫 단어 시작
+========================================================= */
+
+async function startAutomaticFirstWord() {
+  if (isAutoStarting) {
+    return;
+  }
+
+  if (!gameState) {
+    return;
+  }
+
+  /*
+   * 첫 번째 플레이어만 시작
+   */
+  if (playerIndex !== 0) {
+    return;
+  }
+
+  /*
+   * 이미 단어가 있으면 하지 않음
+   */
+  if (gameState.currentWord) {
+    return;
+  }
+
+  /*
+   * 게임이 끝났으면 하지 않음
+   */
+  if (gameState.finished) {
+    return;
+  }
+
+  /*
+   * 상대방이 없으면 하지 않음
+   */
+  if (gameState.playerCount < 2) {
+    return;
+  }
+
+  /*
+   * 반드시 내 턴이어야 함
+   */
+  if (!isMyTurn()) {
+    return;
+  }
+
+  isAutoStarting = true;
+  isSubmitting = true;
+
+  updateInputState();
+
+  try {
+    const words =
+      await loadWordList();
+
+    if (!words.length) {
+      throw new Error(
+        "단어 목록을 불러오지 못했습니다."
+      );
+    }
+
+    /*
+     * 상태가 바뀌었으면 중단
+     */
+    if (
+      !gameState ||
+      gameState.currentWord ||
+      gameState.finished ||
+      gameState.playerCount < 2 ||
+      gameState.turnPlayer !== 0
+    ) {
+      return;
+    }
+
+    const word =
+      chooseAutomaticStartWord(
+        words
+      );
+
+    if (!word) {
+      throw new Error(
+        "사용할 수 있는 시작 단어가 없습니다."
+      );
+    }
+
+    console.log(
+      "[AUTO START WORD]",
+      word
+    );
+
+    socket.emit(
+      "game:word",
+      {
+        word
+      }
+    );
+
+  } catch (error) {
+    console.error(
+      "[AUTO START ERROR]",
+      error
+    );
+
+    isSubmitting = false;
+
+    showMessage(
+      "새 게임의 시작 단어를 만들지 못했습니다. word.txt 위치를 확인해주세요.",
+      "error"
+    );
+
+  } finally {
+    isAutoStarting = false;
+
+    /*
+     * 서버 응답이 오기 전에는
+     * isSubmitting을 바로 풀지 않는다.
+     *
+     * game:word / game:error / game:state에서
+     * 다시 상태를 정리한다.
+     */
+    updateInputState();
+  }
+}
+
+
+/* =========================================================
+   자동 시작 검사
+========================================================= */
+
+function checkAutomaticStart() {
+  if (!gameState) {
+    return;
+  }
+
+  if (
+    gameState.playerCount < 2
+  ) {
+    return;
+  }
+
+  if (
+    gameState.finished
+  ) {
+    return;
+  }
+
+  if (
+    gameState.currentWord
+  ) {
+    return;
+  }
+
+  if (
+    gameState.turnPlayer !== 0
+  ) {
+    return;
+  }
+
+  if (
+    playerIndex !== 0
+  ) {
+    return;
+  }
+
+  startAutomaticFirstWord();
+}
+
+
+/* =========================================================
+   Socket.IO CONNECT
 ========================================================= */
 
 socket.on(
   "connect",
   () => {
-    socketConnected =
-      true;
+    socketConnected = true;
 
     console.log(
       "[Socket.IO] 연결됨:",
@@ -1329,21 +1502,31 @@ socket.on(
     );
 
     updateInputState();
+
+    /*
+     * 기존 방 정보가 있었다면
+     * 서버 상태 재요청
+     */
+    if (roomId) {
+      socket.emit(
+        "room:state"
+      );
+    }
   }
 );
 
+
 /* =========================================================
-   disconnect
+   DISCONNECT
 ========================================================= */
 
 socket.on(
   "disconnect",
   reason => {
-    socketConnected =
-      false;
+    socketConnected = false;
 
-    isSubmitting =
-      false;
+    isSubmitting = false;
+    isAutoStarting = false;
 
     console.warn(
       "[Socket.IO] 연결 종료:",
@@ -1359,6 +1542,7 @@ socket.on(
   }
 );
 
+
 /* =========================================================
    server:ready
 ========================================================= */
@@ -1372,6 +1556,7 @@ socket.on(
     );
   }
 );
+
 
 /* =========================================================
    room:created
@@ -1393,18 +1578,28 @@ socket.on(
     gameState =
       data.state;
 
-    localUsedWords =
-      new Set();
+    localHistory =
+      gameState?.history?.slice() || [];
 
-    isSubmitting =
-      false;
+    localUsedWords =
+      new Set(
+        localHistory.map(
+          item =>
+            normalizeWord(
+              item.word
+            )
+        )
+      );
+
+    isSubmitting = false;
+    isAutoStarting = false;
 
     renderGameState(
       gameState
     );
 
     showMessage(
-      `방 생성 완료 — 코드: ${roomId}`,
+      `방이 생성되었습니다. 방 코드: ${roomId}`,
       "success"
     );
 
@@ -1414,6 +1609,7 @@ socket.on(
     );
   }
 );
+
 
 /* =========================================================
    room:joined
@@ -1435,16 +1631,21 @@ socket.on(
     gameState =
       data.state;
 
+    localHistory =
+      gameState?.history?.slice() || [];
+
     localUsedWords =
       new Set(
-        gameState?.history?.map(
+        localHistory.map(
           item =>
-            item.word
-        ) || []
+            normalizeWord(
+              item.word
+            )
+        )
       );
 
-    isSubmitting =
-      false;
+    isSubmitting = false;
+    isAutoStarting = false;
 
     renderGameState(
       gameState
@@ -1462,6 +1663,7 @@ socket.on(
   }
 );
 
+
 /* =========================================================
    room:ready
 ========================================================= */
@@ -1475,8 +1677,13 @@ socket.on(
       );
     }
 
-    isSubmitting =
-      false;
+    isSubmitting = false;
+    isAutoStarting = false;
+
+    showMessage(
+      "상대방이 입장했습니다.",
+      "success"
+    );
 
     updateInputState();
 
@@ -1484,8 +1691,18 @@ socket.on(
       "[room:ready]",
       data
     );
+
+    /*
+     * 상대가 들어오면
+     * 첫 번째 플레이어가 자동으로 시작
+     */
+    setTimeout(
+      checkAutomaticStart,
+      50
+    );
   }
 );
+
 
 /* =========================================================
    room:error
@@ -1494,8 +1711,8 @@ socket.on(
 socket.on(
   "room:error",
   data => {
-    isSubmitting =
-      false;
+    isSubmitting = false;
+    isAutoStarting = false;
 
     updateInputState();
 
@@ -1512,6 +1729,7 @@ socket.on(
   }
 );
 
+
 /* =========================================================
    game:state
 ========================================================= */
@@ -1519,14 +1737,28 @@ socket.on(
 socket.on(
   "game:state",
   state => {
-    isSubmitting =
-      false;
+    isSubmitting = false;
 
     renderGameState(
       state
     );
+
+    console.log(
+      "[game:state]",
+      state
+    );
+
+    /*
+     * 새 게임에서 currentWord가 비어 있으면
+     * 첫 플레이어가 자동 시작
+     */
+    setTimeout(
+      checkAutomaticStart,
+      50
+    );
   }
 );
+
 
 /* =========================================================
    game:word
@@ -1535,22 +1767,30 @@ socket.on(
 socket.on(
   "game:word",
   data => {
-    isSubmitting =
-      false;
+    isSubmitting = false;
 
     if (!data?.ok) {
       updateInputState();
       return;
     }
 
-    if (data.word) {
+    const word =
+      normalizeWord(
+        data.word
+      );
+
+    /*
+     * 서버가 승인한 단어만 기록
+     */
+    if (word) {
       localUsedWords.add(
-        normalizeWord(
-          data.word
-        )
+        word
       );
     }
 
+    /*
+     * 내가 입력한 단어라면 입력창 비우기
+     */
     if (
       data.player ===
       playerIndex
@@ -1558,14 +1798,15 @@ socket.on(
       clearWordInput();
     }
 
-    updateInputState();
-
     console.log(
       "[game:word]",
       data
     );
+
+    updateInputState();
   }
 );
+
 
 /* =========================================================
    game:error
@@ -1574,12 +1815,12 @@ socket.on(
 socket.on(
   "game:error",
   data => {
-    isSubmitting =
-      false;
+    isSubmitting = false;
+    isAutoStarting = false;
 
     showMessage(
       data?.reason ||
-        "게임 처리 중 오류가 발생했습니다.",
+        "단어 처리 중 오류가 발생했습니다.",
       "error"
     );
 
@@ -1594,9 +1835,7 @@ socket.on(
           "#nextChars",
           "[data-allowed-chars]"
         ],
-        data.allowed.join(
-          ", "
-        )
+        data.allowed.join(", ")
       );
     }
 
@@ -1609,35 +1848,6 @@ socket.on(
   }
 );
 
-/* =========================================================
-   game:started
-========================================================= */
-
-socket.on(
-  "game:started",
-  data => {
-    isSubmitting =
-      false;
-
-    if (data?.state) {
-      renderGameState(
-        data.state
-      );
-    }
-
-    showMessage(
-      "새 게임이 시작되었습니다.",
-      "success"
-    );
-
-    updateInputState();
-
-    console.log(
-      "[game:started]",
-      data
-    );
-  }
-);
 
 /* =========================================================
    game:finished
@@ -1646,8 +1856,8 @@ socket.on(
 socket.on(
   "game:finished",
   data => {
-    isSubmitting =
-      false;
+    isSubmitting = false;
+    isAutoStarting = false;
 
     if (data?.state) {
       renderGameState(
@@ -1660,19 +1870,12 @@ socket.on(
       playerIndex
     ) {
       showMessage(
-        "게임 종료 — 당신이 승리했습니다.",
+        "게임 종료 — 승리했습니다.",
         "win"
       );
     } else {
-      const winner =
-        gameState?.players?.find(
-          player =>
-            player.playerIndex ===
-            data?.winner
-        );
-
       showMessage(
-        `게임 종료 — ${winner?.nickname || "다른 플레이어"} 승리`,
+        "게임 종료 — 패배했습니다.",
         "lose"
       );
     }
@@ -1686,6 +1889,50 @@ socket.on(
   }
 );
 
+
+/* =========================================================
+   game:started
+========================================================= */
+
+socket.on(
+  "game:started",
+  data => {
+    isSubmitting = false;
+    isAutoStarting = false;
+
+    if (data?.state) {
+      renderGameState(
+        data.state
+      );
+    }
+
+    /*
+     * game:restart 직후 서버는
+     * currentWord를 null로 보낸다.
+     *
+     * 따라서 여기서 첫 번째 플레이어가
+     * 실제 word.txt 단어를 하나 골라 제출한다.
+     */
+    showMessage(
+      "새 게임이 시작되었습니다.",
+      "success"
+    );
+
+    updateInputState();
+
+    console.log(
+      "[game:started]",
+      data
+    );
+
+    setTimeout(
+      checkAutomaticStart,
+      50
+    );
+  }
+);
+
+
 /* =========================================================
    room:playerLeft
 ========================================================= */
@@ -1693,8 +1940,8 @@ socket.on(
 socket.on(
   "room:playerLeft",
   data => {
-    isSubmitting =
-      false;
+    isSubmitting = false;
+    isAutoStarting = false;
 
     if (data?.state) {
       renderGameState(
@@ -1704,7 +1951,7 @@ socket.on(
 
     showMessage(
       data?.reason ||
-        "플레이어가 방을 나갔습니다.",
+        "상대방이 방을 나갔습니다.",
       "error"
     );
 
@@ -1717,6 +1964,27 @@ socket.on(
   }
 );
 
+
+/* =========================================================
+   game:submit:redirect
+========================================================= */
+
+socket.on(
+  "game:submit:redirect",
+  () => {
+    /*
+     * 서버 호환 이벤트.
+     *
+     * 실제 결과:
+     * game:word
+     * game:error
+     *
+     * 에서 처리한다.
+     */
+  }
+);
+
+
 /* =========================================================
    클릭 이벤트
 ========================================================= */
@@ -1725,28 +1993,22 @@ function bindClick(
   selectors,
   handler
 ) {
-  for (
-    const selector
-    of selectors
-  ) {
+  for (const selector of selectors) {
     const elements =
       $all(selector);
 
-    for (
-      const element
-      of elements
-    ) {
+    for (const element of elements) {
       element.addEventListener(
         "click",
         event => {
           event.preventDefault();
-
           handler();
         }
       );
     }
   }
 }
+
 
 /* =========================================================
    방 생성
@@ -1762,6 +2024,7 @@ bindClick(
   createRoom
 );
 
+
 /* =========================================================
    방 입장
 ========================================================= */
@@ -1775,6 +2038,7 @@ bindClick(
   ],
   joinRoom
 );
+
 
 /* =========================================================
    단어 제출
@@ -1792,6 +2056,7 @@ bindClick(
   submitWord
 );
 
+
 /* =========================================================
    재시작
 ========================================================= */
@@ -1805,6 +2070,7 @@ bindClick(
   ],
   restartGame
 );
+
 
 /* =========================================================
    나가기
@@ -1820,6 +2086,7 @@ bindClick(
   leaveRoom
 );
 
+
 /* =========================================================
    상태 새로고침
 ========================================================= */
@@ -1833,8 +2100,9 @@ bindClick(
   requestRoomState
 );
 
+
 /* =========================================================
-   엔터
+   Enter = 단어 제출
 ========================================================= */
 
 document.addEventListener(
@@ -1843,17 +2111,18 @@ document.addEventListener(
     const input =
       getWordInput();
 
+    if (!input) {
+      return;
+    }
+
     if (
-      !input ||
-      event.target !==
-        input
+      event.target !== input
     ) {
       return;
     }
 
     if (
-      event.key ===
-      "Enter"
+      event.key === "Enter"
     ) {
       event.preventDefault();
 
@@ -1862,8 +2131,27 @@ document.addEventListener(
   }
 );
 
+
 /* =========================================================
-   전역 API
+   페이지 종료
+========================================================= */
+
+window.addEventListener(
+  "beforeunload",
+  () => {
+    /*
+     * disconnect는 Socket.IO가 자동 처리한다.
+     *
+     * 여기서 room:leave를 강제로 보내면
+     * 페이지 이동 중 이벤트가 꼬일 수 있으므로
+     * 보내지 않는다.
+     */
+  }
+);
+
+
+/* =========================================================
+   전역 함수
 ========================================================= */
 
 window.createRoom =
@@ -1874,6 +2162,9 @@ window.joinRoom =
 
 window.submitWord =
   submitWord;
+
+window.submitWordLegacy =
+  submitWordLegacy;
 
 window.restartGame =
   restartGame;
@@ -1893,16 +2184,33 @@ window.allowedFirstChars =
 window.normalizeWord =
   normalizeWord;
 
+
 /* =========================================================
-   초기
+   초기화
 ========================================================= */
 
 updateInputState();
+
+console.log(
+  "========================================"
+);
 
 console.log(
   "client/script.js 로드 완료"
 );
 
 console.log(
-  "Socket.IO 멀티플레이 이벤트 연결 완료"
+  "Socket.IO 서버 이벤트 연결 완료"
+);
+
+console.log(
+  "현재 서버 모드: 2인 온라인"
+);
+
+console.log(
+  "새 게임 자동 시작 단어 기능: ON"
+);
+
+console.log(
+  "========================================"
 );
