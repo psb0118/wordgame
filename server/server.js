@@ -65,15 +65,54 @@ const ATTACK_FILE_CANDIDATES = [
 
 app.use(express.json());
 
-app.use(
-  express.static(ROOT_DIR)
+/* =========================================================
+   정적 파일 / 클라이언트
+========================================================= */
+
+app.use(express.json());
+
+const CLIENT_DIR = path.join(
+  ROOT_DIR,
+  "client"
 );
 
+/*
+ * client 폴더의 CSS / JS / 이미지 등 제공
+ */
+if (fs.existsSync(CLIENT_DIR)) {
+  app.use(
+    express.static(CLIENT_DIR)
+  );
+}
+
+/*
+ * public 폴더도 존재하면 제공
+ */
 if (fs.existsSync(PUBLIC_DIR)) {
   app.use(
     express.static(PUBLIC_DIR)
   );
 }
+
+/*
+ * 루트 접속
+ * /
+ */
+app.get("/", (req, res) => {
+  const indexFile =
+    path.join(
+      CLIENT_DIR,
+      "index.html"
+    );
+
+  if (!fs.existsSync(indexFile)) {
+    return res.status(404).send(
+      "client/index.html을 찾을 수 없습니다."
+    );
+  }
+
+  res.sendFile(indexFile);
+});
 
 /* =========================================================
    데이터
