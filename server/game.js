@@ -1,30 +1,136 @@
 "use strict";
 
-/*
- * =========================================================
- * 끝말잇기 공통 게임 엔진
- * =========================================================
- *
- * 사용 데이터
- *
- * word.txt
- *   실제 사용 가능한 전체 단어
- *
- * attack.txt
- *   공격 단어 + 공격 깊이
- *
- * 예:
- *
- * 가녘 1
- * 가마깥 3
- * 가겍 5
- *
- * =========================================================
- */
+/* =========================================================
+   client/game.js
+   끝말잇기 로컬 게임 엔진 + AI
+
+   역할
+   ---------------------------------------------------------
+   - 단어 정규화
+   - 두음법칙
+   - 연결 가능 여부
+   - 단어 후보 검색
+   - 공격 단어 분석
+   - AI 난이도
+   - AI 단어 선택
+   - 로컬 게임 상태
+   - 새 게임 초기화
+   - 턴 처리
+   - 시간 제한
+   - 목숨 2개
+
+   주의
+   ---------------------------------------------------------
+   - Socket.IO 처리는 하지 않는다.
+   - 온라인 방 처리는 script.js / server.js가 담당한다.
+   - DOM 이벤트를 직접 등록하지 않는다.
+   - HTML onclick / script.js에서 호출할 수 있도록
+     window.GameEngine으로 공개한다.
+========================================================= */
 
 
 /* =========================================================
-   기본 처리
+   데이터
+========================================================= */
+
+let WORD_SET = new Set();
+
+let ATTACK_DEPTH = Object.create(null);
+
+let WORD_INDEX = new Map();
+
+let DATA_LOADED = false;
+
+
+/* =========================================================
+   두음법칙
+========================================================= */
+
+const DUEUM = {
+  "녀": ["녀", "여"],
+  "년": ["년", "연"],
+  "녕": ["녕", "영"],
+  "녜": ["녜", "예"],
+  "뇨": ["뇨", "요"],
+  "뉴": ["뉴", "유"],
+  "니": ["니", "이"],
+
+  "랴": ["랴", "야"],
+  "려": ["려", "여"],
+  "례": ["례", "예"],
+  "료": ["료", "요"],
+  "류": ["류", "유"],
+  "리": ["리", "이"],
+
+  "라": ["라", "나"],
+  "락": ["락", "낙"],
+  "란": ["란", "난"],
+  "랄": ["랄", "날"],
+  "람": ["람", "남"],
+  "랍": ["랍", "납"],
+  "랏": ["랏", "낫"],
+  "랑": ["랑", "낭"],
+  "래": ["래", "내"],
+  "랭": ["랭", "냉"],
+
+  "략": ["략", "약"],
+  "량": ["량", "양"],
+  "련": ["련", "연"],
+  "렬": ["렬", "열"],
+  "령": ["령", "영"],
+
+  "로": ["로", "노"],
+  "록": ["록", "녹"],
+  "론": ["론", "논"],
+  "롤": ["롤", "놀"],
+  "롬": ["롬", "놈"],
+  "롭": ["롭", "놉"],
+  "롯": ["롯", "놋"],
+  "롱": ["롱", "농"],
+  "뢰": ["뢰", "뇌"],
+
+  "루": ["루", "누"],
+  "륙": ["륙", "육"],
+  "률": ["률", "율"],
+  "륜": ["륜", "윤"],
+  "륭": ["륭", "융"]
+};
+
+
+/* =========================================================
+   기본 설정
+========================================================= */
+
+const DEFAULT_OPTIONS = {
+  aiLevel: 3,
+
+  playerCount: 2,
+
+  lives: 2,
+
+  timeLimit: 10,
+
+  autoStartWord: true,
+
+  preventFirstTurnOneShot: true,
+
+  preventImmediateAiWin: true,
+
+  maxCandidatePool: 500,
+
+  aiRandomness: 0.15
+};
+
+
+/* =========================================================
+   로컬 게임 상태
+========================================================= */
+
+let localGame = null;
+
+
+/* =========================================================
+   정규화
 ========================================================= */
 
 function normalizeWord(word) {
@@ -43,7 +149,9 @@ function normalizeWord(word) {
    두음법칙
 ========================================================= */
 
-function allowedFirstChars(lastChar, dueum = {}) {
+function allowedFirstChars(lastChar) {
+  lastChar = normalizeWord(lastChar);
+
   if (!lastChar) {
     return [];
   }
@@ -52,14 +160,7 @@ function allowedFirstChars(lastChar, dueum = {}) {
 
   result.add(lastChar);
 
-  /*
-   * 정방향
-   *
-   * 예:
-   * 녀 -> 여
-   * 년 -> 연
-   */
-  const direct = dueum[lastChar];
+  const direct = DUEUM[lastChar];
 
   if (Array.isArray(direct)) {
     for (const char of direct) {
@@ -69,16 +170,7 @@ function allowedFirstChars(lastChar, dueum = {}) {
     }
   }
 
-  /*
-   * 역방향
-   *
-   * 예:
-   * 여 -> 녀
-   * 연 -> 년
-   *
-   * 기존 프로젝트의 양방향 두음 처리와 호환.
-   */
-  for (const [from, values] of Object.entries(dueum)) {
+  for (const [from, values] of Object.entries(DUEUM)) {
     if (!Array.isArray(values)) {
       continue;
     }
@@ -93,66 +185,183 @@ function allowedFirstChars(lastChar, dueum = {}) {
 
 
 /* =========================================================
-   연결 가능 여부
+   연결 판정
 ========================================================= */
 
-function canConnect(previousWord, nextWord, dueum = {}) {
-  previousWord = normalizeWord(previousWord);
-  nextWord = normalizeWord(nextWord);
+function canConnect(previousWord, nextWord) {
+  previousWord =
+    normalizeWord(previousWord);
+
+  nextWord =
+    normalizeWord(nextWord);
 
   if (!previousWord || !nextWord) {
     return false;
   }
 
-  const last = previousWord.at(-1);
-  const first = nextWord.at(0);
+  const last =
+    previousWord.at(-1);
 
-  return allowedFirstChars(
-    last,
-    dueum
-  ).includes(first);
+  const first =
+    nextWord.at(0);
+
+  return allowedFirstChars(last)
+    .includes(first);
 }
 
 
 /* =========================================================
-   단어 목록 검사
+   단어 데이터 설정
 ========================================================= */
 
-function hasWord(word, words) {
-  word = normalizeWord(word);
-
-  if (!word || !words) {
-    return false;
-  }
+function setWordData(words, attacks = {}) {
+  WORD_SET = new Set();
 
   if (words instanceof Set) {
-    return words.has(word);
-  }
+    for (const word of words) {
+      const normalized =
+        normalizeWord(word);
 
-  if (Array.isArray(words)) {
-    return words.includes(word);
-  }
+      if (normalized) {
+        WORD_SET.add(normalized);
+      }
+    }
+  } else if (Array.isArray(words)) {
+    for (const word of words) {
+      const normalized =
+        normalizeWord(word);
 
-  /*
-   * byFirst 형태의 객체도 지원.
-   *
-   * 서버에서 데이터 구조가
-   * {
-   *   가: [...],
-   *   나: [...],
-   *   ...
-   * }
-   * 형태일 경우 사용할 수 있음.
-   */
-  if (typeof words === "object") {
-    const list = words[word.at(0)];
-
-    if (Array.isArray(list)) {
-      return list.includes(word);
+      if (normalized) {
+        WORD_SET.add(normalized);
+      }
     }
   }
 
-  return false;
+  ATTACK_DEPTH =
+    Object.create(null);
+
+  if (attacks instanceof Map) {
+    for (const [word, depth] of attacks.entries()) {
+      const normalized =
+        normalizeWord(word);
+
+      const numericDepth =
+        Number(depth);
+
+      if (
+        normalized &&
+        Number.isFinite(numericDepth)
+      ) {
+        ATTACK_DEPTH[normalized] =
+          numericDepth;
+      }
+    }
+  } else if (
+    attacks &&
+    typeof attacks === "object"
+  ) {
+    for (const [word, depth] of Object.entries(attacks)) {
+      const normalized =
+        normalizeWord(word);
+
+      const numericDepth =
+        Number(depth);
+
+      if (
+        normalized &&
+        Number.isFinite(numericDepth)
+      ) {
+        ATTACK_DEPTH[normalized] =
+          numericDepth;
+      }
+    }
+  }
+
+  buildWordIndex();
+
+  DATA_LOADED = true;
+
+  return {
+    words:
+      WORD_SET.size,
+
+    attackWords:
+      Object.keys(ATTACK_DEPTH).length
+  };
+}
+
+
+/* =========================================================
+   첫 글자 인덱스
+========================================================= */
+
+function buildWordIndex() {
+  WORD_INDEX.clear();
+
+  for (const word of WORD_SET) {
+    const first =
+      word.at(0);
+
+    if (!first) {
+      continue;
+    }
+
+    if (!WORD_INDEX.has(first)) {
+      WORD_INDEX.set(
+        first,
+        []
+      );
+    }
+
+    WORD_INDEX
+      .get(first)
+      .push(word);
+  }
+
+  for (const bucket of WORD_INDEX.values()) {
+    bucket.sort();
+  }
+}
+
+
+/* =========================================================
+   단어 존재 여부
+========================================================= */
+
+function hasWord(word) {
+  return WORD_SET.has(
+    normalizeWord(word)
+  );
+}
+
+
+/* =========================================================
+   공격 깊이
+========================================================= */
+
+function getAttackDepth(word) {
+  word =
+    normalizeWord(word);
+
+  if (!word) {
+    return null;
+  }
+
+  const depth =
+    ATTACK_DEPTH[word];
+
+  return Number.isFinite(depth)
+    ? depth
+    : null;
+}
+
+
+/* =========================================================
+   공격 단어 여부
+========================================================= */
+
+function isAttackWord(word) {
+  return getAttackDepth(word) !== null;
 }
 
 
@@ -162,77 +371,44 @@ function hasWord(word, words) {
 
 function getCandidates(
   previousWord,
-  usedWords,
-  words,
-  dueum = {}
+  usedWords = new Set()
 ) {
-  previousWord = normalizeWord(previousWord);
+  previousWord =
+    normalizeWord(previousWord);
 
-  if (!previousWord || !words) {
+  if (!previousWord) {
     return [];
   }
 
   const used =
     usedWords instanceof Set
       ? usedWords
-      : new Set(usedWords || []);
+      : new Set(
+          usedWords || []
+        );
 
-  const allowed = new Set(
+  const allowed =
     allowedFirstChars(
-      previousWord.at(-1),
-      dueum
-    )
-  );
+      previousWord.at(-1)
+    );
 
   const result = [];
 
-  /*
-   * words가 Set/Array이면 전체 순회.
-   *
-   * byFirst 객체라면 필요한 첫 글자만 검색.
-   */
-  if (
-    !Array.isArray(words) &&
-    !(words instanceof Set) &&
-    typeof words === "object"
-  ) {
-    for (const first of allowed) {
-      const list = words[first];
+  for (const first of allowed) {
+    const bucket =
+      WORD_INDEX.get(first);
 
-      if (!Array.isArray(list)) {
+    if (!bucket) {
+      continue;
+    }
+
+    for (const word of bucket) {
+      if (used.has(word)) {
         continue;
       }
 
-      for (const word of list) {
-        if (!word) {
-          continue;
-        }
-
-        if (used.has(word)) {
-          continue;
-        }
-
-        result.push(word);
-      }
+      result.push(word);
     }
-
-    return result;
-  }
-
-  for (const word of words) {
-    if (!word) {
-      continue;
-    }
-
-    if (used.has(word)) {
-      continue;
-    }
-
-    if (!allowed.has(word.at(0))) {
-      continue;
-    }
-
-    result.push(word);
   }
 
   return result;
@@ -240,81 +416,51 @@ function getCandidates(
 
 
 /* =========================================================
-   시작 글자 후보
+   첫 단어 후보
 ========================================================= */
 
-function getCandidatesFromChar(
-  char,
-  usedWords,
-  words,
-  dueum = {}
+function getStartCandidates(
+  startChar = "",
+  usedWords = new Set()
 ) {
-  if (!char || !words) {
-    return [];
-  }
-
   const used =
     usedWords instanceof Set
       ? usedWords
-      : new Set(usedWords || []);
+      : new Set(
+          usedWords || []
+        );
 
-  const allowed = new Set(
-    allowedFirstChars(
-      char,
-      dueum
-    )
-  );
+  const normalized =
+    normalizeWord(startChar);
+
+  if (!normalized) {
+    return [...WORD_SET]
+      .filter(word => !used.has(word));
+  }
+
+  const first =
+    normalized.at(0);
+
+  const allowed =
+    allowedFirstChars(first);
 
   const result = [];
 
-  /*
-   * byFirst 구조
-   */
-  if (
-    !Array.isArray(words) &&
-    !(words instanceof Set) &&
-    typeof words === "object"
-  ) {
-    for (const first of allowed) {
-      const list = words[first];
+  for (const char of allowed) {
+    const bucket =
+      WORD_INDEX.get(char);
 
-      if (!Array.isArray(list)) {
+    if (!bucket) {
+      continue;
+    }
+
+    for (const word of bucket) {
+      if (used.has(word)) {
         continue;
       }
 
-      for (const word of list) {
-        if (!word) {
-          continue;
-        }
-
-        if (used.has(word)) {
-          continue;
-        }
-
-        result.push(word);
-      }
+      result.push(word);
     }
-
-    return result;
-  }
-
-  /*
-   * Array / Set 구조
-   */
-  for (const word of words) {
-    if (!word) {
-      continue;
-    }
-
-    if (used.has(word)) {
-      continue;
-    }
-
-    if (!allowed.has(word.at(0))) {
-      continue;
-    }
-
-    result.push(word);
   }
 
   return result;
@@ -322,847 +468,468 @@ function getCandidatesFromChar(
 
 
 /* =========================================================
-   공격 데이터
+   후보 정보
 ========================================================= */
 
-function getAttackDepth(
+function candidateInfo(
   word,
-  attackDepth = {}
+  usedWords = new Set()
 ) {
-  word = normalizeWord(word);
+  word =
+    normalizeWord(word);
 
   if (!word) {
-    return null;
+    return {
+      word: "",
+      depth: null,
+      nextCount: 0,
+      oneShot: false,
+      attack: false
+    };
   }
 
-  const value = attackDepth[word];
+  const next =
+    getCandidates(
+      word,
+      usedWords
+    );
 
-  if (value == null) {
-    return null;
-  }
-
-  const depth = Number(value);
-
-  if (!Number.isFinite(depth)) {
-    return null;
-  }
-
-  return depth;
-}
-
-
-/* =========================================================
-   공격 단어 판정
-========================================================= */
-
-function isWinningAttack(
-  word,
-  attackDepth = {}
-) {
-  const depth = getAttackDepth(
-    word,
-    attackDepth
-  );
-
-  return (
-    depth != null &&
-    depth % 2 === 1
-  );
-}
-
-
-function isLosingAttack(
-  word,
-  attackDepth = {}
-) {
-  const depth = getAttackDepth(
-    word,
-    attackDepth
-  );
-
-  return (
-    depth != null &&
-    depth % 2 === 0
-  );
-}
-
-
-/* =========================================================
-   후보 분석
-========================================================= */
-
-function analyzeWord(
-  word,
-  usedWords,
-  words,
-  attackDepth = {},
-  dueum = {}
-) {
-  const used =
-    usedWords instanceof Set
-      ? usedWords
-      : new Set(usedWords || []);
-
-  const nextUsed = new Set(used);
-
-  nextUsed.add(word);
-
-  const next = getCandidates(
-    word,
-    nextUsed,
-    words,
-    dueum
-  );
-
-  const depth = getAttackDepth(
-    word,
-    attackDepth
-  );
+  const depth =
+    getAttackDepth(word);
 
   return {
     word,
 
     depth,
 
-    nextCount: next.length,
+    nextCount:
+      next.length,
 
     oneShot:
       next.length === 0,
 
-    winningAttack:
-      depth != null &&
-      depth % 2 === 1,
-
-    losingAttack:
-      depth != null &&
-      depth % 2 === 0
+    attack:
+      depth !== null
   };
 }
 
 
 /* =========================================================
-   미래 위험 분석
+   승리 공격 판정
+========================================================= */
+
+function isWinningAttack(
+  word,
+  usedWords = new Set()
+) {
+  const info =
+    candidateInfo(
+      word,
+      usedWords
+    );
+
+  return (
+    info.attack &&
+    info.oneShot
+  );
+}
+
+
+/* =========================================================
+   위험도
 ========================================================= */
 
 function analyzeFutureRisk(
-  info,
-  words,
-  usedWords,
-  dueum,
-  sampleLimit = 60
+  word,
+  usedWords = new Set()
 ) {
-  const usedAfterWord =
-    usedWords instanceof Set
-      ? new Set(usedWords)
-      : new Set(usedWords || []);
-
-  usedAfterWord.add(info.word);
-
-  const opponentCandidates =
+  const next =
     getCandidates(
-      info.word,
-      usedAfterWord,
-      words,
-      dueum
+      word,
+      usedWords
     );
 
-  /*
-   * 상대가 아예 답할 수 없다면
-   * 이미 즉시 승리.
-   */
-  if (!opponentCandidates.length) {
+  if (next.length === 0) {
     return {
-      risk: 0,
-      botNextCount: 0,
-      opponentCount: 0
+      count: 0,
+      risk: 1,
+      bestDepth: null
     };
   }
 
-  /*
-   * 모든 후보를 탐색하면
-   * 대규모 단어 데이터에서 느려질 수 있으므로
-   * 일부만 확인.
-   */
-  const limit = Math.min(
-    opponentCandidates.length,
-    sampleLimit
-  );
+  let bestDepth =
+    null;
 
-  let dangerous = 0;
+  for (const candidate of next) {
+    const depth =
+      getAttackDepth(candidate);
 
-  for (let i = 0; i < limit; i++) {
-    const opponentWord =
-      opponentCandidates[i];
-
-    const nextUsed =
-      new Set(usedAfterWord);
-
-    nextUsed.add(opponentWord);
-
-    const botCandidates =
-      getCandidates(
-        opponentWord,
-        nextUsed,
-        words,
-        dueum
-      );
-
-    if (!botCandidates.length) {
-      dangerous++;
+    if (
+      depth !== null &&
+      (
+        bestDepth === null ||
+        depth > bestDepth
+      )
+    ) {
+      bestDepth =
+        depth;
     }
   }
 
+  /*
+   * 선택지가 적을수록 위험.
+   */
+  let risk =
+    1 / Math.max(
+      1,
+      next.length
+    );
+
+  /*
+   * 상대가 깊은 공격 단어를
+   * 가지고 있으면 위험도 상승.
+   */
+  if (bestDepth !== null) {
+    risk +=
+      Math.min(
+        0.5,
+        bestDepth / 20
+      );
+  }
+
   return {
+    count:
+      next.length,
+
     risk:
-      dangerous / limit,
+      Math.min(1, risk),
 
-    botNextCount:
-      limit - dangerous,
-
-    opponentCount:
-      opponentCandidates.length
+    bestDepth
   };
 }
 
 
 /* =========================================================
-   AI 난이도 정책
+   단어 점수
 ========================================================= */
 
-/*
- * level 1
- *   거의 랜덤
- *   공격 단어 최대한 회피
- *
- * level 2
- *   약한 공격
- *
- * level 3
- *   균형형
- *
- * level 4
- *   공격 적극 사용
- *
- * level 5
- *   공격 우선
- *   깊은 공격 단어 우선
- *   공격 중에는 불필요하게 양보 단어로 전환하지 않음
- */
-function getDifficultyPolicy(level) {
-  level = Number(level);
+function scoreCandidate(
+  word,
+  context
+) {
+  const {
+    usedWords = new Set(),
+    level = 3,
+    firstTurn = false
+  } = context || {};
 
-  switch (level) {
-    case 1:
-      return {
-        strength: 0.20,
-        attackWeight: 0.20,
-        depthWeight: 0.15,
-        randomPool: 18,
-        futureAnalysis: 25
-      };
+  const info =
+    candidateInfo(
+      word,
+      usedWords
+    );
 
-    case 2:
-      return {
-        strength: 0.38,
-        attackWeight: 0.55,
-        depthWeight: 0.35,
-        randomPool: 12,
-        futureAnalysis: 40
-      };
-
-    case 3:
-      return {
-        strength: 0.55,
-        attackWeight: 0.90,
-        depthWeight: 0.65,
-        randomPool: 8,
-        futureAnalysis: 50
-      };
-
-    case 4:
-      return {
-        strength: 0.76,
-        attackWeight: 1.30,
-        depthWeight: 1.00,
-        randomPool: 5,
-        futureAnalysis: 60
-      };
-
-    case 5:
-      return {
-        strength: 0.95,
-        attackWeight: 2.00,
-        depthWeight: 1.70,
-        randomPool: 3,
-        futureAnalysis: 80
-      };
-
-    default:
-      return getDifficultyPolicy(3);
-  }
-}
-
-
-/* =========================================================
-   후보 점수
-========================================================= */
-
-function scoreBotCandidate({
-  info,
-  futureRisk,
-  strength = 0.50,
-  winBias = 0.50,
-  level = 3,
-  currentWord = null
-}) {
-  const policy =
-    getDifficultyPolicy(level);
+  const risk =
+    analyzeFutureRisk(
+      word,
+      usedWords
+    );
 
   let score = 0;
 
-  const nextCount =
-    info.nextCount;
-
   const depth =
-    info.depth ?? 0;
-
-  const risk =
-    futureRisk?.risk ?? 0;
+    info.depth;
 
 
-  /* =======================================================
-     즉시 승리
-  ======================================================= */
+/* ---------------------------------------------------------
+   기본 선택지 수
+--------------------------------------------------------- */
+
+  /*
+   * 상대에게 선택지를 많이 주는 단어는
+   * 일반적으로 안전하지만 공격력은 낮다.
+   */
+  score +=
+    Math.min(
+      30,
+      info.nextCount * 0.35
+    );
+
+
+/* ---------------------------------------------------------
+   공격 단어
+--------------------------------------------------------- */
+
+  if (depth !== null) {
+    /*
+     * 난이도가 높을수록 공격 단어 선호.
+     */
+    score +=
+      depth *
+      (
+        1 +
+        level * 0.18
+      );
+  }
+
+
+/* ---------------------------------------------------------
+   원샷
+--------------------------------------------------------- */
 
   if (info.oneShot) {
+    /*
+     * 즉시 승리 가능 단어.
+     */
+    score +=
+      100 +
+      level * 20;
+  }
 
-    score += 15000;
+
+/* ---------------------------------------------------------
+   위험도
+--------------------------------------------------------- */
+
+  score -=
+    risk.risk *
+    (
+      8 +
+      level * 2
+    );
+
+
+/* ---------------------------------------------------------
+   첫 턴
+--------------------------------------------------------- */
+
+  if (firstTurn) {
+    /*
+     * 시작부터 상대가 아무것도 못 하는
+     * 단어를 사용하는 것을 방지.
+     */
+    if (info.oneShot) {
+      score -= 1000;
+    }
 
     /*
-     * 낮은 난이도에서는 즉시 끝내는 수를
-     * 일부러 덜 선택한다.
+     * 첫 턴에는 지나치게 강한 공격도
+     * 일부 제한.
      */
-    score *=
-      0.65 +
-      strength * 0.35;
+    if (
+      depth !== null &&
+      depth >= 9
+    ) {
+      score -=
+        15 +
+        level * 4;
+    }
   }
 
 
-  /* =======================================================
-     상대 선택지 수
-  ======================================================= */
+/* ---------------------------------------------------------
+   난이도별 성향
+--------------------------------------------------------- */
 
-  if (nextCount === 1) {
-    score += 4500;
+  if (level <= 1) {
+    /*
+     * Lv1
+     * 거의 랜덤.
+     */
+    score *= 0.35;
   }
 
-  else if (nextCount <= 3) {
-    score += 2100;
+  else if (level === 2) {
+    /*
+     * Lv2
+     * 약한 공격 단어 선호.
+     */
+    if (
+      depth !== null &&
+      depth <= 3
+    ) {
+      score += 12;
+    }
+
+    if (
+      depth !== null &&
+      depth >= 9
+    ) {
+      score -= 15;
+    }
   }
 
-  else if (nextCount <= 7) {
-    score += 800;
+  else if (level === 3) {
+    /*
+     * Lv3
+     * 공격과 방어 균형.
+     */
+    score +=
+      risk.count *
+      0.2;
   }
 
-  else if (nextCount <= 15) {
-    score += 300;
+  else if (level === 4) {
+    /*
+     * Lv4
+     * 깊은 공격 단어 선호.
+     */
+    if (depth !== null) {
+      score +=
+        depth * 0.8;
+    }
+
+    score -=
+      risk.risk * 5;
   }
 
   else {
-    score += 60;
-  }
-
-
-  /* =======================================================
-     공격 단어
-  ======================================================= */
-
-  if (info.winningAttack) {
-
     /*
-     * 공격 단어 자체의 기본 가치
+     * Lv5
+     * 가장 강한 공격 성향.
      */
-    score +=
-      1000 *
-      policy.attackWeight;
+    if (depth !== null) {
+      score +=
+        depth * 2.2;
+    }
 
-    /*
-     * 깊이가 높을수록 추가 가점
-     */
-    score +=
-      Math.min(depth, 50) *
-      45 *
-      policy.depthWeight;
-
-    /*
-     * 높은 난이도일수록
-     * 공격 단어를 훨씬 선호.
-     */
-    score +=
-      strength *
-      depth *
-      80;
-  }
-
-
-  /* =======================================================
-     짝수 깊이
-  ======================================================= */
-
-  if (info.losingAttack) {
-
-    /*
-     * 기본적으로 좋은 공격 수로 보지 않는다.
-     */
     score -=
-      500 +
-      depth * 20;
+      risk.risk * 10;
 
-    /*
-     * 낮은 난이도에서는
-     * 가끔 사용할 수 있도록 너무 강하게 배제하지 않는다.
-     */
-    if (level <= 2) {
+    if (info.oneShot) {
       score += 300;
     }
   }
-
-
-  /* =======================================================
-     일반 단어
-  ======================================================= */
-
-  if (
-    !info.winningAttack &&
-    !info.losingAttack
-  ) {
-    score +=
-      Math.min(nextCount, 30) *
-      (level <= 2 ? 18 : 10);
-  }
-
-
-  /* =======================================================
-     미래 위험
-  ======================================================= */
-
-  if (risk >= 0.80) {
-    score -= 5000;
-  }
-
-  else if (risk >= 0.60) {
-    score -= 2800;
-  }
-
-  else if (risk >= 0.35) {
-    score -= 1100;
-  }
-
-  else if (risk >= 0.15) {
-    score -= 300;
-  }
-
-
-  /* =======================================================
-     승률 보정
-  ======================================================= */
-
-  /*
-   * winBias는 AI의 현재 승률.
-   *
-   * 너무 강하면 공격을 조금 완화.
-   * 너무 약하면 공격을 강화.
-   */
-
-  if (winBias > 0.70) {
-
-    if (info.winningAttack) {
-      score -=
-        (winBias - 0.70) *
-        8500;
-    }
-
-    if (info.oneShot) {
-      score -=
-        (winBias - 0.70) *
-        6500;
-    }
-  }
-
-  else if (winBias < 0.30) {
-
-    if (info.winningAttack) {
-      score +=
-        (0.30 - winBias) *
-        7000;
-    }
-
-    if (nextCount <= 3) {
-      score +=
-        (0.30 - winBias) *
-        3000;
-    }
-  }
-
-
-  /* =======================================================
-     첫 수
-  ======================================================= */
-
-  if (!currentWord) {
-
-    /*
-     * 첫 수에서 한방 공격은
-     * 난이도와 관계없이 최대한 피한다.
-     */
-    if (info.oneShot) {
-      score -= 12000;
-    }
-
-    /*
-     * attack.txt 공격 단어도
-     * 첫 수에서는 기본적으로 피한다.
-     */
-    if (info.winningAttack) {
-
-      if (level <= 4) {
-        score -= 6000;
-      }
-
-      /*
-       * Lv5도 첫 수부터 무조건 공격하지 않음.
-       */
-      else {
-        score -= 2500;
-      }
-    }
-
-    /*
-     * 일반 단어 중에서도
-     * 상대에게 너무 적은 선택지만 주는 단어를
-     * 첫 수에서는 조금 피한다.
-     */
-    if (
-      !info.winningAttack &&
-      nextCount <= 2
-    ) {
-      score -= 1000;
-    }
-  }
-
-
-  /* =======================================================
-     Lv5 특수 정책
-  ======================================================= */
-
-  if (level === 5) {
-
-    /*
-     * 공격 단어가 존재하면
-     * 일반 양보 단어보다 공격 단어를 강하게 우선.
-     */
-    if (info.winningAttack) {
-
-      score +=
-        2500 +
-        depth * 120;
-    }
-
-    /*
-     * 공격 중 깊은 수를 계속 이어갈 수 있는 상황에서
-     * 선택지가 많은 일반 단어로 갑자기 빠지는 것을 방지.
-     */
-    if (
-      currentWord &&
-      info.winningAttack
-    ) {
-
-      score +=
-        depth * 100;
-    }
-  }
-
 
   return score;
 }
 
 
 /* =========================================================
-   봇 후보 선택
+   후보 점수화
 ========================================================= */
 
-function chooseBotWord({
-  currentWord = null,
-  startChar = "",
-  usedWords = new Set(),
-  words,
-  dueum = {},
-  attackDepth = {},
-  strength = 0.50,
-  winBias = 0.50,
-  level = 3
-}) {
-  if (!words) {
-    return null;
-  }
+function scoreCandidates(
+  candidates,
+  context = {}
+) {
+  return candidates
+    .map(word => ({
+      word,
 
-  const used =
-    usedWords instanceof Set
-      ? usedWords
-      : new Set(usedWords || []);
+      score:
+        scoreCandidate(
+          word,
+          context
+        ),
 
-
-  /* =======================================================
-     후보 생성
-  ======================================================= */
-
-  const candidates =
-    currentWord
-      ? getCandidates(
-          currentWord,
-          used,
-          words,
-          dueum
+      info:
+        candidateInfo(
+          word,
+          context.usedWords
         )
-      : getCandidatesFromChar(
-          startChar,
-          used,
-          words,
-          dueum
-        );
+    }))
+    .sort(
+      (a, b) =>
+        b.score -
+        a.score
+    );
+}
 
+
+/* =========================================================
+   AI 후보 선택
+========================================================= */
+
+function chooseBotWord(
+  options = {}
+) {
+  const {
+    previousWord = null,
+    startChar = "",
+    usedWords = new Set(),
+    level = 3,
+    firstTurn = false
+  } = options;
+
+  let candidates;
+
+  if (previousWord) {
+    candidates =
+      getCandidates(
+        previousWord,
+        usedWords
+      );
+  } else {
+    candidates =
+      getStartCandidates(
+        startChar,
+        usedWords
+      );
+  }
 
   if (!candidates.length) {
     return null;
   }
 
 
-  /* =======================================================
-     후보 분석
-  ======================================================= */
-
-  const analyzed =
-    candidates.map(word =>
-      analyzeWord(
-        word,
-        used,
-        words,
-        attackDepth,
-        dueum
-      )
-    );
-
-
-  /* =======================================================
-     첫 수 안전 처리
-  ======================================================= */
-
-  let usable =
-    analyzed;
-
-
-  if (!currentWord) {
-
+  /*
+   * 첫 턴 즉사 방지.
+   */
+  if (
+    firstTurn &&
+    DEFAULT_OPTIONS
+      .preventFirstTurnOneShot
+  ) {
     const safe =
-      analyzed.filter(info =>
-        !info.oneShot &&
-        !info.winningAttack
+      candidates.filter(
+        word =>
+          !isWinningAttack(
+            word,
+            usedWords
+          )
       );
 
     if (safe.length) {
-      usable = safe;
+      candidates =
+        safe;
     }
   }
 
 
-  /* =======================================================
-     1차 점수
-  ======================================================= */
+  /*
+   * Lv1은 랜덤에 가깝게.
+   */
+  if (level <= 1) {
+    return randomChoice(
+      candidates
+    );
+  }
 
-  const preliminary =
-    usable.map(info => {
 
-      let score = 0;
-
-      /*
-       * 즉시 승리
-       */
-      if (info.oneShot) {
-        score += 15000;
+  const scored =
+    scoreCandidates(
+      candidates,
+      {
+        usedWords,
+        level,
+        firstTurn
       }
-
-      /*
-       * 공격
-       */
-      if (info.winningAttack) {
-        score +=
-          1000 +
-          (info.depth ?? 0) * 70;
-      }
-
-      /*
-       * 상대 선택지
-       */
-      if (info.nextCount === 1) {
-        score += 4000;
-      }
-
-      else if (info.nextCount <= 3) {
-        score += 1800;
-      }
-
-      else {
-        score +=
-          Math.min(
-            info.nextCount,
-            30
-          ) * 15;
-      }
-
-      return {
-        info,
-        base: score
-      };
-    });
-
-
-  preliminary.sort(
-    (a, b) =>
-      b.base - a.base
-  );
-
-
-  /* =======================================================
-     미래 분석
-  ======================================================= */
-
-  const policy =
-    getDifficultyPolicy(level);
-
-  const analysisLimit =
-    Math.min(
-      preliminary.length,
-      policy.futureAnalysis
     );
 
-  const scored = [];
-
-
-  for (
-    let i = 0;
-    i < analysisLimit;
-    i++
-  ) {
-
-    const info =
-      preliminary[i].info;
-
-    const futureRisk =
-      analyzeFutureRisk(
-        info,
-        words,
-        used,
-        dueum,
-        policy.futureAnalysis
-      );
-
-    const score =
-      scoreBotCandidate({
-        info,
-        futureRisk,
-        strength,
-        winBias,
-        level,
-        currentWord
-      });
-
-    scored.push({
-      info,
-      score
-    });
-  }
-
 
   /*
-   * 나머지 후보는
-   * 미래 분석 없이 기본 점수 사용.
+   * 후보를 전부 완벽하게
+   * 계산하는 대신 상위 후보를 사용.
    */
-  for (
-    let i = analysisLimit;
-    i < preliminary.length;
-    i++
-  ) {
-
-    const info =
-      preliminary[i].info;
-
-    const score =
-      scoreBotCandidate({
-        info,
-
-        futureRisk: {
-          risk: 0.20,
-          botNextCount:
-            info.nextCount
-        },
-
-        strength,
-        winBias,
-        level,
-        currentWord
-      });
-
-    scored.push({
-      info,
-      score
-    });
-  }
-
-
-  if (!scored.length) {
-    return null;
-  }
-
-
-  /* =======================================================
-     정렬
-  ======================================================= */
-
-  scored.sort(
-    (a, b) =>
-      b.score - a.score
-  );
-
-
-  /* =======================================================
-     선택 풀
-  ======================================================= */
-
-  let poolSize =
-    policy.randomPool;
-
-
-  /*
-   * 승률이 너무 높으면
-   * 선택 폭을 넓힌다.
-   */
-  if (winBias > 0.65) {
-    poolSize += 6;
-  }
-
-
-  /*
-   * 승률이 낮으면
-   * 좋은 후보에 더 집중.
-   */
-  if (winBias < 0.35) {
-    poolSize =
-      Math.max(
-        2,
-        poolSize - 3
-      );
-  }
-
+  const poolSize =
+    level >= 5
+      ? 12
+      : level === 4
+        ? 20
+        : level === 3
+          ? 30
+          : 45;
 
   const pool =
     scored.slice(
@@ -1174,171 +941,206 @@ function chooseBotWord({
     );
 
 
-  if (!pool.length) {
-    return null;
+  /*
+   * Lv5는 최상위 후보 우선.
+   */
+  if (level >= 5) {
+    return pool[0]?.word ||
+      scored[0]?.word ||
+      candidates[0];
   }
-
-
-  /* =======================================================
-     최고 점수와 너무 차이 나는 후보 제거
-  ======================================================= */
-
-  const bestScore =
-    pool[0].score;
-
-  const margin =
-    level === 5
-      ? 350
-      : level === 4
-        ? 550
-        : level === 3
-          ? 750
-          : 1000;
-
-  const reasonable =
-    pool.filter(item =>
-      item.score >=
-      bestScore - margin
-    );
-
-
-  const finalPool =
-    reasonable.length
-      ? reasonable
-      : [pool[0]];
 
 
   /*
-   * Lv5는 공격 후보가 있으면
-   * 공격 후보를 우선 유지.
+   * Lv2~4는 상위 후보 중
+   * 랜덤성을 약간 부여.
    */
-  if (level === 5) {
+  const randomness =
+    Math.min(
+      0.4,
+      Math.max(
+        0,
+        DEFAULT_OPTIONS.aiRandomness
+      ) +
+      (5 - level) * 0.04
+    );
 
-    const attacks =
-      finalPool.filter(
-        item =>
-          item.info.winningAttack
-      );
-
-    if (attacks.length) {
-
-      /*
-       * 깊은 공격 단어 중심.
-       */
-      attacks.sort(
-        (a, b) =>
-          (b.info.depth ?? 0) -
-          (a.info.depth ?? 0)
-      );
-
-      /*
-       * 최상위 공격 후보 몇 개 중 선택.
-       */
-      const attackPool =
-        attacks.slice(
-          0,
-          Math.min(
-            3,
-            attacks.length
-          )
-        );
-
-      const selected =
-        attackPool[
-          Math.floor(
-            Math.random() *
-            attackPool.length
-          )
-        ];
-
-      return selected.info.word;
-    }
-  }
-
-
-  const selected =
-    finalPool[
+  if (
+    Math.random() <
+    randomness
+  ) {
+    const randomIndex =
       Math.floor(
         Math.random() *
-        finalPool.length
-      )
-    ];
+        Math.min(
+          pool.length,
+          Math.max(
+            3,
+            8 - level
+          )
+        )
+      );
 
+    return pool[
+      randomIndex
+    ]?.word ||
+      pool[0]?.word;
+  }
 
-  return selected.info.word;
+  return pool[0]?.word ||
+    scored[0]?.word ||
+    candidates[0];
 }
 
 
 /* =========================================================
-   게임 생성
+   랜덤 선택
 ========================================================= */
 
-function createGame({
-  startChar = "",
-  startPlayer = 0
-} = {}) {
-  return {
+function randomChoice(array) {
+  if (!array?.length) {
+    return null;
+  }
 
-    startChar:
-      normalizeWord(startChar).at(0) || "",
-
-    currentWord:
-      null,
-
-    turnPlayer:
-      startPlayer === 1
-        ? 1
-        : 0,
-
-    history: [],
-
-    usedWords:
-      new Set(),
-
-    finished:
-      false,
-
-    winner:
-      null,
-
-    loser:
-      null
-  };
+  return array[
+    Math.floor(
+      Math.random() *
+      array.length
+    )
+  ];
 }
 
 
 /* =========================================================
-   단어 플레이
+   자동 시작 단어
 ========================================================= */
 
-function playWord(
-  game,
-  word,
-  words,
-  dueum = {},
-  attackDepth = {}
+function chooseStartWord(
+  options = {}
 ) {
-  if (!game) {
-    return {
-      ok: false,
-      reason:
-        "게임 정보를 찾을 수 없습니다."
-    };
+  const {
+    startChar = "",
+    usedWords = new Set(),
+    level = 3
+  } = options;
+
+  let candidates =
+    getStartCandidates(
+      startChar,
+      usedWords
+    );
+
+  if (!candidates.length) {
+    return null;
   }
 
+  /*
+   * 첫 단어에서 즉시 끝나는 단어 제거.
+   */
+  const safe =
+    candidates.filter(
+      word =>
+        !isWinningAttack(
+          word,
+          usedWords
+        )
+    );
 
-  if (game.finished) {
-    return {
-      ok: false,
-      reason:
-        "이미 끝난 게임입니다."
-    };
+  if (safe.length) {
+    candidates =
+      safe;
   }
 
+  /*
+   * 너무 강한 공격 단어도
+   * 시작 단어에서는 제외.
+   */
+  const balanced =
+    candidates.filter(
+      word => {
+        const depth =
+          getAttackDepth(word);
 
+        return (
+          depth === null ||
+          depth <= 7
+        );
+      }
+    );
+
+  if (balanced.length) {
+    candidates =
+      balanced;
+  }
+
+  /*
+   * 시작 단어는 지나치게 편향되지 않도록
+   * 선택지가 적당히 있는 단어를 선호.
+   */
+  const scored =
+    candidates.map(word => {
+      const info =
+        candidateInfo(
+          word,
+          usedWords
+        );
+
+      let score = 0;
+
+      score +=
+        Math.min(
+          30,
+          info.nextCount
+        );
+
+      if (
+        info.depth !== null
+      ) {
+        score +=
+          info.depth *
+          0.4;
+      }
+
+      return {
+        word,
+        score
+      };
+    });
+
+  scored.sort(
+    (a, b) =>
+      b.score -
+      a.score
+  );
+
+  const pool =
+    scored.slice(
+      0,
+      Math.min(
+        20,
+        scored.length
+      )
+    );
+
+  return randomChoice(
+    pool
+  )?.word ||
+    candidates[0];
+}
+
+
+/* =========================================================
+   단어 판정
+========================================================= */
+
+function validateWord(
+  word,
+  previousWord,
+  usedWords = new Set(),
+  startChar = ""
+) {
   word =
     normalizeWord(word);
-
 
   if (!word) {
     return {
@@ -1348,12 +1150,7 @@ function playWord(
     };
   }
 
-
-  /* =======================================================
-     단어 목록
-  ======================================================= */
-
-  if (!hasWord(word, words)) {
+  if (!hasWord(word)) {
     return {
       ok: false,
       reason:
@@ -1361,12 +1158,7 @@ function playWord(
     };
   }
 
-
-  /* =======================================================
-     중복
-  ======================================================= */
-
-  if (game.usedWords.has(word)) {
+  if (usedWords.has(word)) {
     return {
       ok: false,
       reason:
@@ -1374,19 +1166,38 @@ function playWord(
     };
   }
 
+  if (previousWord) {
+    if (
+      !canConnect(
+        previousWord,
+        word
+      )
+    ) {
+      const last =
+        normalizeWord(
+          previousWord
+        ).at(-1);
 
-  /* =======================================================
-     첫 단어
-  ======================================================= */
+      return {
+        ok: false,
 
-  if (!game.currentWord) {
+        reason:
+          `"${last}" 다음에 연결할 수 없는 단어입니다.`,
+
+        allowed:
+          allowedFirstChars(
+            last
+          )
+      };
+    }
+  } else if (startChar) {
+    const allowed =
+      allowedFirstChars(
+        startChar
+      );
 
     if (
-      game.startChar &&
-      !allowedFirstChars(
-        game.startChar,
-        dueum
-      ).includes(
+      !allowed.includes(
         word.at(0)
       )
     ) {
@@ -1394,261 +1205,1108 @@ function playWord(
         ok: false,
 
         reason:
-          `"${game.startChar}"으로 시작하는 단어가 아닙니다.`,
+          `"${startChar}"으로 시작할 수 없는 단어입니다.`,
 
-        allowed:
-          allowedFirstChars(
-            game.startChar,
-            dueum
-          )
+        allowed
       };
     }
   }
 
+  return {
+    ok: true,
 
-  /* =======================================================
-     연결
-  ======================================================= */
+    word,
 
+    depth:
+      getAttackDepth(word)
+  };
+}
+
+
+/* =========================================================
+   게임 상태 생성
+========================================================= */
+
+function createGameState(
+  options = {}
+) {
+  const settings = {
+    ...DEFAULT_OPTIONS,
+    ...options
+  };
+
+  const playerCount =
+    Math.max(
+      1,
+      Number(settings.playerCount) || 2
+    );
+
+  const lives =
+    Math.max(
+      1,
+      Number(settings.lives) || 2
+    );
+
+  const timeLimit =
+    Math.max(
+      1,
+      Number(settings.timeLimit) || 10
+    );
+
+  const aiLevel =
+    Math.min(
+      5,
+      Math.max(
+        1,
+        Number(settings.aiLevel) || 3
+      )
+    );
+
+  return {
+    started: false,
+
+    finished: false,
+
+    winner: null,
+
+    loser: null,
+
+    currentWord: null,
+
+    startChar:
+      normalizeWord(
+        settings.startChar
+      ).at(0) || "",
+
+    turnPlayer: 0,
+
+    turnNumber: 0,
+
+    players:
+      Array.from(
+        {
+          length:
+            playerCount
+        },
+        (_, index) => ({
+          playerIndex:
+            index,
+
+          nickname:
+            index === 0
+              ? "플레이어"
+              : `플레이어 ${index + 1}`,
+
+          isAI:
+            index !== 0,
+
+          lives
+        })
+      ),
+
+    usedWords:
+      new Set(),
+
+    history: [],
+
+    settings: {
+      ...settings,
+
+      playerCount,
+
+      lives,
+
+      timeLimit,
+
+      aiLevel
+    },
+
+    timeRemaining:
+      timeLimit,
+
+    turnStartedAt:
+      null
+  };
+}
+
+
+/* =========================================================
+   게임 시작
+========================================================= */
+
+function startGame(
+  options = {}
+) {
+  const state =
+    createGameState(
+      options
+    );
+
+  localGame =
+    state;
+
+  state.started =
+    true;
+
+  /*
+   * 자동 시작 단어.
+   */
   if (
-    game.currentWord &&
-    !canConnect(
-      game.currentWord,
-      word,
-      dueum
-    )
+    state.settings.autoStartWord !== false
   ) {
+    const startWord =
+      chooseStartWord({
+        startChar:
+          state.startChar,
 
-    const last =
-      game.currentWord.at(-1);
+        usedWords:
+          state.usedWords,
 
+        level:
+          state.settings.aiLevel
+      });
+
+    if (startWord) {
+      addWordToState(
+        state,
+        startWord,
+        0
+      );
+
+      /*
+       * 시작 단어를 플레이어 0이
+       * 자동으로 낸 것으로 처리하지 않고
+       * AI/게임 시작용 단어로만 기록.
+       *
+       * 실제 첫 턴은 플레이어 0.
+       */
+      state.turnPlayer =
+        0;
+
+      state.timeRemaining =
+        state.settings.timeLimit;
+
+      state.turnStartedAt =
+        Date.now();
+    }
+  }
+
+  return getPublicGameState(
+    state
+  );
+}
+
+
+/* =========================================================
+   게임 상태에 단어 추가
+========================================================= */
+
+function addWordToState(
+  state,
+  word,
+  playerIndex
+) {
+  word =
+    normalizeWord(word);
+
+  const depth =
+    getAttackDepth(word);
+
+  state.currentWord =
+    word;
+
+  state.usedWords.add(
+    word
+  );
+
+  state.turnNumber +=
+    1;
+
+  state.history.push({
+    word,
+
+    player:
+      playerIndex,
+
+    turn:
+      state.turnNumber,
+
+    depth
+  });
+}
+
+
+/* =========================================================
+   다음 턴
+========================================================= */
+
+function nextTurn(state) {
+  if (!state) {
+    return null;
+  }
+
+  state.turnPlayer =
+    (
+      state.turnPlayer + 1
+    ) %
+    state.players.length;
+
+  state.timeRemaining =
+    state.settings.timeLimit;
+
+  state.turnStartedAt =
+    Date.now();
+
+  return state.turnPlayer;
+}
+
+
+/* =========================================================
+   현재 플레이어
+========================================================= */
+
+function getCurrentPlayer(state) {
+  if (!state) {
+    return null;
+  }
+
+  return state.players[
+    state.turnPlayer
+  ] || null;
+}
+
+
+/* =========================================================
+   게임 종료 판정
+========================================================= */
+
+function checkGameOver(
+  state,
+  playerIndex
+) {
+  if (!state) {
+    return false;
+  }
+
+  const next =
+    getCandidates(
+      state.currentWord,
+      state.usedWords
+    );
+
+  if (next.length > 0) {
+    return false;
+  }
+
+  state.finished =
+    true;
+
+  state.winner =
+    playerIndex;
+
+  state.loser =
+    findNextPlayer(
+      state,
+      playerIndex
+    );
+
+  return true;
+}
+
+
+/* =========================================================
+   다음 플레이어 찾기
+========================================================= */
+
+function findNextPlayer(
+  state,
+  playerIndex
+) {
+  if (
+    !state ||
+    !state.players.length
+  ) {
+    return null;
+  }
+
+  return (
+    state.players.find(
+      player =>
+        player.playerIndex !==
+        playerIndex
+    )?.playerIndex ??
+    null
+  );
+}
+
+
+/* =========================================================
+   단어 제출
+========================================================= */
+
+function submitLocalWord(
+  word,
+  playerIndex = 0
+) {
+  if (!localGame) {
     return {
       ok: false,
 
       reason:
-        `"${last}" 다음에 연결할 수 없는 단어입니다.`,
+        "게임이 시작되지 않았습니다."
+    };
+  }
 
-      allowed:
-        allowedFirstChars(
-          last,
-          dueum
+  const state =
+    localGame;
+
+  if (state.finished) {
+    return {
+      ok: false,
+
+      reason:
+        "이미 종료된 게임입니다."
+    };
+  }
+
+  if (!state.started) {
+    return {
+      ok: false,
+
+      reason:
+        "게임이 시작되지 않았습니다."
+    };
+  }
+
+  if (
+    state.turnPlayer !==
+    playerIndex
+  ) {
+    return {
+      ok: false,
+
+      reason:
+        "지금은 당신의 차례가 아닙니다."
+    };
+  }
+
+  const result =
+    validateWord(
+      word,
+
+      state.currentWord,
+
+      state.usedWords,
+
+      state.currentWord
+        ? ""
+        : state.startChar
+    );
+
+  if (!result.ok) {
+    return result;
+  }
+
+  addWordToState(
+    state,
+    result.word,
+    playerIndex
+  );
+
+  const ended =
+    checkGameOver(
+      state,
+      playerIndex
+    );
+
+  if (!ended) {
+    nextTurn(state);
+  }
+
+  return {
+    ok: true,
+
+    word:
+      result.word,
+
+    depth:
+      result.depth,
+
+    finished:
+      state.finished,
+
+    winner:
+      state.winner,
+
+    loser:
+      state.loser,
+
+    nextTurn:
+      state.turnPlayer,
+
+    nextCount:
+      state.finished
+        ? 0
+        : getCandidates(
+            result.word,
+            state.usedWords
+          ).length,
+
+    state:
+      getPublicGameState(
+        state
+      )
+  };
+}
+
+
+/* =========================================================
+   실패 처리
+========================================================= */
+
+function failTurn(
+  playerIndex = 0,
+  reason = "입력 시간 초과"
+) {
+  if (!localGame) {
+    return {
+      ok: false,
+
+      reason:
+        "게임이 시작되지 않았습니다."
+    };
+  }
+
+  const state =
+    localGame;
+
+  const player =
+    state.players.find(
+      p =>
+        p.playerIndex ===
+        playerIndex
+    );
+
+  if (!player) {
+    return {
+      ok: false,
+
+      reason:
+        "플레이어를 찾을 수 없습니다."
+    };
+  }
+
+  if (state.finished) {
+    return {
+      ok: false,
+
+      reason:
+        "이미 종료된 게임입니다."
+    };
+  }
+
+  if (
+    state.turnPlayer !==
+    playerIndex
+  ) {
+    return {
+      ok: false,
+
+      reason:
+        "현재 턴의 플레이어가 아닙니다."
+    };
+  }
+
+  player.lives =
+    Math.max(
+      0,
+      player.lives - 1
+    );
+
+  /*
+   * 목숨이 모두 없어지면
+   * 해당 플레이어 패배.
+   */
+  if (player.lives <= 0) {
+    state.finished =
+      true;
+
+    state.loser =
+      playerIndex;
+
+    state.winner =
+      findNextPlayer(
+        state,
+        playerIndex
+      );
+
+    return {
+      ok: true,
+
+      failed: true,
+
+      reason,
+
+      lives:
+        player.lives,
+
+      finished:
+        true,
+
+      winner:
+        state.winner,
+
+      loser:
+        state.loser,
+
+      state:
+        getPublicGameState(
+          state
         )
     };
   }
 
+  /*
+   * 목숨이 남아 있으면
+   * 다음 턴으로 넘어간다.
+   */
+  nextTurn(state);
 
-  /* =======================================================
-     현재 플레이어
-  ======================================================= */
+  return {
+    ok: true,
 
-  const player =
-    game.turnPlayer;
+    failed: true,
 
+    reason,
 
-  /* =======================================================
-     등록
-  ======================================================= */
+    lives:
+      player.lives,
 
-  game.currentWord =
-    word;
+    finished:
+      false,
 
-  game.usedWords.add(
-    word
-  );
+    nextTurn:
+      state.turnPlayer,
 
-  game.history.push({
-
-    word,
-
-    player,
-
-    turn:
-      game.history.length + 1,
-
-    depth:
-      getAttackDepth(
-        word,
-        attackDepth
+    state:
+      getPublicGameState(
+        state
       )
-  });
+  };
+}
 
 
-  /* =======================================================
-     다음 플레이어
-  ======================================================= */
+/* =========================================================
+   시간 업데이트
+========================================================= */
 
-  game.turnPlayer =
-    player === 0
-      ? 1
-      : 0;
+function updateTimer(
+  now = Date.now()
+) {
+  if (!localGame) {
+    return null;
+  }
 
+  const state =
+    localGame;
 
-  /* =======================================================
-     다음 후보
-  ======================================================= */
+  if (
+    !state.started ||
+    state.finished ||
+    !state.turnStartedAt
+  ) {
+    return state.timeRemaining;
+  }
 
-  const next =
-    getCandidates(
-      word,
-      game.usedWords,
-      words,
-      dueum
+  const elapsed =
+    Math.floor(
+      (
+        now -
+        state.turnStartedAt
+      ) / 1000
     );
 
+  const remaining =
+    Math.max(
+      0,
+      state.settings.timeLimit -
+      elapsed
+    );
 
-  /* =======================================================
-     게임 종료
-  ======================================================= */
+  state.timeRemaining =
+    remaining;
 
-  if (!next.length) {
+  if (remaining <= 0) {
+    failTurn(
+      state.turnPlayer,
+      "시간이 초과되었습니다."
+    );
+  }
 
-    game.finished =
+  return state.timeRemaining;
+}
+
+
+/* =========================================================
+   AI 턴
+========================================================= */
+
+function playAITurn() {
+  if (!localGame) {
+    return {
+      ok: false,
+
+      reason:
+        "게임이 시작되지 않았습니다."
+    };
+  }
+
+  const state =
+    localGame;
+
+  if (state.finished) {
+    return {
+      ok: false,
+
+      reason:
+        "게임이 이미 종료되었습니다."
+    };
+  }
+
+  const player =
+    getCurrentPlayer(state);
+
+  if (!player?.isAI) {
+    return {
+      ok: false,
+
+      reason:
+        "현재 턴은 AI가 아닙니다."
+    };
+  }
+
+  const firstTurn =
+    !state.currentWord;
+
+  const word =
+    chooseBotWord({
+      previousWord:
+        state.currentWord,
+
+      startChar:
+        state.startChar,
+
+      usedWords:
+        state.usedWords,
+
+      level:
+        state.settings.aiLevel,
+
+      firstTurn
+    });
+
+  if (!word) {
+    state.finished =
       true;
 
-    game.winner =
-      player;
+    state.loser =
+      player.playerIndex;
 
-    game.loser =
-      game.turnPlayer;
-
+    state.winner =
+      findNextPlayer(
+        state,
+        player.playerIndex
+      );
 
     return {
-
       ok: true,
 
       finished: true,
 
       winner:
-        game.winner,
+        state.winner,
 
       loser:
-        game.loser,
+        state.loser,
 
-      word,
-
-      player,
-
-      depth:
-        getAttackDepth(
-          word,
-          attackDepth
-        ),
-
-      nextCount: 0
+      state:
+        getPublicGameState(
+          state
+        )
     };
   }
 
-
-  return {
-
-    ok: true,
-
-    finished: false,
-
+  return submitLocalWord(
     word,
-
-    player,
-
-    depth:
-      getAttackDepth(
-        word,
-        attackDepth
-      ),
-
-    nextTurn:
-      game.turnPlayer,
-
-    nextCount:
-      next.length
-  };
+    player.playerIndex
+  );
 }
 
 
 /* =========================================================
-   공개 게임 상태
+   새 게임
 ========================================================= */
 
-function getPublicGameState(game) {
-  if (!game) {
+function restartGame(
+  options = {}
+) {
+  return startGame({
+    ...(localGame?.settings || {}),
+    ...options
+  });
+}
+
+
+/* =========================================================
+   현재 상태
+========================================================= */
+
+function getPublicGameState(
+  state = localGame
+) {
+  if (!state) {
     return null;
   }
 
   return {
-
-    startChar:
-      game.startChar,
-
-    currentWord:
-      game.currentWord,
-
-    turnPlayer:
-      game.turnPlayer,
-
-    history:
-      game.history.map(item => ({
-
-        word:
-          item.word,
-
-        player:
-          item.player,
-
-        turn:
-          item.turn,
-
-        depth:
-          item.depth
-      })),
+    started:
+      state.started,
 
     finished:
-      game.finished,
+      state.finished,
 
     winner:
-      game.winner,
+      state.winner,
 
     loser:
-      game.loser
+      state.loser,
+
+    currentWord:
+      state.currentWord,
+
+    startChar:
+      state.startChar,
+
+    turnPlayer:
+      state.turnPlayer,
+
+    turnNumber:
+      state.turnNumber,
+
+    timeRemaining:
+      state.timeRemaining,
+
+    players:
+      state.players.map(
+        player => ({
+          playerIndex:
+            player.playerIndex,
+
+          nickname:
+            player.nickname,
+
+          isAI:
+            player.isAI,
+
+          lives:
+            player.lives
+        })
+      ),
+
+    history:
+      state.history.map(
+        item => ({
+          word:
+            item.word,
+
+          player:
+            item.player,
+
+          turn:
+            item.turn,
+
+          depth:
+            item.depth
+        })
+      ),
+
+    playerCount:
+      state.players.length,
+
+    usedCount:
+      state.usedWords.size,
+
+    settings: {
+      ...state.settings
+    }
   };
 }
 
 
 /* =========================================================
-   모듈 exports
+   AI 설정 변경
 ========================================================= */
 
-module.exports = {
+function setAILevel(level) {
+  const numeric =
+    Math.min(
+      5,
+      Math.max(
+        1,
+        Number(level) || 1
+      )
+    );
 
+  if (localGame) {
+    localGame.settings.aiLevel =
+      numeric;
+  }
+
+  return numeric;
+}
+
+
+/* =========================================================
+   플레이어 수 설정
+========================================================= */
+
+function setPlayerCount(count) {
+  const numeric =
+    Math.max(
+      1,
+      Number(count) || 2
+    );
+
+  if (localGame) {
+    localGame.settings.playerCount =
+      numeric;
+  }
+
+  return numeric;
+}
+
+
+/* =========================================================
+   플레이어 목숨 조회
+========================================================= */
+
+function getPlayerLives(
+  playerIndex = 0
+) {
+  if (!localGame) {
+    return 0;
+  }
+
+  return (
+    localGame.players.find(
+      player =>
+        player.playerIndex ===
+        playerIndex
+    )?.lives ??
+    0
+  );
+}
+
+
+/* =========================================================
+   데이터 상태
+========================================================= */
+
+function isDataLoaded() {
+  return DATA_LOADED;
+}
+
+
+/* =========================================================
+   통계
+========================================================= */
+
+const AI_STATS = {
+  games: 0,
+
+  wins: 0,
+
+  losses: 0,
+
+  draws: 0
+};
+
+
+function recordAIGameResult(
+  winner,
+  humanIndex = 0
+) {
+  AI_STATS.games += 1;
+
+  if (
+    winner ===
+    humanIndex
+  ) {
+    AI_STATS.losses += 1;
+  } else if (
+    winner === null ||
+    winner === undefined
+  ) {
+    AI_STATS.draws += 1;
+  } else {
+    AI_STATS.wins += 1;
+  }
+
+  return getAIStats();
+}
+
+
+function getAIStats() {
+  const games =
+    AI_STATS.games;
+
+  return {
+    games,
+
+    wins:
+      AI_STATS.wins,
+
+    losses:
+      AI_STATS.losses,
+
+    draws:
+      AI_STATS.draws,
+
+    winRate:
+      games
+        ? (
+            AI_STATS.wins /
+            games *
+            100
+          )
+        : 0
+  };
+}
+
+
+/* =========================================================
+   디버그 정보
+========================================================= */
+
+function getDebugInfo() {
+  return {
+    dataLoaded:
+      DATA_LOADED,
+
+    wordCount:
+      WORD_SET.size,
+
+    attackCount:
+      Object.keys(
+        ATTACK_DEPTH
+      ).length,
+
+    indexSize:
+      WORD_INDEX.size,
+
+    game:
+      getPublicGameState(),
+
+    aiStats:
+      getAIStats()
+  };
+}
+
+
+/* =========================================================
+   공개 API
+========================================================= */
+
+window.GameEngine = {
+  /* 데이터 */
+  setWordData,
+  isDataLoaded,
+
+  /* 기본 */
   normalizeWord,
-
   allowedFirstChars,
-
   canConnect,
-
   hasWord,
 
+  /* 후보 */
   getCandidates,
-
-  getCandidatesFromChar,
-
+  getStartCandidates,
+  candidateInfo,
   getAttackDepth,
-
+  isAttackWord,
   isWinningAttack,
-
-  isLosingAttack,
-
-  analyzeWord,
-
   analyzeFutureRisk,
 
-  getDifficultyPolicy,
-
-  scoreBotCandidate,
-
+  /* AI */
+  scoreCandidate,
+  scoreCandidates,
   chooseBotWord,
+  chooseStartWord,
+  setAILevel,
 
-  createGame,
+  /* 게임 */
+  createGameState,
+  startGame,
+  restartGame,
+  submitLocalWord,
+  failTurn,
+  updateTimer,
+  playAITurn,
 
-  playWord,
+  /* 상태 */
+  getCurrentPlayer,
+  getPlayerLives,
+  getPublicGameState,
 
-  getPublicGameState
+  /* 설정 */
+  setPlayerCount,
+
+  /* 통계 */
+  recordAIGameResult,
+  getAIStats,
+
+  /* 디버그 */
+  getDebugInfo
 };
+
+
+/* =========================================================
+   기존 코드 호환용 전역 함수
+========================================================= */
+
+window.normalizeWord =
+  normalizeWord;
+
+window.allowedFirstChars =
+  allowedFirstChars;
+
+window.canConnect =
+  canConnect;
+
+window.getCandidates =
+  getCandidates;
+
+window.getAttackDepth =
+  getAttackDepth;
+
+window.isWinningAttack =
+  isWinningAttack;
+
+window.chooseBotWord =
+  chooseBotWord;
+
+window.chooseStartWord =
+  chooseStartWord;
+
+
+/* =========================================================
+   초기 로그
+========================================================= */
+
+console.log(
+  "client/game.js 로드 완료"
+);
+
+console.log(
+  "GameEngine 준비 완료"
+);
