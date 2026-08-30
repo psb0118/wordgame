@@ -1,171 +1,230 @@
 const socket = io();
 
-let mode = null;
 let roomCode = null;
-let busy = false;
+let nickname = "";
+let myId = null;
+let players = [];
+let currentTurnPlayerId = null;
 
-const $ = id => document.getElementById(id);
+const $ = (selector) => document.querySelector(selector);
 
-const notice = text => {
-  $('notice').textContent = text || '';
-};
+function showMessage(message) {
+    const element = $("#message");
 
-function playerName() {
-  return $('name').value.trim() || '플레이어';
+    if (element) {
+        element.textContent = message;
+    }
 }
 
-function showGame() {
-  $('lobby').classList.add('hidden');
-  $('game').classList.remove('hidden');
+function renderPlayers() {
+    const list = $("#playerList");
+
+    if (!list) return;
+
+    list.innerHTML = "";
+
+    players.forEach((player) => {
+        const li = document.createElement("li");
+
+        li.textContent =
+            player.nickname +
+            (player.id === currentTurnPlayerId
+                ? " ← 현재 턴"
+                : "");
+
+        list.appendChild(li);
+    });
 }
 
-function setBusy(value) {
-  busy = value;
-  $('submit').disabled = value;
+function updateTurn() {
+    const player = players.find(
+        p => p.id === currentTurnPlayerId
+    );
+
+    if (!player) return;
+
+    const turnElement = $("#currentTurn");
+
+    if (turnElement) {
+        turnElement.textContent =
+            `${player.nickname}의 턴`;
+    }
 }
 
-function renderLog(entries) {
-  const log = $('log');
+function addLog(message) {
+    const log = $("#gameLog");
 
-  const rows = (Array.isArray(entries) ? entries : []).map(item => {
-    const li = document.createElement('li');
+    if (!log) return;
 
-    li.className = item.system ? 'system-log' : 'word-log';
+    const item = document.createElement("div");
+    item.textContent = message;
 
-    li.textContent = item.system ||
-      `${item.player}: ${item.word}${item.depth ? ` (깊이 ${item.depth})` : ''}`;
-
-    return li;
-  });
-
-  if (!rows.length) {
-    const li = document.createElement('li');
-    li.className = 'empty-log';
-    li.textContent = '아직 제출된 단어가 없습니다.';
-    rows.push(li);
-  }
-
-  log.replaceChildren(...rows);
+    log.appendChild(item);
+    log.scrollTop = log.scrollHeight;
 }
 
-function render(game) {
-  showGame();
+socket.on("connect", () => {
+    myId = socket.id;
 
-  $('roomLabel').textContent = roomCode ? `방 코드: ${roomCode}` : 'AI 대전';
-  $('required').textContent = game.required;
+    console.log("Socket 연결:", myId);
+});
 
-  $('turn').textContent = !game.started
-    ? '참가자를 기다리는 중입니다. (2명부터 시작)'
-    : game.gameOver
-      ? `${game.winner} 승리!`
-      : `${game.players[game.turn]?.name}의 차례`;
+socket.on("roomCreated", (data) => {
+    roomCode = data.roomCode;
+    players = data.players;
 
-  $('word').disabled =
-    !game.started ||
-    game.gameOver ||
-    (mode === 'single' && game.turn !== 0);
+    const roomElement = $("#roomCode");
 
-  $('submit').disabled = $('word').disabled || busy;
+    if (roomElement) {
+        roomElement.textContent = roomCode;
+    }
 
-  $('players').replaceChildren(
-    ...(game.players || []).map((player, index) => {
-      const li = document.createElement('li');
+    renderPlayers();
 
-      li.textContent =
-        `${index === game.turn && !game.gameOver ? '▶ ' : ''}${player.name}`;
+    showMessage("방이 생성되었습니다.");
+});
 
-      return li;
-    })
-  );
+socket.on("playersUpdated", (data) => {
+    players = data.players;
 
-  renderLog(game.log);
+    renderPlayers();
+    updateTurn();
+});
 
-  if (!game.gameOver && !busy && !$('word').disabled) {
-    $('word').focus();
-  }
+socket.on("roomError", (message) => {
+    showMessage(message);
+});
+
+socket.on("gameStarted", (data) => {
+    players = data.players;
+    currentTurnPlayerId = data.turnPlayerId;
+
+    renderPlayers();
+    updateTurn();
+
+    addLog("게임이 시작되었습니다.");
+
+    showMessage(
+        currentTurnPlayerId === myId
+            ? "내 턴입니다."
+            : "상대방의 턴입니다."
+    );
+});
+
+function createRoom() {
+    const nameInput = $("#nickname");
+    const maxInput = $("#maxPlayers");
+
+    nickname =
+        nameInput?.value.trim() ||
+        "플레이어";
+
+    const maxPlayers =
+        Number(maxInput?.value) || 2;
+
+    socket.emit("createRoom", {
+        nickname,
+        maxPlayers
+    });
 }
 
-function sendWord() {
-  if (busy) return;
+function joinRoom() {
+    const nameInput = $("#nickname");
+    const roomInput = $("#roomInput");
 
-  const word = $('word').value.trim();
+    nickname =
+        nameInput?.value.trim() ||
+        "플레이어";
 
-  if (!word) {
-    notice('단어를 입력하세요.');
-    return;
-  }
+    roomCode =
+        roomInput?.value.trim().toUpperCase();
 
-  setBusy(true);
+    if (!roomCode) {
+        showMessage("방 코드를 입력해주세요.");
+        return;
+    }
 
-  if (mode === 'single') {
-    socket.emit('single:play', { word });
-  } else {
-    socket.emit('room:play', { code: roomCode, word });
-  }
+    socket.emit("joinRoom", {
+        roomCode,
+        nickname
+    });
 }
 
-$('single').addEventListener('click', () => {
-  mode = 'single';
-  roomCode = null;
-  notice('');
+function startGame() {
+    if (!roomCode) {
+        showMessage("먼저 방을 만들어주세요.");
+        return;
+    }
 
-  socket.emit('single:start', { name: playerName() });
-});
+    socket.emit("startGame");
+}
 
-$('create').addEventListener('click', () => {
-  mode = 'online';
-  notice('');
+function submitWord() {
+    const input = $("#wordInput");
 
-  socket.emit('room:create', { name: playerName() });
-});
+    if (!input) return;
 
-$('join').addEventListener('click', () => {
-  const code = $('roomCode').value.trim();
+    const word = input.value.trim();
 
-  if (!code) {
-    notice('방 코드를 입력하세요.');
-    return;
-  }
+    if (!word) return;
 
-  mode = 'online';
-  notice('');
+    if (currentTurnPlayerId !== myId) {
+        showMessage("현재 내 턴이 아닙니다.");
+        return;
+    }
 
-  socket.emit('room:join', { code, name: playerName() });
-});
+    /*
+     * 실제 완성 버전에서는 여기서 서버의
+     * submitWord 이벤트로 전송하고,
+     * 서버에서 최종 검증한다.
+     */
 
-$('submit').addEventListener('click', sendWord);
+    socket.emit("submitWord", {
+        roomCode,
+        word
+    });
 
-$('word').addEventListener('keydown', event => {
-  if (event.key === 'Enter') {
-    sendWord();
-  }
-});
+    input.value = "";
+}
 
-$('back').addEventListener('click', () => {
-  $('game').classList.add('hidden');
-  $('lobby').classList.remove('hidden');
+document.addEventListener("DOMContentLoaded", () => {
+    const createButton = $("#createRoomButton");
+    const joinButton = $("#joinRoomButton");
+    const startButton = $("#startGameButton");
+    const submitButton = $("#submitWordButton");
 
-  mode = null;
-  roomCode = null;
-  setBusy(false);
-});
+    /*
+     * 이벤트 리스너는 DOMContentLoaded에서 한 번만 등록한다.
+     * 게임 재시작마다 다시 등록하지 않는다.
+     */
 
-socket.on('room:joined', ({ code }) => {
-  roomCode = code;
-  notice(`방 ${code}에 참가했습니다.`);
-});
+    createButton?.addEventListener(
+        "click",
+        createRoom
+    );
 
-socket.on('game:state', game => {
-  setBusy(false);
-  $('word').value = '';
-  render(game);
-});
+    joinButton?.addEventListener(
+        "click",
+        joinRoom
+    );
 
-socket.on('game:error', message => {
-  setBusy(false);
-  notice(message);
-});
+    startButton?.addEventListener(
+        "click",
+        startGame
+    );
 
-socket.on('connect_error', () => {
-  notice('서버 연결이 끊겼습니다.');
+    submitButton?.addEventListener(
+        "click",
+        submitWord
+    );
+
+    $("#wordInput")?.addEventListener(
+        "keydown",
+        (event) => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                submitWord();
+            }
+        }
+    );
 });
