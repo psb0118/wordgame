@@ -1,1 +1,159 @@
-*{box-sizing:border-box}body{margin:0;background:#f4f6fb;color:#20242c;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}.wrap{width:min(1050px,94vw);margin:25px auto 50px}header{margin-bottom:18px}h1{margin:0;font-size:34px}header p{margin:5px 0;color:#747b88}.tabs{display:flex;gap:8px;margin-bottom:14px}.tabs button,.controls button,.entry button,.onlineTop button,.wide{border:0;border-radius:13px;padding:12px 17px;background:#20242c;color:#fff;font-weight:800;cursor:pointer}.tabs button{background:#e8ebf2;color:#30343c}.tabs button.active{background:#20242c;color:#fff}.panel{background:#fff;border-radius:22px;padding:22px;box-shadow:0 10px 35px #0001}.hidden{display:none}.controls,.onlineTop{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end}.onlineTop{grid-template-columns:1fr auto 1fr auto}label{display:block;font-size:13px;font-weight:800}input,select{display:block;width:100%;margin-top:7px;border:2px solid #dfe3eb;border-radius:13px;padding:12px;font-size:16px;background:#fff;outline:none}.stats{display:flex;gap:9px;flex-wrap:wrap;margin:15px 0}.stats b{background:#f1f3f8;border-radius:999px;padding:8px 12px;font-size:13px}.stats span{font-size:16px}.message{min-height:28px;margin:12px 0;font-weight:800}.history{height:330px;overflow:auto;border:1px solid #e3e6ed;border-radius:15px;padding:11px}.line{padding:9px 7px;border-bottom:1px solid #f0f1f4}.attack{font-size:12px;color:#666}.entry{display:flex;gap:10px;margin-top:12px}.entry input{margin:0;flex:1}.wide{width:100%;margin-top:10px}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:15px}.cards div{background:#f1f3f8;border-radius:14px;padding:12px;font-size:12px;color:#747b88}.cards strong{display:block;color:#20242c;font-size:22px;margin-top:3px}.room{margin:15px 0;padding:14px;border-radius:15px;background:#f1f3f8;min-height:45px}.small{font-size:12px;color:#747b88}@media(max-width:720px){.controls,.onlineTop{grid-template-columns:1fr}.cards{grid-template-columns:1fr 1fr}.entry{flex-direction:column}.entry button{width:100%}.wrap{margin-top:14px}.panel{padding:17px}}
+:root {
+  font-family: system-ui, sans-serif;
+  color: #f4f7ff;
+  background: #111827;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at 20% 10%, #334155, #111827 45%);
+}
+
+main {
+  width: min(700px, 92vw);
+  padding: 24px;
+}
+
+header {
+  text-align: center;
+}
+
+h1 {
+  margin: 0;
+  color: #fbbf24;
+  font-size: 3rem;
+}
+
+header p,
+.hint {
+  color: #aab5c9;
+}
+
+.card {
+  padding: 24px;
+  border: 1px solid #3b4b63;
+  border-radius: 18px;
+  background: #1f2937;
+  box-shadow: 0 20px 50px #0005;
+}
+
+.hidden {
+  display: none;
+}
+
+label,
+input,
+button {
+  font: inherit;
+}
+
+input {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #5b6980;
+  border-radius: 10px;
+  color: white;
+  background: #111827;
+}
+
+.actions,
+.join,
+.input-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.actions button,
+.join button {
+  flex: 1;
+}
+
+button {
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 10px;
+  color: #1f2937;
+  background: #fbbf24;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.secondary {
+  margin-top: 18px;
+  color: white;
+  background: #475569;
+}
+
+.target {
+  margin: 20px 0;
+  text-align: center;
+}
+
+.target span {
+  display: block;
+  color: #aab5c9;
+}
+
+.target strong {
+  color: #fbbf24;
+  font-size: 4rem;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 24px;
+  margin-top: 18px;
+}
+
+h2 {
+  color: #aab5c9;
+  font-size: 1rem;
+}
+
+li {
+  margin: 0.35rem 0;
+}
+
+.empty-log {
+  color: #aab5c9;
+  font-style: italic;
+}
+
+.system-log {
+  color: #fbbf24;
+}
+
+.word-log {
+  color: #f4f7ff;
+}
+
+#notice {
+  min-height: 1.5em;
+  color: #fda4af;
+  text-align: center;
+}
+
+@media (max-width: 520px) {
+  .columns {
+    grid-template-columns: 1fr;
+  }
+
+  .actions,
+  .join {
+    flex-direction: column;
+  }
+}
