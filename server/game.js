@@ -2,9 +2,6 @@
 
 /* =========================================================
    server/game.js — 끝말잇기 공통 게임 엔진
-   
-   서버에서만 사용.
-   AI 로직, 단어 검증, 두음법칙, 연결 판정 등을 담당.
 ========================================================= */
 
 const fs = require("fs");
@@ -15,53 +12,20 @@ const path = require("path");
 ========================================================= */
 
 const DUEUM = {
-  "녀": ["녀", "여"],
-  "년": ["년", "연"],
-  "녕": ["녕", "영"],
-  "녜": ["녜", "예"],
-  "뇨": ["뇨", "요"],
-  "뉴": ["뉴", "유"],
-  "니": ["니", "이"],
-
-  "랴": ["랴", "야"],
-  "려": ["려", "여"],
-  "례": ["례", "예"],
-  "료": ["료", "요"],
-  "류": ["류", "유"],
-  "리": ["리", "이"],
-
-  "라": ["라", "나"],
-  "락": ["락", "낙"],
-  "란": ["란", "난"],
-  "랄": ["랄", "날"],
-  "람": ["람", "남"],
-  "랍": ["랍", "납"],
-  "랏": ["랏", "낫"],
-  "랑": ["랑", "낭"],
-  "래": ["래", "내"],
-  "랭": ["랭", "냉"],
-
-  "략": ["략", "약"],
-  "량": ["량", "양"],
-  "련": ["련", "연"],
-  "렬": ["렬", "열"],
-  "령": ["령", "영"],
-
-  "로": ["로", "노"],
-  "록": ["록", "녹"],
-  "론": ["론", "논"],
-  "롤": ["롤", "놀"],
-  "롬": ["롬", "놈"],
-  "롭": ["롭", "놉"],
-  "롯": ["롯", "놃"],
-  "롱": ["롱", "농"],
-  "뢰": ["뢰", "뇌"],
-
-  "루": ["루", "누"],
-  "륙": ["륙", "육"],
-  "률": ["률", "율"],
-  "륜": ["륜", "윤"],
-  "륭": ["륭", "융"]
+  "녀": ["녀", "여"], "년": ["년", "연"], "녕": ["녕", "영"],
+  "녜": ["녜", "예"], "뇨": ["뇨", "요"], "뉴": ["뉴", "유"], "니": ["니", "이"],
+  "랴": ["랴", "야"], "려": ["려", "여"], "례": ["례", "예"],
+  "료": ["료", "요"], "류": ["류", "유"], "리": ["리", "이"],
+  "라": ["라", "나"], "락": ["락", "낙"], "란": ["란", "난"],
+  "랄": ["랄", "날"], "람": ["람", "남"], "랍": ["랍", "납"],
+  "랏": ["랏", "낫"], "랑": ["랑", "낭"], "래": ["래", "내"], "랭": ["랭", "냉"],
+  "략": ["략", "약"], "량": ["량", "양"], "련": ["련", "연"],
+  "렬": ["렬", "열"], "령": ["령", "영"],
+  "로": ["로", "노"], "록": ["록", "녹"], "론": ["론", "논"],
+  "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놉"],
+  "롯": ["롯", "놃"], "롱": ["롱", "농"], "뢰": ["뢰", "뇌"],
+  "루": ["루", "누"], "륙": ["륙", "육"], "률": ["률", "율"],
+  "륜": ["륜", "윤"], "륭": ["륭", "융"]
 };
 
 /* =========================================================
@@ -80,24 +44,13 @@ function normalizeWord(word) {
 function allowedFirstChars(lastChar) {
   lastChar = normalizeWord(lastChar);
   if (!lastChar) return [];
-
   const result = new Set();
   result.add(lastChar);
-
   const direct = DUEUM[lastChar];
-  if (Array.isArray(direct)) {
-    for (const ch of direct) {
-      if (ch) result.add(ch);
-    }
-  }
-
+  if (Array.isArray(direct)) for (const ch of direct) if (ch) result.add(ch);
   for (const [from, values] of Object.entries(DUEUM)) {
-    if (!Array.isArray(values)) continue;
-    if (values.includes(lastChar)) {
-      result.add(from);
-    }
+    if (Array.isArray(values) && values.includes(lastChar)) result.add(from);
   }
-
   return [...result];
 }
 
@@ -109,7 +62,6 @@ function canConnect(previousWord, nextWord) {
   previousWord = normalizeWord(previousWord);
   nextWord = normalizeWord(nextWord);
   if (!previousWord || !nextWord) return false;
-
   const last = previousWord.at(-1);
   const first = nextWord.at(0);
   return allowedFirstChars(last).includes(first);
@@ -131,16 +83,10 @@ function loadData(dataDir, rootDir) {
   const ATTACK_DEPTH = Object.create(null);
   const WORD_INDEX = new Map();
 
-  const wordCandidates = [
+  const wordFile = findExistingFile([
     path.join(dataDir, "word.txt"),
     path.join(rootDir, "word.txt")
-  ];
-  const attackCandidates = [
-    path.join(dataDir, "attack.txt"),
-    path.join(rootDir, "attack.txt")
-  ];
-
-  const wordFile = findExistingFile(wordCandidates);
+  ]);
   if (!wordFile) {
     console.error("ERROR: word.txt를 찾을 수 없습니다.");
   } else {
@@ -154,7 +100,10 @@ function loadData(dataDir, rootDir) {
     console.log(`단어 로딩 완료: ${WORD_SET.size.toLocaleString()}개`);
   }
 
-  const attackFile = findExistingFile(attackCandidates);
+  const attackFile = findExistingFile([
+    path.join(dataDir, "attack.txt"),
+    path.join(rootDir, "attack.txt")
+  ]);
   if (!attackFile) {
     console.warn("WARNING: attack.txt를 찾을 수 없습니다.");
   } else {
@@ -163,7 +112,6 @@ function loadData(dataDir, rootDir) {
     for (const line of text.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed) { currentDepth = null; continue; }
-
       const depthMatch = trimmed.match(/^깊이\s+(\d+)/);
       if (depthMatch) {
         currentDepth = Number(depthMatch[1]);
@@ -218,11 +166,9 @@ function isAttackWord(word, ATTACK_DEPTH) {
 function getCandidates(previousWord, usedWords, WORD_INDEX) {
   previousWord = normalizeWord(previousWord);
   if (!previousWord) return [];
-
   const used = usedWords instanceof Set ? usedWords : new Set(usedWords || []);
   const result = [];
   const allowed = allowedFirstChars(previousWord.at(-1));
-
   for (const firstChar of allowed) {
     const bucket = WORD_INDEX.get(firstChar);
     if (!bucket) continue;
@@ -233,11 +179,30 @@ function getCandidates(previousWord, usedWords, WORD_INDEX) {
   return result;
 }
 
-function getStartCandidates(usedWords, WORD_SET) {
+/* =========================================================
+   한방단어 판별
+   한방단어 = 상대가 이 단어를 낸 후 대응할 단어가 없는 경우
+   (다음 후보가 0개인 단어)
+========================================================= */
+
+function isOneShot(word, usedWords, WORD_INDEX) {
+  const next = getCandidates(word, new Set([...usedWords, word]), WORD_INDEX);
+  return next.length === 0;
+}
+
+/* =========================================================
+   안전한 시작 단어
+   - 공격 단어가 아닌 것
+   - 한방단어가 아닌 것 (상대가 대응할 수 있어야 함)
+========================================================= */
+
+function getStartCandidates(usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
   const used = usedWords instanceof Set ? usedWords : new Set();
   const result = [];
   for (const word of WORD_SET) {
     if (used.has(word)) continue;
+    if (isAttackWord(word, ATTACK_DEPTH)) continue;
+    if (isOneShot(word, new Set([word]), WORD_INDEX)) continue;
     result.push(word);
     if (result.length >= 5000) break;
   }
@@ -245,73 +210,53 @@ function getStartCandidates(usedWords, WORD_SET) {
 }
 
 function chooseStartWord(usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
-  const used = usedWords instanceof Set ? usedWords : new Set();
-  const candidates = getStartCandidates(used, WORD_SET);
-
-  if (candidates.length === 0) return null;
-
-  const safe = [];
-  for (const word of candidates) {
-    const next = getCandidates(word, new Set([...used, word]), WORD_INDEX);
-    if (next.length > 0 && !isAttackWord(word, ATTACK_DEPTH)) {
-      safe.push(word);
+  const candidates = getStartCandidates(usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH);
+  if (candidates.length === 0) {
+    for (const word of WORD_SET) {
+      if (!usedWords.has(word)) return word;
     }
+    return null;
   }
-
-  const pool = safe.length > 0 ? safe : candidates;
-  return pool[Math.floor(Math.random() * pool.length)];
+  return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
 /* =========================================================
-   AI — 인간 수준 단일 AI
-   
-   항상 최적이지 않되, 공격 단어를 적절히 활용.
-   깊이가 높은 공격 단어를 어느 정도 선호하되
-   여러 후보 중에서 랜덤하게 선택.
+   AI — 극강 단일 AI
+
+   원칙:
+   1. 공격 단어 목록에 있으면 무조건 공격 단어 사용
+   2. 상대가 공격 단어로 역공격하지 못하도록 전략적 선택
+   3. 상대의 선택지를 최소화하는 단어 선호
+   4. 한방단어로 상대를 끝낼 수 있으면 즉시 승리
 ========================================================= */
 
-function scoreAIWord(word, currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
-  const next = getCandidates(word, new Set([...usedWords, word]), WORD_INDEX);
-  const depth = getAttackDepth(word, ATTACK_DEPTH);
-
-  let score = Math.random() * 15;
-
-  if (depth !== null) {
-    score += depth * 8;
-  }
-
-  if (next.length === 0) {
-    score += 500;
-  }
-
-  if (next.length > 0) {
-    score += Math.max(0, 50 - next.length) * 0.5;
-  }
-
-  score -= Math.min(next.length, 50) * 0.1;
-
-  return score;
-}
-
-function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
+function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, turnNumber) {
   const candidates = getCandidates(currentWord, usedWords, WORD_INDEX);
   if (!candidates.length) return null;
 
-  const sampleSize = Math.min(120, candidates.length);
-  const shuffled = candidates.slice()
-    .sort(() => Math.random() - 0.5)
-    .slice(0, sampleSize);
+  const newUsed = new Set([...usedWords]);
 
-  const scored = shuffled.map(word => ({
-    word,
-    score: scoreAIWord(word, currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH)
-  }));
+  /* 3턴까지는 한방단어 사용 금지 */
+  let pool = candidates;
+  if (turnNumber < 3) {
+    const safe = candidates.filter(w => !isOneShot(w, newUsed, WORD_INDEX));
+    if (safe.length > 0) pool = safe;
+  }
 
-  scored.sort((a, b) => b.score - a.score);
+  /* 후보 50개로 제한 */
+  if (pool.length > 50) pool = pool.slice(0, 50);
 
-  const poolSize = Math.min(5, scored.length);
-  const pool = scored.slice(0, poolSize);
-  return pool[Math.floor(Math.random() * pool.length)].word;
+  /* 즉시 승리 단어 우선 */
+  for (const w of pool) {
+    const next = getCandidates(w, new Set([...newUsed, w]), WORD_INDEX);
+    if (next.length === 0) return w;
+  }
+
+  /* 공격 단어 우선, 나머지 랜덤 */
+  const attacks = pool.filter(w => isAttackWord(w, ATTACK_DEPTH));
+  if (attacks.length > 0) return attacks[Math.floor(Math.random() * attacks.length)];
+
+  return pool[Math.floor(Math.random() * pool.length)];
 }
 
 /* =========================================================
@@ -322,7 +267,6 @@ function calculateRank(rating) {
   if (rating >= 2200) return { tier: "Challenger", sub: "" };
   if (rating >= 2000) return { tier: "Grandmaster", sub: "" };
   if (rating >= 1800) return { tier: "Master", sub: "" };
-
   if (rating >= 1600) return { tier: "Diamond", sub: rating >= 1734 ? "I" : rating >= 1667 ? "II" : "III" };
   if (rating >= 1400) return { tier: "Platinum", sub: rating >= 1534 ? "I" : rating >= 1467 ? "II" : "III" };
   if (rating >= 1200) return { tier: "Gold", sub: rating >= 1334 ? "I" : rating >= 1267 ? "II" : "III" };
@@ -333,24 +277,15 @@ function calculateRank(rating) {
 function calculateElo(winnerRating, loserRating, K = 32) {
   const expectedW = 1 / (1 + Math.pow(10, (loserRating - winnerRating) / 400));
   const expectedL = 1 / (1 + Math.pow(10, (winnerRating - loserRating) / 400));
-  const newWinnerRating = Math.round(winnerRating + K * (1 - expectedW));
-  const newLoserRating = Math.round(loserRating + K * (0 - expectedL));
-  return { newWinnerRating, newLoserRating };
+  return {
+    newWinnerRating: Math.round(winnerRating + K * (1 - expectedW)),
+    newLoserRating: Math.round(loserRating + K * (0 - expectedL))
+  };
 }
 
 module.exports = {
-  DUEUM,
-  normalizeWord,
-  allowedFirstChars,
-  canConnect,
-  loadData,
-  hasWord,
-  getAttackDepth,
-  isAttackWord,
-  getCandidates,
-  getStartCandidates,
-  chooseStartWord,
-  chooseAIWord,
-  calculateRank,
-  calculateElo
+  DUEUM, normalizeWord, allowedFirstChars, canConnect,
+  loadData, hasWord, getAttackDepth, isAttackWord,
+  getCandidates, isOneShot, getStartCandidates, chooseStartWord,
+  chooseAIWord, calculateRank, calculateElo
 };

@@ -8,7 +8,7 @@ const { Server } = require("socket.io");
 const {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
   loadData, hasWord, getAttackDepth, isAttackWord,
-  getCandidates, getStartCandidates, chooseStartWord,
+  getCandidates, isOneShot, getStartCandidates, chooseStartWord,
   chooseAIWord, calculateRank, calculateElo
 } = require("./game.js");
 
@@ -30,6 +30,7 @@ const DATA_DIR = path.join(ROOT_DIR, "data");
 const MAX_HEARTS = 2;
 const TURN_TIME = 15;
 const MAX_PLAYERS = 2;
+const ONESHOT_FREE_TURNS = 3;
 
 /* =========================================================
    데이터 로드
@@ -38,13 +39,31 @@ const MAX_PLAYERS = 2;
 const { WORD_SET, ATTACK_DEPTH, WORD_INDEX } = loadData(DATA_DIR, ROOT_DIR);
 
 /* =========================================================
-   데이터베이스
-   PostgreSQL (DATABASE_URL) 또는 JSON 파일 폴백
+   데이터베이스 — PostgreSQL 또는 JSON 파일 폴백
 ========================================================= */
 
 let dbPool = null;
 let dbMode = null;
-let playerCache = new Map();
+const playerCache = new Map();
+const jsonPath = path.join(ROOT_DIR, "player-data.json");
+
+function loadJsonDb() {
+  try {
+    if (fs.existsSync(jsonPath)) {
+      const data = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+      for (const [k, v] of Object.entries(data)) playerCache.set(k, v);
+      console.log(`JSON DB 로드: ${playerCache.size}명`);
+    }
+  } catch (e) { console.warn("JSON DB 로드 실패:", e.message); }
+}
+
+function saveJsonDb() {
+  try {
+    const obj = {};
+    for (const [k, v] of playerCache) obj[k] = v;
+    fs.writeFileSync(jsonPath, JSON.stringify(obj, null, 2));
+  } catch (e) { console.warn("JSON DB 저장 실패:", e.message); }
+}
 
 async function initDatabase() {
   const databaseUrl = process.env.DATABASE_URL;
@@ -67,69 +86,50 @@ async function initDatabase() {
       console.log("데이터베이스: PostgreSQL 연결 완료");
       return;
     } catch (err) {
-      console.warn("PostgreSQL 연결 실패, JSON 파일 폴백:", err.message);
+      console.warn("PostgreSQL 연결 실패:", err.message);
     }
   }
-
   dbMode = "json";
+  loadJsonDb();
   console.log("데이터베이스: JSON 파일 모드");
 }
 
 async function getPlayerData(playerId) {
-  if (playerCache.has(playerId)) return playerCache.get(playerId);
-
+  if (playerCache.has(playerId)) return { ...playerCache.get(playerId) };
   if (dbMode === "pg") {
     try {
       const result = await dbPool.query("SELECT * FROM players WHERE id = $1", [playerId]);
-      if (result.rows.length > 0) {
-        const data = result.rows[0];
-        playerCache.set(playerId, data);
-        return data;
-      }
-    } catch (err) {
-      console.error("DB 읽기 오류:", err.message);
-    }
+      if (result.rows.length > 0) { playerCache.set(playerId, result.rows[0]); return { ...result.rows[0] }; }
+    } catch (err) { console.error("DB 읽기 오류:", err.message); }
   }
-
   const defaultData = { id: playerId, nickname: "플레이어", rating: 1000, wins: 0, losses: 0 };
   playerCache.set(playerId, defaultData);
-  return defaultData;
+  return { ...defaultData };
 }
 
 async function savePlayerData(playerId, data) {
   playerCache.set(playerId, data);
-
   if (dbMode === "pg") {
     try {
       await dbPool.query(`
         INSERT INTO players (id, nickname, rating, wins, losses, updated_at)
         VALUES ($1, $2, $3, $4, $5, NOW())
-        ON CONFLICT (id) DO UPDATE SET
-          nickname = $2, rating = $3, wins = $4, losses = $5, updated_at = NOW()
+        ON CONFLICT (id) DO UPDATE SET nickname=$2, rating=$3, wins=$4, losses=$5, updated_at=NOW()
       `, [playerId, data.nickname || "플레이어", data.rating, data.wins, data.losses]);
-    } catch (err) {
-      console.error("DB 쓰기 오류:", err.message);
-    }
+    } catch (err) { console.error("DB 쓰기 오류:", err.message); }
+  } else {
+    saveJsonDb();
   }
 }
 
 async function updateRating(winnerId, loserId, winnerNickname, loserNickname) {
   const winner = await getPlayerData(winnerId);
   const loser = await getPlayerData(loserId);
-
   const { newWinnerRating, newLoserRating } = calculateElo(winner.rating, loser.rating);
-
-  winner.rating = newWinnerRating;
-  winner.wins += 1;
-  winner.nickname = winnerNickname || winner.nickname;
-
-  loser.rating = newLoserRating;
-  loser.losses += 1;
-  loser.nickname = loserNickname || loser.nickname;
-
+  winner.rating = newWinnerRating; winner.wins += 1; winner.nickname = winnerNickname || winner.nickname;
+  loser.rating = newLoserRating; loser.losses += 1; loser.nickname = loserNickname || loser.nickname;
   await savePlayerData(winnerId, winner);
   await savePlayerData(loserId, loser);
-
   return {
     winner: { ...winner, rank: calculateRank(winner.rating) },
     loser: { ...loser, rank: calculateRank(loser.rating) }
@@ -144,19 +144,15 @@ const ROOMS = new Map();
 
 function createRoomId() {
   let id;
-  do {
-    id = Math.random().toString(36).slice(2, 8).toUpperCase();
-  } while (ROOMS.has(id));
+  do { id = Math.random().toString(36).slice(2, 8).toUpperCase(); } while (ROOMS.has(id));
   return id;
 }
 
-function createRoom(socketId, nickname, mode, aiLevel) {
+function createRoom(socketId, nickname) {
   const roomId = createRoomId();
   const room = {
     id: roomId,
     hostSocketId: socketId,
-    mode: mode === "ai" ? "ai" : "online",
-    aiLevel: Math.min(5, Math.max(1, Number(aiLevel) || 3)),
     players: [],
     currentWord: null,
     turnPlayerIndex: 0,
@@ -172,7 +168,6 @@ function createRoom(socketId, nickname, mode, aiLevel) {
     turnEndsAt: null,
     gameSessionId: 0
   };
-
   addPlayer(room, socketId, nickname);
   ROOMS.set(roomId, room);
   return room;
@@ -182,15 +177,10 @@ function addPlayer(room, socketId, nickname) {
   if (room.players.length >= MAX_PLAYERS) return null;
   const playerIndex = room.players.length;
   const player = {
-    id: socketId,
-    socketId: socketId,
-    playerIndex: playerIndex,
+    id: socketId, socketId, playerIndex,
     nickname: nickname || `플레이어 ${playerIndex + 1}`,
-    isBot: false,
-    alive: true,
-    connected: true,
-    hearts: MAX_HEARTS,
-    eliminated: false
+    isBot: false, alive: true, connected: true,
+    hearts: MAX_HEARTS, eliminated: false
   };
   room.players.push(player);
   return player;
@@ -200,15 +190,9 @@ function addBot(room) {
   if (room.players.length >= MAX_PLAYERS) return null;
   const playerIndex = room.players.length;
   const player = {
-    id: `AI_${room.id}`,
-    socketId: null,
-    playerIndex: playerIndex,
-    nickname: `AI Lv.${room.aiLevel}`,
-    isBot: true,
-    alive: true,
-    connected: true,
-    hearts: MAX_HEARTS,
-    eliminated: false
+    id: `AI_${room.id}`, socketId: null, playerIndex,
+    nickname: "AI", isBot: true, alive: true, connected: true,
+    hearts: MAX_HEARTS, eliminated: false
   };
   room.players.push(player);
   return player;
@@ -247,8 +231,6 @@ function getPublicRoomState(room) {
   if (!room) return null;
   return {
     roomId: room.id,
-    mode: room.mode,
-    aiLevel: room.aiLevel,
     currentWord: room.currentWord,
     turnPlayer: room.turnPlayerIndex,
     turnNumber: room.turnNumber,
@@ -256,28 +238,21 @@ function getPublicRoomState(room) {
     finished: room.finished,
     winner: room.winner,
     loser: room.loser,
+    turnTime: TURN_TIME,
+    oneShotFreeTurns: ONESHOT_FREE_TURNS,
     history: room.history.map(item => ({
-      word: item.word,
-      player: item.player,
-      nickname: item.nickname,
-      depth: item.depth,
-      turn: item.turn
+      word: item.word, player: item.player, nickname: item.nickname,
+      depth: item.depth, turn: item.turn
     })),
     players: room.players.map(p => ({
-      id: p.id,
-      playerIndex: p.playerIndex,
-      nickname: p.nickname,
-      isBot: p.isBot,
-      hearts: p.hearts,
-      alive: p.alive,
-      connected: p.connected,
-      eliminated: p.eliminated
+      id: p.id, playerIndex: p.playerIndex, nickname: p.nickname,
+      isBot: p.isBot, hearts: p.hearts, alive: p.alive,
+      connected: p.connected, eliminated: p.eliminated
     })),
     playerCount: room.players.length,
     maxPlayers: MAX_PLAYERS,
     turnStartedAt: room.turnStartedAt,
-    turnEndsAt: room.turnEndsAt,
-    turnTime: TURN_TIME
+    turnEndsAt: room.turnEndsAt
   };
 }
 
@@ -291,10 +266,7 @@ function broadcastRoomState(room) {
 ========================================================= */
 
 function stopTurnTimer(room) {
-  if (room.timer) {
-    clearTimeout(room.timer);
-    room.timer = null;
-  }
+  if (room.timer) { clearTimeout(room.timer); room.timer = null; }
   room.turnStartedAt = null;
   room.turnEndsAt = null;
 }
@@ -302,14 +274,12 @@ function stopTurnTimer(room) {
 function startTurnTimer(room, gameSessionId) {
   stopTurnTimer(room);
   if (!room || room.finished || !room.started) return;
-
   const player = getPlayerByIndex(room, room.turnPlayerIndex);
   if (!player || player.eliminated) return;
 
   const now = Date.now();
   room.turnStartedAt = now;
   room.turnEndsAt = now + TURN_TIME * 1000;
-
   broadcastRoomState(room);
 
   room.timer = setTimeout(() => {
@@ -321,27 +291,21 @@ function startTurnTimer(room, gameSessionId) {
     setTimeout(() => {
       if (room.gameSessionId !== gameSessionId) return;
       runAI(room, gameSessionId);
-    }, 800);
+    }, 500);
   }
 }
 
 function handleTurnTimeout(room, gameSessionId) {
   if (!room || room.finished || room.gameSessionId !== gameSessionId) return;
-
   const player = getPlayerByIndex(room, room.turnPlayerIndex);
   if (!player || player.eliminated) return;
 
   player.hearts--;
-  if (player.hearts <= 0) {
-    player.hearts = 0;
-    player.eliminated = true;
-  }
+  if (player.hearts <= 0) { player.hearts = 0; player.eliminated = true; }
 
   io.to(room.id).emit("game:timeout", {
-    player: player.playerIndex,
-    nickname: player.nickname,
-    hearts: player.hearts,
-    eliminated: player.eliminated
+    player: player.playerIndex, nickname: player.nickname,
+    hearts: player.hearts, eliminated: player.eliminated
   });
 
   const alive = getAlivePlayers(room);
@@ -351,10 +315,7 @@ function handleTurnTimeout(room, gameSessionId) {
   }
 
   const next = findNextAlivePlayer(room, player.playerIndex);
-  if (next === null) {
-    finishGame(room, null, player.playerIndex);
-    return;
-  }
+  if (next === null) { finishGame(room, null, player.playerIndex); return; }
 
   room.turnPlayerIndex = next;
   room.turnNumber++;
@@ -362,7 +323,8 @@ function handleTurnTimeout(room, gameSessionId) {
 }
 
 /* =========================================================
-   게임 종료
+   게임 종료 — 승패 판정
+   winnerIndex가 이긴 사람, loserIndex가 진 사람
 ========================================================= */
 
 function finishGame(room, winnerIndex, loserIndex) {
@@ -372,17 +334,20 @@ function finishGame(room, winnerIndex, loserIndex) {
   room.loser = loserIndex;
   stopTurnTimer(room);
 
+  const winnerName = winnerIndex !== null ? room.players[winnerIndex]?.nickname : "무승부";
+  console.log(`[GAME END] Room:${room.id} Winner:${winnerName} (${winnerIndex}) Loser:(${loserIndex})`);
+
   io.to(room.id).emit("game:finished", {
     winner: winnerIndex,
     loser: loserIndex,
+    winnerName: winnerName,
     state: getPublicRoomState(room)
   });
-
   broadcastRoomState(room);
 }
 
 /* =========================================================
-   게임 시작
+   게임 시작 — 랜덤 선공
 ========================================================= */
 
 function startNewGame(room) {
@@ -397,7 +362,6 @@ function startNewGame(room) {
   }
 
   room.currentWord = null;
-  room.turnPlayerIndex = 0;
   room.turnNumber = 0;
   room.history = [];
   room.usedWords = new Set();
@@ -407,24 +371,25 @@ function startNewGame(room) {
   room.loser = null;
 
   const startWord = chooseStartWord(room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH);
-  if (!startWord) {
-    room.started = false;
-    return false;
-  }
+  if (!startWord) { room.started = false; return false; }
 
   room.currentWord = startWord;
   room.usedWords.add(startWord);
   room.history.push({
-    word: startWord,
-    player: -1,
-    nickname: "시작 단어",
-    depth: getAttackDepth(startWord, ATTACK_DEPTH),
-    turn: 0
+    word: startWord, player: -1, nickname: "시작 단어",
+    depth: getAttackDepth(startWord, ATTACK_DEPTH), turn: 0
   });
 
+  /* 랜덤 선공 */
+  const alivePlayers = room.players.filter(p => !p.isBot || room.players.some(pp => pp.isBot));
+  room.turnPlayerIndex = Math.floor(Math.random() * room.players.length);
+  while (room.players[room.turnPlayerIndex]?.eliminated) {
+    room.turnPlayerIndex = (room.turnPlayerIndex + 1) % room.players.length;
+  }
+
   io.to(room.id).emit("game:started", {
-    ok: true,
-    startWord: startWord,
+    ok: true, startWord: startWord,
+    firstTurn: room.turnPlayerIndex,
     state: getPublicRoomState(room)
   });
 
@@ -433,7 +398,7 @@ function startNewGame(room) {
 }
 
 /* =========================================================
-   단어 제출
+   단어 제출 — 승패 판정 수정
 ========================================================= */
 
 function playWord(room, player, rawWord, gameSessionId) {
@@ -452,11 +417,14 @@ function playWord(room, player, rawWord, gameSessionId) {
 
   if (room.currentWord && !canConnect(room.currentWord, word)) {
     const last = room.currentWord.at(-1);
-    return {
-      ok: false,
-      reason: `"${last}" 다음에 연결할 수 없는 단어입니다.`,
-      allowed: allowedFirstChars(last)
-    };
+    return { ok: false, reason: `"${last}" 다음에 연결할 수 없는 단어입니다.`, allowed: allowedFirstChars(last) };
+  }
+
+  /* 한방단어 제한: 3턴까지는 한방단어 사용 금지 */
+  if (room.turnNumber < ONESHOT_FREE_TURNS) {
+    if (isOneShot(word, room.usedWords, WORD_INDEX)) {
+      return { ok: false, reason: `첫 ${ONESHOT_FREE_TURNS}턴은 한방단어를 사용할 수 없습니다.` };
+    }
   }
 
   stopTurnTimer(room);
@@ -465,40 +433,30 @@ function playWord(room, player, rawWord, gameSessionId) {
   const depth = getAttackDepth(word, ATTACK_DEPTH);
 
   room.history.push({
-    word: word,
-    player: player.playerIndex,
-    nickname: player.nickname,
-    depth: depth,
-    turn: room.history.length
+    word, player: player.playerIndex, nickname: player.nickname,
+    depth, turn: room.history.length
   });
 
   const nextCandidates = getCandidates(word, room.usedWords, WORD_INDEX);
 
   io.to(room.id).emit("game:word", {
-    ok: true,
-    word: word,
-    player: player.playerIndex,
-    nickname: player.nickname,
-    depth: depth,
-    nextCount: nextCandidates.length
+    ok: true, word, player: player.playerIndex, nickname: player.nickname,
+    depth, nextCount: nextCandidates.length
   });
 
+  /* 다음 사람이 대응할 단어가 없으면 지금 단어 낸 사람이 승리 */
   if (nextCandidates.length === 0) {
-    const next = findNextAlivePlayer(room, player.playerIndex);
-    finishGame(room, player.playerIndex, next);
+    const loser = findNextAlivePlayer(room, player.playerIndex);
+    finishGame(room, player.playerIndex, loser);
     return { ok: true, finished: true };
   }
 
   const nextAlive = findNextAlivePlayer(room, player.playerIndex);
-  if (nextAlive === null) {
-    finishGame(room, player.playerIndex, null);
-    return { ok: true, finished: true };
-  }
+  if (nextAlive === null) { finishGame(room, player.playerIndex, null); return { ok: true, finished: true }; }
 
   room.turnPlayerIndex = nextAlive;
   room.turnNumber++;
   startTurnTimer(room, room.gameSessionId);
-
   return { ok: true };
 }
 
@@ -508,18 +466,14 @@ function playWord(room, player, rawWord, gameSessionId) {
 
 function runAI(room, gameSessionId) {
   if (!room || room.finished || !room.started || room.gameSessionId !== gameSessionId) return;
-
   const player = getPlayerByIndex(room, room.turnPlayerIndex);
   if (!player || !player.isBot || player.eliminated) return;
 
-  const word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH);
-
+  const word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, room.turnNumber);
   if (!word) {
-    const next = findNextAlivePlayer(room, player.playerIndex);
-    finishGame(room, next, player.playerIndex);
+    finishGame(room, findNextAlivePlayer(room, player.playerIndex), player.playerIndex);
     return;
   }
-
   playWord(room, player, word, gameSessionId);
 }
 
@@ -532,40 +486,26 @@ function removePlayer(room, socketId, reason) {
   const index = room.players.findIndex(p => p.socketId === socketId);
   if (index === -1) return;
   const player = room.players[index];
-
   if (player.isBot) return;
 
   if (room.started && !room.finished) {
     player.eliminated = true;
     player.connected = false;
-
-    io.to(room.id).emit("room:playerLeft", {
-      playerIndex: player.playerIndex,
-      nickname: player.nickname,
-      reason: reason || "leave"
-    });
+    io.to(room.id).emit("room:playerLeft", { playerIndex: player.playerIndex, nickname: player.nickname, reason });
 
     const alive = getAlivePlayers(room);
     if (alive.length <= 1) {
       finishGame(room, alive.length === 1 ? alive[0].playerIndex : null, player.playerIndex);
       return;
     }
-
     if (room.turnPlayerIndex === player.playerIndex) {
       const next = findNextAlivePlayer(room, player.playerIndex);
-      if (next !== null) {
-        room.turnPlayerIndex = next;
-        room.turnNumber++;
-        startTurnTimer(room, room.gameSessionId);
-      }
+      if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
     }
   } else {
     room.players.splice(index, 1);
-    for (let i = index; i < room.players.length; i++) {
-      room.players[i].playerIndex = i;
-    }
+    for (let i = index; i < room.players.length; i++) room.players[i].playerIndex = i;
   }
-
   broadcastRoomState(room);
 }
 
@@ -577,24 +517,14 @@ app.use(express.static(ROOT_DIR));
 app.use(express.static(CLIENT_DIR));
 
 app.get("/", (req, res) => {
-  const candidates = [
-    path.join(CLIENT_DIR, "index.html"),
-    path.join(ROOT_DIR, "index.html")
-  ];
-  for (const file of candidates) {
+  for (const file of [path.join(CLIENT_DIR, "index.html"), path.join(ROOT_DIR, "index.html")]) {
     if (fs.existsSync(file)) return res.sendFile(file);
   }
   res.status(404).send("index.html을 찾을 수 없습니다.");
 });
 
 app.get("/api/health", (req, res) => {
-  res.json({
-    ok: true,
-    words: WORD_SET.size,
-    attackWords: Object.keys(ATTACK_DEPTH).length,
-    rooms: ROOMS.size,
-    uptime: process.uptime()
-  });
+  res.json({ ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length, rooms: ROOMS.size, uptime: process.uptime() });
 });
 
 /* =========================================================
@@ -605,79 +535,45 @@ io.on("connection", (socket) => {
   console.log(`[CONNECT] ${socket.id}`);
 
   socket.emit("server:ready", {
-    ok: true,
-    words: WORD_SET.size,
-    attackWords: Object.keys(ATTACK_DEPTH).length,
-    maxPlayers: MAX_PLAYERS,
-    turnTime: TURN_TIME,
-    maxHearts: MAX_HEARTS,
-    defaultRating: 1000
+    ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length,
+    maxPlayers: MAX_PLAYERS, turnTime: TURN_TIME, maxHearts: MAX_HEARTS
   });
 
-  /* -- 방 만들기 ---------------------------------------- */
   socket.on("room:create", async (data) => {
     try {
       const nickname = normalizeWord(data?.nickname) || "플레이어";
-      const mode = data?.mode === "ai" ? "ai" : "online";
-      const aiLevel = Math.min(5, Math.max(1, Number(data?.aiLevel) || 3));
-
       const oldRoom = findRoomBySocket(socket.id);
-      if (oldRoom) {
-        socket.leave(oldRoom.id);
-        removePlayer(oldRoom, socket.id, "recreate");
-      }
+      if (oldRoom) { socket.leave(oldRoom.id); removePlayer(oldRoom, socket.id, "recreate"); }
 
-      const room = createRoom(socket.id, nickname, mode, aiLevel);
+      const room = createRoom(socket.id, nickname);
       socket.join(room.id);
       socket.data.roomId = room.id;
       socket.data.playerIndex = 0;
       socket.data.playerId = socket.id;
 
-      socket.emit("room:created", {
-        ok: true,
-        roomId: room.id,
-        playerIndex: 0,
-        state: getPublicRoomState(room)
-      });
+      socket.emit("room:created", { ok: true, roomId: room.id, playerIndex: 0, state: getPublicRoomState(room) });
 
-      if (mode === "ai") {
-        addBot(room);
-        startNewGame(room);
-      } else {
-        broadcastRoomState(room);
-      }
-      console.log(`[ROOM CREATE] ${room.id} / ${socket.id} / ${mode}`);
+      addBot(room);
+      startNewGame(room);
+
+      broadcastRoomState(room);
+      console.log(`[ROOM CREATE] ${room.id} / ${socket.id}`);
     } catch (error) {
       console.error("room:create 오류:", error);
       socket.emit("room:error", { ok: false, reason: "방을 생성하지 못했습니다." });
     }
   });
 
-  /* -- 방 참가 ------------------------------------------ */
   socket.on("room:join", (data) => {
     try {
       const roomId = String(data?.roomId || "").trim().toUpperCase();
       const nickname = normalizeWord(data?.nickname) || "플레이어";
-
-      if (!roomId) {
-        socket.emit("room:error", { ok: false, reason: "방 코드를 입력해주세요." });
-        return;
-      }
+      if (!roomId) { socket.emit("room:error", { ok: false, reason: "방 코드를 입력해주세요." }); return; }
 
       const room = ROOMS.get(roomId);
-      if (!room) {
-        socket.emit("room:error", { ok: false, reason: "방을 찾을 수 없습니다." });
-        return;
-      }
-
-      if (room.mode === "ai") {
-        socket.emit("room:error", { ok: false, reason: "이 방은 AI 모드입니다." });
-        return;
-      }
-
+      if (!room) { socket.emit("room:error", { ok: false, reason: "방을 찾을 수 없습니다." }); return; }
       if (room.players.filter(p => !p.isBot).length >= MAX_PLAYERS) {
-        socket.emit("room:error", { ok: false, reason: "방이 가득 찼습니다." });
-        return;
+        socket.emit("room:error", { ok: false, reason: "방이 가득 찼습니다." }); return;
       }
 
       const existing = room.players.find(p => p.socketId === socket.id);
@@ -687,46 +583,23 @@ io.on("connection", (socket) => {
         socket.data.roomId = room.id;
         socket.data.playerIndex = existing.playerIndex;
         socket.data.playerId = socket.id;
-
-        socket.emit("room:joined", {
-          ok: true,
-          roomId: room.id,
-          playerIndex: existing.playerIndex,
-          reconnect: true,
-          state: getPublicRoomState(room)
-        });
+        socket.emit("room:joined", { ok: true, roomId: room.id, playerIndex: existing.playerIndex, reconnect: true, state: getPublicRoomState(room) });
         broadcastRoomState(room);
         return;
       }
 
       const player = addPlayer(room, socket.id, nickname);
-      if (!player) {
-        socket.emit("room:error", { ok: false, reason: "방에 입장할 수 없습니다." });
-        return;
-      }
+      if (!player) { socket.emit("room:error", { ok: false, reason: "방에 입장할 수 없습니다." }); return; }
 
       socket.join(room.id);
       socket.data.roomId = room.id;
       socket.data.playerIndex = player.playerIndex;
       socket.data.playerId = socket.id;
 
-      socket.emit("room:joined", {
-        ok: true,
-        roomId: room.id,
-        playerIndex: player.playerIndex,
-        state: getPublicRoomState(room)
-      });
+      socket.emit("room:joined", { ok: true, roomId: room.id, playerIndex: player.playerIndex, state: getPublicRoomState(room) });
+      io.to(room.id).emit("room:playerJoined", { playerIndex: player.playerIndex, nickname: player.nickname, state: getPublicRoomState(room) });
 
-      io.to(room.id).emit("room:playerJoined", {
-        playerIndex: player.playerIndex,
-        nickname: player.nickname,
-        state: getPublicRoomState(room)
-      });
-
-      if (room.players.filter(p => !p.isBot).length >= 2 && !room.started) {
-        startNewGame(room);
-      }
-
+      if (room.players.filter(p => !p.isBot).length >= 2 && !room.started) startNewGame(room);
       broadcastRoomState(room);
       console.log(`[ROOM JOIN] ${room.id} / ${socket.id} / player ${player.playerIndex}`);
     } catch (error) {
@@ -735,20 +608,12 @@ io.on("connection", (socket) => {
     }
   });
 
-  /* -- 단어 제출 ---------------------------------------- */
   socket.on("game:word", (data) => {
     try {
       const room = findRoomBySocket(socket.id);
-      if (!room) {
-        socket.emit("game:error", { ok: false, reason: "게임 방에 참여하지 않았습니다." });
-        return;
-      }
-
+      if (!room) { socket.emit("game:error", { ok: false, reason: "게임 방에 참여하지 않았습니다." }); return; }
       const player = getPlayerBySocket(room, socket.id);
-      if (!player) {
-        socket.emit("game:error", { ok: false, reason: "플레이어를 찾을 수 없습니다." });
-        return;
-      }
+      if (!player) { socket.emit("game:error", { ok: false, reason: "플레이어를 찾을 수 없습니다." }); return; }
 
       const word = data?.word ?? data?.inputWord ?? "";
       const result = playWord(room, player, word, room.gameSessionId);
@@ -756,23 +621,12 @@ io.on("connection", (socket) => {
       if (!result.ok) {
         if (result.allowed) {
           player.hearts--;
-          if (player.hearts <= 0) {
-            player.hearts = 0;
-            player.eliminated = true;
-            const alive = getAlivePlayers(room);
-            if (alive.length <= 1) {
-              finishGame(room, alive.length === 1 ? alive[0].playerIndex : null, player.playerIndex);
-            }
-          }
+          if (player.hearts <= 0) { player.hearts = 0; player.eliminated = true; }
           socket.emit("game:error", { ok: false, reason: result.reason, hearts: player.hearts, allowed: result.allowed });
           broadcastRoomState(room);
           if (room.finished) return;
           const next = findNextAlivePlayer(room, player.playerIndex);
-          if (next !== null) {
-            room.turnPlayerIndex = next;
-            room.turnNumber++;
-            startTurnTimer(room, room.gameSessionId);
-          }
+          if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
         } else {
           socket.emit("game:error", result);
         }
@@ -783,92 +637,59 @@ io.on("connection", (socket) => {
     }
   });
 
-  /* -- 새 게임 ------------------------------------------ */
   socket.on("game:restart", () => {
     try {
       const room = findRoomBySocket(socket.id);
       if (!room) return;
-      if (socket.id !== room.hostSocketId) {
-        socket.emit("game:error", { ok: false, reason: "방장만 새 게임을 시작할 수 있습니다." });
-        return;
-      }
       startNewGame(room);
       console.log(`[GAME RESTART] ${room.id}`);
-    } catch (error) {
-      console.error("game:restart 오류:", error);
-    }
+    } catch (error) { console.error("game:restart 오류:", error); }
   });
 
-  /* -- 방 나가기 ---------------------------------------- */
   socket.on("room:leave", () => {
     try {
       const roomId = socket.data.roomId;
       if (!roomId) return;
       const room = ROOMS.get(roomId);
       if (!room) return;
-
       socket.leave(roomId);
       removePlayer(room, socket.id, "leave");
-
       const realPlayers = room.players.filter(p => !p.isBot);
-      if (realPlayers.length === 0) {
-        stopTurnTimer(room);
-        ROOMS.delete(room.id);
-      }
-
+      if (realPlayers.length === 0) { stopTurnTimer(room); ROOMS.delete(room.id); }
       socket.data.roomId = null;
       socket.data.playerIndex = null;
       socket.emit("room:left", { ok: true });
-    } catch (error) {
-      console.error("room:leave 오류:", error);
-    }
+    } catch (error) { console.error("room:leave 오류:", error); }
   });
 
-  /* -- 연결 종료 ---------------------------------------- */
   socket.on("disconnect", (reason) => {
     console.log(`[DISCONNECT] ${socket.id} / ${reason}`);
     const room = findRoomBySocket(socket.id);
     if (!room) return;
-
     const player = getPlayerBySocket(room, socket.id);
     if (player) {
       if (room.started && !room.finished) {
         player.connected = false;
-        io.to(room.id).emit("room:playerDisconnected", {
-          playerIndex: player.playerIndex,
-          nickname: player.nickname
-        });
+        io.to(room.id).emit("room:playerDisconnected", { playerIndex: player.playerIndex, nickname: player.nickname });
         broadcastRoomState(room);
       } else {
         removePlayer(room, socket.id, "disconnect");
         const realPlayers = room.players.filter(p => !p.isBot);
-        if (realPlayers.length === 0) {
-          stopTurnTimer(room);
-          ROOMS.delete(room.id);
-        }
+        if (realPlayers.length === 0) { stopTurnTimer(room); ROOMS.delete(room.id); }
       }
     }
   });
 
-  /* -- 상태 요청 ---------------------------------------- */
   socket.on("room:state", () => {
     const room = findRoomBySocket(socket.id);
-    if (room) {
-      socket.emit("game:state", getPublicRoomState(room));
-    }
+    if (room) socket.emit("game:state", getPublicRoomState(room));
   });
 
-  /* -- 랭킹 요청 ---------------------------------------- */
   socket.on("player:getRanking", async () => {
     try {
       const data = await getPlayerData(socket.id);
-      socket.emit("player:ranking", {
-        ...data,
-        rank: calculateRank(data.rating)
-      });
-    } catch (err) {
-      console.error("랭킹 조회 오류:", err);
-    }
+      socket.emit("player:ranking", { ...data, rank: calculateRank(data.rating) });
+    } catch (err) { console.error("랭킹 조회 오류:", err); }
   });
 });
 
@@ -883,6 +704,7 @@ initDatabase().then(() => {
     console.log(`단어: ${WORD_SET.size.toLocaleString()}개`);
     console.log(`공격 단어: ${Object.keys(ATTACK_DEPTH).length.toLocaleString()}개`);
     console.log(`데이터베이스: ${dbMode === "pg" ? "PostgreSQL" : "JSON 파일"}`);
+    console.log(`한방단어 금지 턴: ${ONESHOT_FREE_TURNS}턴`);
     console.log("========================================");
   });
 }).catch(err => {
@@ -892,16 +714,5 @@ initDatabase().then(() => {
   });
 });
 
-function shutdown(signal) {
-  console.log(`${signal} 수신. 서버 종료 중...`);
-  for (const room of ROOMS.values()) {
-    stopTurnTimer(room);
-  }
-  server.close(() => {
-    console.log("서버가 종료되었습니다.");
-    process.exit(0);
-  });
-}
-
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => { for (const room of ROOMS.values()) stopTurnTimer(room); server.close(() => process.exit(0)); });
+process.on("SIGTERM", () => { for (const room of ROOMS.values()) stopTurnTimer(room); server.close(() => process.exit(0)); });

@@ -219,6 +219,7 @@ function initSocket() {
     localUsedWords.clear();
     renderGameState(gameState);
     showMessage("게임이 시작되었습니다!", "success");
+    updateRuleNotice(gameState);
   });
 
   socket.on("game:word", (data) => {
@@ -300,7 +301,25 @@ function renderGameState(state) {
   renderHistory(state);
   renderRoomInfo(state);
   renderCountdown(state);
+  updateRuleNotice(state);
   updateInputState();
+}
+
+function updateRuleNotice(state) {
+  if (!state) return;
+  const freeTurns = state.oneShotFreeTurns || 3;
+  const turn = state.turnNumber || 0;
+  const selector = currentMode === "single" ? "#ruleNotice" : "#onlineRuleNotice";
+  const el = $(selector);
+  if (!el) return;
+
+  if (turn < freeTurns) {
+    el.textContent = `첫 ${freeTurns}턴은 한방단어 사용 금지 (${turn}/${freeTurns})`;
+    el.dataset.active = "true";
+  } else {
+    el.textContent = "이제 한방단어 사용 가능";
+    el.dataset.active = "false";
+  }
 }
 
 function renderPlayers(state) {
@@ -420,12 +439,9 @@ function startSingleGame() {
     return;
   }
 
-  const difficulty = Number($("#difficulty")?.value) || 3;
-
   socket.emit("room:create", {
     nickname: "플레이어",
-    mode: "ai",
-    aiLevel: difficulty
+    mode: "ai"
   });
 
   localUsedWords.clear();

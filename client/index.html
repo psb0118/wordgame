@@ -21,24 +21,16 @@
     <!-- 싱글플레이 -->
     <section id="single" class="panel">
       <div class="controls">
-        <label>AI 난이도
-          <select id="difficulty">
-            <option value="1">Lv.1 초보</option>
-            <option value="2">Lv.2 쉬움</option>
-            <option value="3" selected>Lv.3 보통</option>
-            <option value="4">Lv.4 어려움</option>
-            <option value="5">Lv.5 최강</option>
-          </select>
-        </label>
         <label>시작 단어<input id="startWord" readonly></label>
         <button id="newStart">랜덤 시작</button>
       </div>
+
+      <div class="rule-notice" id="ruleNotice"></div>
 
       <div class="stats">
         <b>끝 글자 <span id="last">-</span></b>
         <b>턴 <span id="turn">0</span></b>
         <b>공격 깊이 <span id="depth">-</span></b>
-        <b>AI 승률 <span id="winrate">0%</span></b>
       </div>
 
       <div id="message" class="message"></div>
@@ -52,8 +44,8 @@
       <button id="restart" class="wide">새 게임</button>
 
       <div class="cards">
-        <div>AI 승리<strong id="wins">0</strong></div>
-        <div>플레이어 승리<strong id="losses">0</strong></div>
+        <div>플레이어 승리<strong id="wins">0</strong></div>
+        <div>AI 승리<strong id="losses">0</strong></div>
         <div>전체 게임<strong id="games">0</strong></div>
         <div>평균 길이<strong id="avg">-</strong></div>
       </div>
@@ -80,6 +72,7 @@
       <div id="roomInfo" class="room"></div>
       <button id="startOnline" class="wide hidden">방장이 게임 시작</button>
       <div id="onlineMessage" class="message"></div>
+      <div class="rule-notice" id="onlineRuleNotice"></div>
 
       <div id="onlinePlayers" class="players"></div>
       <div id="onlineHistory" class="history"></div>
