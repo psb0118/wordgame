@@ -133,6 +133,16 @@ function updateStatsUI() {
 }
 
 /* ---------------------------------------------------------
+   입력 포커스
+--------------------------------------------------------- */
+function focusInput() {
+  setTimeout(() => {
+    const input = currentMode === "single" ? $("#singleInput") : $("#onlineInput");
+    if (input && !input.disabled) input.focus();
+  }, 100);
+}
+
+/* ---------------------------------------------------------
    Socket.IO 연결 (한 번만)
 --------------------------------------------------------- */
 function initSocket() {
@@ -169,7 +179,9 @@ function initSocket() {
     gameSessionId++;
     gameState = data.state;
     renderGameState(gameState);
-    showMessage(`방이 생성되었습니다. 방 코드: ${data.roomId}`, "success");
+    if (currentMode === "online") {
+      showMessage(`방이 생성되었습니다. 방 코드: ${data.roomId}`, "success");
+    }
   });
 
   socket.on("room:joined", (data) => {
@@ -231,6 +243,7 @@ function initSocket() {
     updateRuleNotice(gameState);
     const hostControls = $("#hostControls");
     if (hostControls) hostControls.classList.add("hidden");
+    focusInput();
   });
 
   socket.on("game:word", (data) => {
@@ -239,6 +252,9 @@ function initSocket() {
         localUsedWords.add(data.word);
       }
       showMessage(`${data.nickname}: ${data.word}${data.depth != null ? " [깊이 " + data.depth + "]" : ""}`, "success");
+      if (currentMode === "single" && data.nickname !== "플레이어") {
+        focusInput();
+      }
     }
   });
 
@@ -262,6 +278,7 @@ function initSocket() {
     }
     submitting = false;
     updateInputState();
+    focusInput();
   });
 
   socket.on("game:timeout", (data) => {
@@ -283,12 +300,16 @@ function initSocket() {
   });
 
   socket.on("game:finished", (data) => {
-    const isWinner = data.winner === playerIndex;
+    submitting = false;
+    stopCountdown();
+    updateInputState();
+
     if (data.winner !== null && data.winner === playerIndex) {
       showMessage("게임에서 승리했습니다!", "win");
       if (currentMode === "single") {
         localStats.wins++;
         localStats.games++;
+        localStats.totalLength += (gameState?.history?.length || 0);
         saveStats();
         updateStatsUI();
       }
@@ -297,15 +318,17 @@ function initSocket() {
       if (currentMode === "single") {
         localStats.losses++;
         localStats.games++;
+        localStats.totalLength += (gameState?.history?.length || 0);
         saveStats();
         updateStatsUI();
       }
     } else {
       showMessage("게임이 종료되었습니다.", "info");
     }
-    submitting = false;
-    stopCountdown();
-    updateInputState();
+
+    if (currentMode === "single") {
+      showRestartButton(true);
+    }
   });
 }
 
@@ -317,7 +340,20 @@ function renderGameState(state) {
 
   setText(["#startWord"], state.history?.[0]?.word || "-");
 
-  setText(["#last"], state.currentWord ? state.currentWord.at(-1) : "-");
+  const lastChar = state.currentWord ? state.currentWord.at(-1) : null;
+  setText(["#last"], lastChar || "-");
+
+  const allowed = lastChar ? allowedFirstChars(lastChar) : [];
+  const hintEl = $("#lastHint");
+  if (hintEl) {
+    if (currentMode === "single" && state.started && !state.finished) {
+      hintEl.textContent = `(${allowed.join(", ")})`;
+      hintEl.classList.remove("hidden");
+    } else {
+      hintEl.classList.add("hidden");
+    }
+  }
+
   setText(["#turn"], state.turnNumber);
 
   if (state.history && state.history.length > 0) {
@@ -329,6 +365,23 @@ function renderGameState(state) {
     }
   } else {
     setText(["#depth"], "-");
+  }
+
+  const myTurn = state.started && !state.finished && state.turnPlayer === playerIndex;
+  const turnIndicator = $("#turnIndicator");
+  if (turnIndicator) {
+    if (currentMode === "single" && state.started && !state.finished) {
+      if (myTurn) {
+        turnIndicator.textContent = "YOUR TURN";
+        turnIndicator.dataset.turn = "mine";
+      } else {
+        turnIndicator.textContent = "AI TURN";
+        turnIndicator.dataset.turn = "ai";
+      }
+      turnIndicator.classList.remove("hidden");
+    } else {
+      turnIndicator.classList.add("hidden");
+    }
   }
 
   renderPlayers(state);
@@ -407,6 +460,9 @@ function renderHistory(state) {
   for (const item of history) {
     const row = document.createElement("div");
     row.className = "history-item";
+    if (item.turn === history.length - 1 && item.turn > 0) {
+      row.classList.add("latest");
+    }
     const depth = item.depth != null ? ` [${item.depth}]` : "";
     if (item.turn === 0) {
       row.textContent = `시작: ${item.word}${depth}`;
@@ -471,6 +527,10 @@ function renderCountdown(state) {
     const remaining = Math.max(0, gameState.turnEndsAt - Date.now());
     const secs = Math.ceil(remaining / 1000);
     setText(["#countdown", "#timer"], secs + "s");
+    const timerEl = $("#timer");
+    if (timerEl) {
+      timerEl.dataset.urgent = secs <= 5 ? "true" : "false";
+    }
     if (remaining <= 0) stopCountdown();
   };
   update();
@@ -492,6 +552,21 @@ function updateInputState() {
 
   if (input) input.disabled = disabled;
   if (btn) btn.disabled = disabled;
+
+  const inputArea = currentMode === "single" ? $(".single-input-area") : $(".online-input-area");
+  if (inputArea) {
+    inputArea.dataset.myTurn = myTurn ? "true" : "false";
+  }
+}
+
+/* ---------------------------------------------------------
+   재시작 버튼 (싱글플레이)
+--------------------------------------------------------- */
+function showRestartButton(show) {
+  const btn = $("#restart");
+  if (btn) {
+    btn.classList.toggle("hidden", !show);
+  }
 }
 
 /* ---------------------------------------------------------
@@ -509,7 +584,7 @@ function startSingleGame() {
   });
 
   localUsedWords.clear();
-  showMessage("게임을 시작합니다...", "waiting");
+  showRestartButton(false);
 }
 
 function submitSingleWord() {
@@ -529,11 +604,6 @@ function submitSingleWord() {
   socket.emit("game:word", { word });
   input.value = "";
   updateInputState();
-
-  setTimeout(() => {
-    submitting = false;
-    updateInputState();
-  }, 300);
 }
 
 /* ---------------------------------------------------------
@@ -594,11 +664,6 @@ function submitOnlineWord() {
   socket.emit("game:word", { word });
   input.value = "";
   updateInputState();
-
-  setTimeout(() => {
-    submitting = false;
-    updateInputState();
-  }, 300);
 }
 
 function leaveRoom() {

@@ -20,32 +20,41 @@
 
     <!-- 싱글플레이 -->
     <section id="single" class="panel">
-      <div class="controls">
-        <label>시작 단어<input id="startWord" readonly></label>
-        <button id="newStart">랜덤 시작</button>
+      <div class="single-header">
+        <div class="stats">
+          <b>시작 <span id="startWord">-</span></b>
+          <b>턴 <span id="turn">0</span></b>
+        </div>
+        <div class="game-status">
+          <span>♥ <span id="hearts">♥♥</span></span>
+          <span>실수 <span id="mistakesDisplay">0/5</span></span>
+        </div>
+      </div>
+
+      <div class="single-game-area">
+        <div class="last-char-box">
+          <div class="last-char-label">끝 글자</div>
+          <div class="last-char" id="last">-</div>
+          <div class="last-hint" id="lastHint"></div>
+        </div>
+        <div class="turn-indicator" id="turnIndicator"></div>
       </div>
 
       <div class="rule-notice" id="ruleNotice"></div>
 
-      <div class="stats">
-        <b>끝 글자 <span id="last">-</span></b>
-        <b>턴 <span id="turn">0</span></b>
-        <b>공격 깊이 <span id="depth">-</span></b>
-      </div>
-
       <div id="message" class="message"></div>
-      <div id="history" class="history"></div>
 
-      <div class="entry">
+      <div class="history" id="history"></div>
+
+      <div class="single-input-area">
         <input id="singleInput" placeholder="단어 입력" autocomplete="off">
         <button id="singleSend">입력</button>
       </div>
-      <div class="game-status">
-        <span>♥ <span id="hearts">♥♥</span></span>
-        <span>실수 <span id="mistakesDisplay">0/5</span></span>
-      </div>
 
-      <button id="restart" class="wide">새 게임</button>
+      <div class="single-bottom">
+        <button id="restart" class="wide hidden">다시 하기</button>
+        <button id="newStart" class="wide secondary">랜덤 시작</button>
+      </div>
 
       <div class="cards">
         <div>플레이어 승리<strong id="wins">0</strong></div>

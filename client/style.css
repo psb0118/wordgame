@@ -183,28 +183,6 @@ button:disabled {
   border-color: #b45309;
 }
 
-/* 히스토리 */
-.history {
-  max-height: 200px;
-  overflow-y: auto;
-  margin: 12px 0;
-  padding: 8px;
-  border: 1px solid #3b4b63;
-  border-radius: 10px;
-  background: #111827;
-}
-
-.history-item {
-  padding: 3px 0;
-  font-size: 0.85rem;
-  color: #d1d5db;
-  border-bottom: 1px solid #1f2937;
-}
-
-.history-item:last-child {
-  border-bottom: none;
-}
-
 /* 입력 */
 .entry {
   display: flex;
@@ -388,9 +366,174 @@ button:disabled {
   display: flex;
   justify-content: center;
   gap: 20px;
-  margin-top: 8px;
   font-size: 0.9rem;
   color: #aab5c9;
+}
+
+#timer[data-urgent="true"] {
+  color: #f87171;
+  font-weight: bold;
+  animation: pulse 0.5s infinite alternate;
+}
+
+@keyframes pulse {
+  from { opacity: 1; }
+  to { opacity: 0.5; }
+}
+
+/* 싱글플레이 헤더 */
+.single-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+/* 싱글플레이 게임 영역 */
+.single-game-area {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  margin: 16px 0;
+}
+
+.last-char-box {
+  text-align: center;
+  background: #111827;
+  border: 1px solid #3b4b63;
+  border-radius: 12px;
+  padding: 12px 24px;
+}
+
+.last-char-label {
+  font-size: 0.75rem;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+}
+
+.last-char {
+  font-size: 2.5rem;
+  font-weight: bold;
+  color: #fbbf24;
+  line-height: 1;
+}
+
+.last-hint {
+  font-size: 0.8rem;
+  color: #93c5fd;
+  margin-top: 4px;
+}
+
+.last-hint.hidden {
+  display: none;
+}
+
+.turn-indicator {
+  font-size: 0.9rem;
+  font-weight: bold;
+  padding: 8px 16px;
+  border-radius: 8px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.turn-indicator.hidden {
+  display: none;
+}
+
+.turn-indicator[data-turn="mine"] {
+  background: #064e3b;
+  color: #6ee7b7;
+  border: 1px solid #10b981;
+}
+
+.turn-indicator[data-turn="ai"] {
+  background: #451a03;
+  color: #fbbf24;
+  border: 1px solid #d97706;
+  animation: pulse 1s infinite alternate;
+}
+
+/* 싱글플레이 입력 영역 */
+.single-input-area {
+  display: flex;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.single-input-area input {
+  flex: 1;
+  font-size: 1.1rem;
+  padding: 14px 16px;
+}
+
+.single-input-area input:focus {
+  outline: none;
+  border-color: #fbbf24;
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.2);
+}
+
+.single-input-area input:disabled {
+  opacity: 0.4;
+}
+
+.single-input-area button {
+  padding: 14px 24px;
+  font-size: 1rem;
+}
+
+.single-input-area[data-my-turn="true"] input {
+  border-color: #10b981;
+}
+
+/* 싱글플레이 하단 버튼 */
+.single-bottom {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.single-bottom .wide {
+  flex: 1;
+  margin-top: 0;
+}
+
+.single-bottom .wide.hidden {
+  display: none;
+}
+
+/* 히스토리 */
+.history {
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 12px 0;
+  padding: 8px;
+  border: 1px solid #3b4b63;
+  border-radius: 10px;
+  background: #111827;
+}
+
+.history:empty {
+  display: none;
+}
+
+.history-item {
+  padding: 3px 0;
+  font-size: 0.85rem;
+  color: #d1d5db;
+  border-bottom: 1px solid #1f2937;
+}
+
+.history-item:last-child {
+  border-bottom: none;
+}
+
+.history-item.latest {
+  color: #fbbf24;
+  font-weight: bold;
 }
 
 #mistakesDisplay,
