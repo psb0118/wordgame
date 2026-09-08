@@ -16,6 +16,7 @@ let gameState = null;
 let submitting = false;
 let countdownTimer = null;
 let gameSessionId = 0;
+let startingGame = false;
 
 const localStats = JSON.parse(localStorage.getItem("kkStats") || '{"wins":0,"losses":0,"games":0,"totalLength":0}');
 let localUsedWords = new Set();
@@ -173,11 +174,12 @@ function initSocket() {
 
   /* -- 방 이벤트 --------------------------------------- */
   socket.on("room:created", (data) => {
-    if (!data.ok) return;
+    if (!data.ok) { startingGame = false; return; }
     roomId = data.roomId;
     playerIndex = data.playerIndex;
     gameSessionId++;
     gameState = data.state;
+    startingGame = false;
     renderGameState(gameState);
     if (currentMode === "online") {
       showMessage(`방이 생성되었습니다. 방 코드: ${data.roomId}`, "success");
@@ -338,7 +340,12 @@ function initSocket() {
 function renderGameState(state) {
   if (!state) return;
 
-  setText(["#startWord"], state.history?.[0]?.word || "-");
+  if (currentMode === "single") {
+    const firstWord = state.history?.[0]?.word;
+    setText(["#startWord"], firstWord ? firstWord.at(0) : "-");
+  } else {
+    setText(["#startWord"], state.history?.[0]?.word || "-");
+  }
 
   const lastChar = state.currentWord ? state.currentWord.at(-1) : null;
   setText(["#last"], lastChar || "-");
@@ -520,6 +527,8 @@ function renderCountdown(state) {
   stopCountdown();
   if (!state || !state.turnEndsAt || state.finished || !state.started) {
     setText(["#countdown", "#timer"], "-");
+    const timerBox = $(".timer-box");
+    if (timerBox) timerBox.dataset.urgent = "false";
     return;
   }
   const update = () => {
@@ -528,9 +537,10 @@ function renderCountdown(state) {
     const secs = Math.ceil(remaining / 1000);
     setText(["#countdown", "#timer"], secs + "s");
     const timerEl = $("#timer");
-    if (timerEl) {
-      timerEl.dataset.urgent = secs <= 5 ? "true" : "false";
-    }
+    const timerBox = $(".timer-box");
+    const isUrgent = secs <= 5;
+    if (timerEl) timerEl.dataset.urgent = isUrgent ? "true" : "false";
+    if (timerBox) timerBox.dataset.urgent = isUrgent ? "true" : "false";
     if (remaining <= 0) stopCountdown();
   };
   update();
@@ -578,13 +588,17 @@ function startSingleGame() {
     return;
   }
 
+  if (submitting || startingGame) return;
+  startingGame = true;
+
+  localUsedWords.clear();
+  showRestartButton(false);
+  gameState = null;
+
   socket.emit("room:create", {
     nickname: "플레이어",
     mode: "ai"
   });
-
-  localUsedWords.clear();
-  showRestartButton(false);
 }
 
 function submitSingleWord() {
@@ -673,6 +687,7 @@ function leaveRoom() {
   playerIndex = null;
   gameState = null;
   localUsedWords.clear();
+  startingGame = false;
 }
 
 /* ---------------------------------------------------------

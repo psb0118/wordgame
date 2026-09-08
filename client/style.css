@@ -394,7 +394,7 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 24px;
+  gap: 16px;
   margin: 16px 0;
 }
 
@@ -429,6 +429,54 @@ button:disabled {
 
 .last-hint.hidden {
   display: none;
+}
+
+/* 타이머 박스 */
+.timer-box {
+  text-align: center;
+  background: #111827;
+  border: 2px solid #3b4b63;
+  border-radius: 12px;
+  padding: 12px 20px;
+  min-width: 80px;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.timer-box[data-urgent="true"] {
+  border-color: #ef4444;
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.4);
+  animation: timerPulse 0.5s infinite alternate;
+}
+
+@keyframes timerPulse {
+  from { box-shadow: 0 0 20px rgba(239, 68, 68, 0.4); }
+  to { box-shadow: 0 0 30px rgba(239, 68, 68, 0.7); }
+}
+
+.timer-label {
+  font-size: 0.65rem;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+}
+
+.timer-value {
+  font-size: 2rem;
+  font-weight: bold;
+  color: #fbbf24;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.timer-value[data-urgent="true"] {
+  color: #ef4444;
+  animation: timerTextBlink 0.5s infinite alternate;
+}
+
+@keyframes timerTextBlink {
+  from { opacity: 1; }
+  to { opacity: 0.4; }
 }
 
 .turn-indicator {

@@ -307,14 +307,10 @@ function handleTurnTimeout(room, gameSessionId) {
   const player = getPlayerByIndex(room, room.turnPlayerIndex);
   if (!player || player.eliminated) return;
 
-  player.mistakes = (player.mistakes || 0) + 1;
-  let heartLost = false;
-  if (player.mistakes >= MISTAKES_PER_LIFE) {
-    player.mistakes = 0;
-    player.hearts--;
-    heartLost = true;
-    if (player.hearts <= 0) { player.hearts = 0; player.eliminated = true; }
-  }
+  player.hearts--;
+  player.mistakes = 0;
+  let heartLost = true;
+  if (player.hearts <= 0) { player.hearts = 0; player.eliminated = true; }
 
   io.to(room.id).emit("game:timeout", {
     player: player.playerIndex, nickname: player.nickname,
@@ -329,12 +325,10 @@ function handleTurnTimeout(room, gameSessionId) {
     return;
   }
 
-  if (player.eliminated || heartLost) {
-    const next = findNextAlivePlayer(room, player.playerIndex);
-    if (next === null) { finishGame(room, null, player.playerIndex); return; }
-    room.turnPlayerIndex = next;
-    room.turnNumber++;
-  }
+  const next = findNextAlivePlayer(room, player.playerIndex);
+  if (next === null) { finishGame(room, null, player.playerIndex); return; }
+  room.turnPlayerIndex = next;
+  room.turnNumber++;
   startTurnTimer(room, gameSessionId);
 }
 
@@ -678,38 +672,34 @@ io.on("connection", (socket) => {
       const result = playWord(room, player, word, room.gameSessionId);
 
       if (!result.ok) {
-        if (result.allowed) {
-          player.mistakes = (player.mistakes || 0) + 1;
-          let heartLost = false;
-          if (player.mistakes >= MISTAKES_PER_LIFE) {
-            player.mistakes = 0;
-            player.hearts--;
-            heartLost = true;
-            if (player.hearts <= 0) { player.hearts = 0; player.eliminated = true; }
-          }
-          socket.emit("game:error", {
-            ok: false, reason: result.reason, hearts: player.hearts,
-            allowed: result.allowed, mistakes: player.mistakes, mistakesPerLife: MISTAKES_PER_LIFE,
-            heartLost
-          });
-          broadcastRoomState(room);
-          if (room.finished) return;
-          const alive = getAlivePlayers(room);
-          if (alive.length <= 1) {
-            finishGame(room, alive.length === 1 ? alive[0].playerIndex : null, player.playerIndex);
-            return;
-          }
-          if (player.eliminated) {
-            const next = findNextAlivePlayer(room, player.playerIndex);
-            if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
-          } else if (heartLost) {
-            const next = findNextAlivePlayer(room, player.playerIndex);
-            if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
-          } else {
-            startTurnTimer(room, room.gameSessionId);
-          }
+        player.mistakes = (player.mistakes || 0) + 1;
+        let heartLost = false;
+        if (player.mistakes >= MISTAKES_PER_LIFE) {
+          player.mistakes = 0;
+          player.hearts--;
+          heartLost = true;
+          if (player.hearts <= 0) { player.hearts = 0; player.eliminated = true; }
+        }
+        socket.emit("game:error", {
+          ok: false, reason: result.reason, hearts: player.hearts,
+          allowed: result.allowed || null, mistakes: player.mistakes, mistakesPerLife: MISTAKES_PER_LIFE,
+          heartLost
+        });
+        broadcastRoomState(room);
+        if (room.finished) return;
+        const alive = getAlivePlayers(room);
+        if (alive.length <= 1) {
+          finishGame(room, alive.length === 1 ? alive[0].playerIndex : null, player.playerIndex);
+          return;
+        }
+        if (player.eliminated) {
+          const next = findNextAlivePlayer(room, player.playerIndex);
+          if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
+        } else if (heartLost) {
+          const next = findNextAlivePlayer(room, player.playerIndex);
+          if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
         } else {
-          socket.emit("game:error", result);
+          startTurnTimer(room, room.gameSessionId);
         }
       }
     } catch (error) {
