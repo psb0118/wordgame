@@ -30,8 +30,9 @@ const DATA_DIR = path.join(ROOT_DIR, "data");
 const MAX_HEARTS = 2;
 const TURN_TIME = 20;
 const MAX_PLAYERS = 10;
-const ONESHOT_FREE_TURNS = 3;
+const ONESHOT_FREE_TURNS = 1;
 const MISTAKES_PER_LIFE = 5;
+const STARTING_SYLLABLES = ["가", "나", "다", "기", "마", "자", "아", "이", "지"];
 
 /* =========================================================
    데이터 로드
@@ -237,6 +238,7 @@ function getPublicRoomState(room) {
     hostSocketId: room.hostSocketId,
     mode: room.mode,
     currentWord: room.currentWord,
+    startSyllable: room.startSyllable || null,
     turnPlayer: room.turnPlayerIndex,
     turnNumber: room.turnNumber,
     started: room.started,
@@ -325,6 +327,12 @@ function handleTurnTimeout(room, gameSessionId) {
     return;
   }
 
+  if (heartLost && !player.eliminated) {
+    io.to(room.id).emit("game:roundReset", { reason: "하트가 소진되어 새 라운드를 시작합니다." });
+    startNewGame(room);
+    return;
+  }
+
   const next = findNextAlivePlayer(room, player.playerIndex);
   if (next === null) { finishGame(room, null, player.playerIndex); return; }
   room.turnPlayerIndex = next;
@@ -384,23 +392,20 @@ function startNewGame(room) {
   room.winner = null;
   room.loser = null;
 
-  const startWord = chooseStartWord(room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH);
-  if (!startWord) { room.started = false; return false; }
-
-  room.currentWord = startWord;
-  room.usedWords.add(startWord);
+  const syllable = STARTING_SYLLABLES[Math.floor(Math.random() * STARTING_SYLLABLES.length)];
+  room.startSyllable = syllable;
+  room.currentWord = syllable;
   room.history.push({
-    word: startWord, player: -1, nickname: "시작 단어",
-    depth: getAttackDepth(startWord, ATTACK_DEPTH), turn: 0
+    word: syllable, player: -1, nickname: "시작",
+    depth: null, turn: 0
   });
 
-  /* 랜덤 선공 — 봇 제외, 사람만 선공 가능 */
   const humanAlive = room.players.filter(p => !p.eliminated && !p.isBot);
   if (humanAlive.length === 0) { room.started = false; return false; }
   room.turnPlayerIndex = humanAlive[Math.floor(Math.random() * humanAlive.length)].playerIndex;
 
   io.to(room.id).emit("game:started", {
-    ok: true, startWord: startWord,
+    ok: true, startWord: syllable,
     firstTurn: room.turnPlayerIndex,
     state: getPublicRoomState(room)
   });
@@ -427,12 +432,20 @@ function playWord(room, player, rawWord, gameSessionId) {
   if (!hasWord(word, WORD_SET)) return { ok: false, reason: "단어 목록에 없는 단어입니다.", penalty: true };
   if (room.usedWords.has(word)) return { ok: false, reason: "이미 사용한 단어입니다.", penalty: true };
 
-  if (room.currentWord && !canConnect(room.currentWord, word)) {
-    const last = room.currentWord.at(-1);
-    return { ok: false, reason: `"${last}" 다음에 연결할 수 없는 단어입니다.`, allowed: allowedFirstChars(last), penalty: true };
+  const isFirstTurn = room.turnNumber === 0;
+
+  if (isFirstTurn) {
+    const syllable = room.startSyllable || "";
+    if (!word.startsWith(syllable)) {
+      return { ok: false, reason: `"${syllable}"(으)로 시작하는 단어를 입력해주세요.`, penalty: true };
+    }
+  } else {
+    if (room.currentWord && !canConnect(room.currentWord, word)) {
+      const last = room.currentWord.at(-1);
+      return { ok: false, reason: `"${last}" 다음에 연결할 수 없는 단어입니다.`, allowed: allowedFirstChars(last), penalty: true };
+    }
   }
 
-  /* 3턴까지는 공격 단어 전체 사용 금지 (attack.txt 포함) + 한방단어 금지 */
   if (room.turnNumber < ONESHOT_FREE_TURNS) {
     if (isAttackWord(word, ATTACK_DEPTH)) {
       return { ok: false, reason: `첫 ${ONESHOT_FREE_TURNS}턴은 공격 단어를 사용할 수 없습니다.`, penalty: true };
@@ -486,7 +499,24 @@ function runAI(room, gameSessionId) {
   if (!player || !player.isBot || player.eliminated) return;
   if (room.turnPlayerIndex !== player.playerIndex) return;
 
-  const word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS);
+  let word;
+  if (room.turnNumber === 0) {
+    const syllable = room.startSyllable || "";
+    const candidates = [];
+    for (const [firstChar, bucket] of WORD_INDEX) {
+      if (firstChar === syllable || allowedFirstChars(syllable).includes(firstChar)) {
+        for (const w of bucket) {
+          if (w.startsWith(syllable) && !room.usedWords.has(w) && !isOneShot(w, room.usedWords, WORD_INDEX)) {
+            candidates.push(w);
+          }
+        }
+      }
+    }
+    word = candidates.length > 0 ? candidates[Math.floor(Math.random() * candidates.length)] : null;
+  } else {
+    word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS);
+  }
+
   if (!word) {
     finishGame(room, findNextAlivePlayer(room, player.playerIndex), player.playerIndex);
     return;
@@ -697,8 +727,8 @@ io.on("connection", (socket) => {
             const next = findNextAlivePlayer(room, player.playerIndex);
             if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
           } else if (heartLost) {
-            const next = findNextAlivePlayer(room, player.playerIndex);
-            if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
+            io.to(room.id).emit("game:roundReset", { reason: "하트가 소진되어 새 라운드를 시작합니다." });
+            startNewGame(room);
           } else {
             startTurnTimer(room, room.gameSessionId);
           }

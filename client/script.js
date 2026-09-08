@@ -134,6 +134,14 @@ function updateStatsUI() {
 }
 
 /* ---------------------------------------------------------
+   헬퍼
+--------------------------------------------------------- */
+function isMyTurn() {
+  return gameState && gameState.started && !gameState.finished
+    && gameState.turnPlayer === playerIndex;
+}
+
+/* ---------------------------------------------------------
    입력 포커스
 --------------------------------------------------------- */
 function focusInput() {
@@ -262,11 +270,16 @@ function initSocket() {
       const isMyWord = data.player === playerIndex;
       if (isMyWord) {
         submitting = false;
+        updateInputState();
       }
-      if (currentMode === "single" && !isMyWord) {
+      if (!isMyTurn()) {
         focusInput();
       }
     }
+  });
+
+  socket.on("game:roundReset", (data) => {
+    showMessage(data.reason || "새 라운드가 시작됩니다!", "info");
   });
 
   socket.on("game:error", (data) => {
@@ -350,10 +363,10 @@ function renderGameState(state) {
   if (!state) return;
 
   if (currentMode === "single") {
-    const firstWord = state.history?.[0]?.word;
-    setText(["#startWord"], firstWord ? firstWord.at(0) : "-");
+    const syllable = state.startSyllable || state.history?.[0]?.word;
+    setText(["#startWord"], syllable ? syllable.at(0) : "-");
   } else {
-    setText(["#startWord"], state.history?.[0]?.word || "-");
+    setText(["#startWord"], state.startSyllable || state.history?.[0]?.word || "-");
   }
 
   const lastChar = state.currentWord ? state.currentWord.at(-1) : null;
@@ -362,9 +375,15 @@ function renderGameState(state) {
   const allowed = lastChar ? allowedFirstChars(lastChar) : [];
   const hintEl = $("#lastHint");
   if (hintEl) {
-    if (currentMode === "single" && state.started && !state.finished) {
-      hintEl.textContent = `(${allowed.join(", ")})`;
-      hintEl.classList.remove("hidden");
+    if (state.started && !state.finished) {
+      if (state.turnNumber === 0) {
+        const syllable = state.startSyllable || "";
+        hintEl.textContent = `"${syllable}"(으)로 시작하는 단어`;
+        hintEl.classList.remove("hidden");
+      } else {
+        hintEl.textContent = `(${allowed.join(", ")})`;
+        hintEl.classList.remove("hidden");
+      }
     } else {
       hintEl.classList.add("hidden");
     }
