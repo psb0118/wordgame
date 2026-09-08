@@ -169,7 +169,7 @@ function loadData(dataDir, rootDir) {
         if (colonIdx !== -1) {
           const wordsPart = trimmed.slice(colonIdx + 1);
           for (const w of wordsPart.split(/[,，]+/)) {
-            const nw = normalizeWord(w.split(/\s+/)[0]);
+            const nw = normalizeWord(w);
             if (nw) DEFENSE_WORDS.add(nw);
           }
         }
@@ -180,7 +180,7 @@ function loadData(dataDir, rootDir) {
         if (colonIdx !== -1) {
           const wordsPart = trimmed.slice(colonIdx + 1);
           for (const w of wordsPart.split(/[,，]+/)) {
-            const nw = normalizeWord(w.split(/\s+/)[0]);
+            const nw = normalizeWord(w);
             if (nw) DEFENSE_WORDS.add(nw);
           }
         }
