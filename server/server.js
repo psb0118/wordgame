@@ -423,22 +423,22 @@ function playWord(room, player, rawWord, gameSessionId) {
   if (room.gameSessionId !== gameSessionId) return { ok: false, reason: "이전 게임의 요청입니다." };
 
   const word = normalizeWord(rawWord);
-  if (!word) return { ok: false, reason: "단어를 입력해주세요." };
-  if (!hasWord(word, WORD_SET)) return { ok: false, reason: "단어 목록에 없는 단어입니다." };
-  if (room.usedWords.has(word)) return { ok: false, reason: "이미 사용한 단어입니다." };
+  if (!word) return { ok: false, reason: "단어를 입력해주세요.", penalty: true };
+  if (!hasWord(word, WORD_SET)) return { ok: false, reason: "단어 목록에 없는 단어입니다.", penalty: true };
+  if (room.usedWords.has(word)) return { ok: false, reason: "이미 사용한 단어입니다.", penalty: true };
 
   if (room.currentWord && !canConnect(room.currentWord, word)) {
     const last = room.currentWord.at(-1);
-    return { ok: false, reason: `"${last}" 다음에 연결할 수 없는 단어입니다.`, allowed: allowedFirstChars(last) };
+    return { ok: false, reason: `"${last}" 다음에 연결할 수 없는 단어입니다.`, allowed: allowedFirstChars(last), penalty: true };
   }
 
   /* 3턴까지는 공격 단어 전체 사용 금지 (attack.txt 포함) + 한방단어 금지 */
   if (room.turnNumber < ONESHOT_FREE_TURNS) {
     if (isAttackWord(word, ATTACK_DEPTH)) {
-      return { ok: false, reason: `첫 ${ONESHOT_FREE_TURNS}턴은 공격 단어를 사용할 수 없습니다.` };
+      return { ok: false, reason: `첫 ${ONESHOT_FREE_TURNS}턴은 공격 단어를 사용할 수 없습니다.`, penalty: true };
     }
     if (isOneShot(word, room.usedWords, WORD_INDEX)) {
-      return { ok: false, reason: `첫 ${ONESHOT_FREE_TURNS}턴은 한방 단어를 사용할 수 없습니다.` };
+      return { ok: false, reason: `첫 ${ONESHOT_FREE_TURNS}턴은 한방 단어를 사용할 수 없습니다.`, penalty: true };
     }
   }
 
@@ -672,34 +672,38 @@ io.on("connection", (socket) => {
       const result = playWord(room, player, word, room.gameSessionId);
 
       if (!result.ok) {
-        player.mistakes = (player.mistakes || 0) + 1;
-        let heartLost = false;
-        if (player.mistakes >= MISTAKES_PER_LIFE) {
-          player.mistakes = 0;
-          player.hearts--;
-          heartLost = true;
-          if (player.hearts <= 0) { player.hearts = 0; player.eliminated = true; }
-        }
-        socket.emit("game:error", {
-          ok: false, reason: result.reason, hearts: player.hearts,
-          allowed: result.allowed || null, mistakes: player.mistakes, mistakesPerLife: MISTAKES_PER_LIFE,
-          heartLost
-        });
-        broadcastRoomState(room);
-        if (room.finished) return;
-        const alive = getAlivePlayers(room);
-        if (alive.length <= 1) {
-          finishGame(room, alive.length === 1 ? alive[0].playerIndex : null, player.playerIndex);
-          return;
-        }
-        if (player.eliminated) {
-          const next = findNextAlivePlayer(room, player.playerIndex);
-          if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
-        } else if (heartLost) {
-          const next = findNextAlivePlayer(room, player.playerIndex);
-          if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
+        if (result.penalty) {
+          player.mistakes = (player.mistakes || 0) + 1;
+          let heartLost = false;
+          if (player.mistakes >= MISTAKES_PER_LIFE) {
+            player.mistakes = 0;
+            player.hearts--;
+            heartLost = true;
+            if (player.hearts <= 0) { player.hearts = 0; player.eliminated = true; }
+          }
+          socket.emit("game:error", {
+            ok: false, reason: result.reason, hearts: player.hearts,
+            allowed: result.allowed || null, mistakes: player.mistakes, mistakesPerLife: MISTAKES_PER_LIFE,
+            heartLost
+          });
+          broadcastRoomState(room);
+          if (room.finished) return;
+          const alive = getAlivePlayers(room);
+          if (alive.length <= 1) {
+            finishGame(room, alive.length === 1 ? alive[0].playerIndex : null, player.playerIndex);
+            return;
+          }
+          if (player.eliminated) {
+            const next = findNextAlivePlayer(room, player.playerIndex);
+            if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
+          } else if (heartLost) {
+            const next = findNextAlivePlayer(room, player.playerIndex);
+            if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
+          } else {
+            startTurnTimer(room, room.gameSessionId);
+          }
         } else {
-          startTurnTimer(room, room.gameSessionId);
+          socket.emit("game:error", { ok: false, reason: result.reason });
         }
       }
     } catch (error) {

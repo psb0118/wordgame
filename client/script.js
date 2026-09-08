@@ -232,8 +232,13 @@ function initSocket() {
 
   /* -- 게임 이벤트 ------------------------------------- */
   socket.on("game:state", (data) => {
+    const wasMyTurn = gameState && gameState.turnPlayer === playerIndex;
     gameState = data;
     renderGameState(gameState);
+    const isMyTurn = data.turnPlayer === playerIndex;
+    if (isMyTurn && !wasMyTurn) {
+      focusInput();
+    }
   });
 
   socket.on("game:started", (data) => {
@@ -254,7 +259,11 @@ function initSocket() {
         localUsedWords.add(data.word);
       }
       showMessage(`${data.nickname}: ${data.word}${data.depth != null ? " [깊이 " + data.depth + "]" : ""}`, "success");
-      if (currentMode === "single" && data.nickname !== "플레이어") {
+      const isMyWord = data.player === playerIndex;
+      if (isMyWord) {
+        submitting = false;
+      }
+      if (currentMode === "single" && !isMyWord) {
         focusInput();
       }
     }
