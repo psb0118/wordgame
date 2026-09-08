@@ -10,12 +10,12 @@
   <main class="wrap">
     <header>
       <h1>끝말잇기</h1>
-      <p>끄글 단어 목록 기반 · AI · 온라인 2인</p>
+      <p>끄글 단어 목록 기반 · AI · 온라인 멀티플레이</p>
     </header>
 
     <nav class="tabs">
       <button data-mode="single" class="active">싱글플레이</button>
-      <button data-mode="online">온라인 2인</button>
+      <button data-mode="online">온라인 멀티</button>
     </nav>
 
     <!-- 싱글플레이 -->
@@ -40,6 +40,10 @@
         <input id="singleInput" placeholder="단어 입력" autocomplete="off">
         <button id="singleSend">입력</button>
       </div>
+      <div class="game-status">
+        <span>♥ <span id="hearts">♥♥</span></span>
+        <span>실수 <span id="mistakesDisplay">0/5</span></span>
+      </div>
 
       <button id="restart" class="wide">새 게임</button>
 
@@ -60,7 +64,7 @@
       </div>
     </section>
 
-    <!-- 온라인 2인 -->
+    <!-- 온라인 멀티 -->
     <section id="online" class="panel hidden">
       <div class="onlineTop">
         <label>닉네임<input id="name" maxlength="20" placeholder="Player"></label>
@@ -70,7 +74,9 @@
       </div>
 
       <div id="roomInfo" class="room"></div>
-      <button id="startOnline" class="wide hidden">방장이 게임 시작</button>
+      <div id="hostControls" class="host-controls hidden">
+        <button id="startOnline" class="wide">게임 시작</button>
+      </div>
       <div id="onlineMessage" class="message"></div>
       <div class="rule-notice" id="onlineRuleNotice"></div>
 
@@ -81,6 +87,12 @@
         <input id="onlineInput" placeholder="내 차례에 단어 입력" autocomplete="off">
         <button id="onlineSend">입력</button>
       </div>
+      <div class="game-status">
+        <span>♥ <span id="heartsOnline">♥♥</span></span>
+        <span>실수 <span id="mistakesDisplayOnline">0/5</span></span>
+      </div>
+
+      <button id="onlineLeave" class="wide secondary">방 나가기</button>
 
       <div class="ranking-section">
         <div class="rank-badge" id="onlineRank">-</div>

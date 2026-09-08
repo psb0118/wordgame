@@ -22,10 +22,11 @@ const DUEUM = {
   "략": ["략", "약"], "량": ["량", "양"], "련": ["련", "연"],
   "렬": ["렬", "열"], "령": ["령", "영"],
   "로": ["로", "노"], "록": ["록", "녹"], "론": ["론", "논"],
-  "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놉"],
+  "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놑"],
   "롯": ["롯", "놃"], "롱": ["롱", "농"], "뢰": ["뢰", "뇌"],
   "루": ["루", "누"], "륙": ["륙", "육"], "률": ["률", "율"],
-  "륜": ["륜", "윤"], "륭": ["륭", "융"]
+  "륜": ["륜", "윤"], "륭": ["륭", "융"],
+  "렁": ["렁", "엉"], "렴": ["렴", "염"]
 };
 
 /* =========================================================
@@ -82,6 +83,8 @@ function loadData(dataDir, rootDir) {
   const WORD_SET = new Set();
   const ATTACK_DEPTH = Object.create(null);
   const WORD_INDEX = new Map();
+  const ROOT_WORDS = new Set();
+  const DEFENSE_WORDS = new Set();
 
   const wordFile = findExistingFile([
     path.join(dataDir, "word.txt"),
@@ -132,6 +135,60 @@ function loadData(dataDir, rootDir) {
     console.log(`공격 단어 로딩 완료: ${Object.keys(ATTACK_DEPTH).length.toLocaleString()}개`);
   }
 
+  const rootFile = findExistingFile([
+    path.join(dataDir, "끄글_주요 루트 단어_20260823005524.txt"),
+  ]);
+  if (rootFile) {
+    const text = fs.readFileSync(rootFile, "utf8");
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const colonIdx = trimmed.indexOf(":");
+      if (colonIdx === -1) continue;
+      const wordsPart = trimmed.slice(colonIdx + 1);
+      for (const w of wordsPart.split(/[,，\s]+/)) {
+        const nw = normalizeWord(w);
+        if (nw) ROOT_WORDS.add(nw);
+      }
+    }
+    console.log(`루트 단어 로딩 완료: ${ROOT_WORDS.size.toLocaleString()}개`);
+  }
+
+  const defenseFile = findExistingFile([
+    path.join(dataDir, "끄글_방어 단어_20260823005525.txt"),
+  ]);
+  if (defenseFile) {
+    const text = fs.readFileSync(defenseFile, "utf8");
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith("[")) continue;
+      const depthMatch = trimmed.match(/^깊이\s+(\d+)/);
+      if (depthMatch) {
+        const colonIdx = trimmed.indexOf(":");
+        if (colonIdx !== -1) {
+          const wordsPart = trimmed.slice(colonIdx + 1);
+          for (const w of wordsPart.split(/[,，]+/)) {
+            const nw = normalizeWord(w.split(/\s+/)[0]);
+            if (nw) DEFENSE_WORDS.add(nw);
+          }
+        }
+        continue;
+      }
+      if (trimmed.startsWith("돌림")) {
+        const colonIdx = trimmed.indexOf(":");
+        if (colonIdx !== -1) {
+          const wordsPart = trimmed.slice(colonIdx + 1);
+          for (const w of wordsPart.split(/[,，]+/)) {
+            const nw = normalizeWord(w.split(/\s+/)[0]);
+            if (nw) DEFENSE_WORDS.add(nw);
+          }
+        }
+      }
+    }
+    console.log(`방어 단어 로딩 완료: ${DEFENSE_WORDS.size.toLocaleString()}개`);
+  }
+
   WORD_INDEX.clear();
   for (const word of WORD_SET) {
     const first = word.at(0);
@@ -141,7 +198,7 @@ function loadData(dataDir, rootDir) {
   }
   console.log(`단어 인덱스 생성 완료: ${WORD_INDEX.size}개 시작 글자`);
 
-  return { WORD_SET, ATTACK_DEPTH, WORD_INDEX };
+  return { WORD_SET, ATTACK_DEPTH, WORD_INDEX, ROOT_WORDS, DEFENSE_WORDS };
 }
 
 /* =========================================================
@@ -221,42 +278,133 @@ function chooseStartWord(usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
 }
 
 /* =========================================================
-   AI — 극강 단일 AI
+   AI — 전략적 단어 선택
 
    원칙:
-   1. 공격 단어 목록에 있으면 무조건 공격 단어 사용
-   2. 상대가 공격 단어로 역공격하지 못하도록 전략적 선택
-   3. 상대의 선택지를 최소화하는 단어 선호
-   4. 한방단어로 상대를 끝낼 수 있으면 즉시 승리
+   1. 즉시 승리(한방) 단어 → 무조건 사용
+   2. 방어 단어(지는 단어) 절대 사용 금지
+   3. 3턴 이내: 공격 단어 사용 금지, 안전한 단어만 사용
+   4. 3턴 이후: 공격 단어 우선 사용
+   5. 루트 단어 우선 (안전한 루프 구간)
+   6. 상대 선택지 최소화
+   7. 상대 역공 방어
 ========================================================= */
 
-function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, turnNumber) {
+function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, turnNumber, DEFENSE_WORDS) {
   const candidates = getCandidates(currentWord, usedWords, WORD_INDEX);
   if (!candidates.length) return null;
 
   const newUsed = new Set([...usedWords]);
+  const defenseSet = DEFENSE_WORDS || new Set();
 
-  /* 3턴까지는 한방단어 사용 금지 */
-  let pool = candidates;
+  let pool = candidates.filter(w => !defenseSet.has(w));
+  if (pool.length === 0) pool = candidates;
+
   if (turnNumber < 3) {
-    const safe = candidates.filter(w => !isOneShot(w, newUsed, WORD_INDEX));
-    if (safe.length > 0) pool = safe;
+    const noAttack = pool.filter(w => !isAttackWord(w, ATTACK_DEPTH));
+    if (noAttack.length > 0) pool = noAttack;
+    const noOneshot = pool.filter(w => !isOneShot(w, new Set([...newUsed, w]), WORD_INDEX));
+    if (noOneshot.length > 0) pool = noOneshot;
   }
 
-  /* 후보 50개로 제한 */
-  if (pool.length > 50) pool = pool.slice(0, 50);
-
-  /* 즉시 승리 단어 우선 */
   for (const w of pool) {
     const next = getCandidates(w, new Set([...newUsed, w]), WORD_INDEX);
     if (next.length === 0) return w;
   }
 
-  /* 공격 단어 우선, 나머지 랜덤 */
-  const attacks = pool.filter(w => isAttackWord(w, ATTACK_DEPTH));
-  if (attacks.length > 0) return attacks[Math.floor(Math.random() * attacks.length)];
+  let bestScore = -Infinity;
+  let bestWords = [];
 
-  return pool[Math.floor(Math.random() * pool.length)];
+  for (const w of pool) {
+    const nextUsed = new Set([...newUsed, w]);
+    const nextCandidates = getCandidates(w, nextUsed, WORD_INDEX);
+    const nextCount = nextCandidates.length;
+    if (nextCount === 0) return w;
+
+    let score = 0;
+
+    const depth = ATTACK_DEPTH[w];
+    const isAttack = Number.isFinite(depth);
+
+    if (isAttack) {
+      if (turnNumber >= 3) {
+        score += (20 - depth) * 15;
+      } else {
+        score += (20 - depth) * 2;
+      }
+    }
+
+    if (ROOT_WORDS && ROOT_WORDS.has(w)) {
+      score += 10;
+    }
+
+    score -= nextCount * 2;
+
+    let worstOpponentOptions = 0;
+    let bestOpponentAttackDepth = Infinity;
+    let opponentOneShotCount = 0;
+    let opponentDefenseCount = 0;
+
+    for (const oppWord of nextCandidates) {
+      const oppUsed = new Set([...nextUsed, oppWord]);
+      const oppNext = getCandidates(oppWord, oppUsed, WORD_INDEX);
+      const oppNextCount = oppNext.length;
+
+      if (oppNextCount === 0) {
+        worstOpponentOptions += 100;
+        continue;
+      }
+
+      if (oppNextCount === 1) opponentOneShotCount++;
+
+      if (defenseSet.has(oppWord)) opponentDefenseCount++;
+
+      worstOpponentOptions += oppNextCount;
+
+      const oppDepth = ATTACK_DEPTH[oppWord];
+      if (Number.isFinite(oppDepth) && oppDepth < bestOpponentAttackDepth) {
+        bestOpponentAttackDepth = oppDepth;
+      }
+    }
+
+    score -= worstOpponentOptions * 1.5;
+
+    if (Number.isFinite(bestOpponentAttackDepth)) {
+      score -= (20 - bestOpponentAttackDepth) * 4;
+    }
+
+    score -= opponentOneShotCount * 8;
+
+    score += opponentDefenseCount * 6;
+
+    const lastChar = w.at(-1);
+    if (lastChar) {
+      const loopCandidates = WORD_INDEX.get(lastChar);
+      if (loopCandidates) {
+        for (const lw of loopCandidates) {
+          if (normalizeWord(lw) === w.split("").reverse().join("")) {
+            score += 12;
+            break;
+          }
+        }
+      }
+    }
+
+    if (nextCount <= 2) score += 15;
+    else if (nextCount <= 5) score += 8;
+    else if (nextCount <= 10) score += 3;
+
+    score += Math.random() * 2;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestWords = [w];
+    } else if (score === bestScore) {
+      bestWords.push(w);
+    }
+  }
+
+  return bestWords[Math.floor(Math.random() * bestWords.length)];
 }
 
 /* =========================================================

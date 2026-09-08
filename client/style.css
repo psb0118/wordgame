@@ -283,6 +283,54 @@ button:disabled {
   display: none;
 }
 
+.room-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.room-code {
+  color: #fbbf24;
+  font-size: 1.1rem;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.room-code:hover {
+  color: #f59e0b;
+}
+
+.room-status {
+  font-size: 0.8rem;
+  color: #9ca3af;
+}
+
+.host-controls {
+  margin: 8px 0;
+}
+
+.host-controls .wide {
+  background: #10b981;
+  color: white;
+}
+
+.host-controls .wide:hover {
+  background: #059669;
+}
+
+/* 방 나가기 버튼 */
+.secondary {
+  background: #374151;
+  color: #d1d5db;
+  margin-top: 16px;
+}
+
+.secondary:hover {
+  background: #4b5563;
+}
+
 /* 플레이어 목록 */
 .players {
   margin: 12px 0;
@@ -333,6 +381,26 @@ button:disabled {
 
 .rank-info strong {
   color: #fbbf24;
+}
+
+/* 게임 상태 */
+.game-status {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  margin-top: 8px;
+  font-size: 0.9rem;
+  color: #aab5c9;
+}
+
+#mistakesDisplay,
+#mistakesDisplayOnline {
+  font-weight: bold;
+}
+
+#mistakesDisplay[data-danger="true"],
+#mistakesDisplayOnline[data-danger="true"] {
+  color: #f87171;
 }
 
 /* 반응형 */

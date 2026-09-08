@@ -28,15 +28,16 @@ const ROOT_DIR = path.join(__dirname, "..");
 const CLIENT_DIR = path.join(ROOT_DIR, "client");
 const DATA_DIR = path.join(ROOT_DIR, "data");
 const MAX_HEARTS = 2;
-const TURN_TIME = 15;
-const MAX_PLAYERS = 2;
+const TURN_TIME = 20;
+const MAX_PLAYERS = 10;
 const ONESHOT_FREE_TURNS = 3;
+const MISTAKES_PER_LIFE = 5;
 
 /* =========================================================
    데이터 로드
 ========================================================= */
 
-const { WORD_SET, ATTACK_DEPTH, WORD_INDEX } = loadData(DATA_DIR, ROOT_DIR);
+const { WORD_SET, ATTACK_DEPTH, WORD_INDEX, ROOT_WORDS, DEFENSE_WORDS } = loadData(DATA_DIR, ROOT_DIR);
 
 /* =========================================================
    데이터베이스 — PostgreSQL 또는 JSON 파일 폴백
@@ -148,11 +149,12 @@ function createRoomId() {
   return id;
 }
 
-function createRoom(socketId, nickname) {
+function createRoom(socketId, nickname, mode) {
   const roomId = createRoomId();
   const room = {
     id: roomId,
     hostSocketId: socketId,
+    mode: mode || "online",
     players: [],
     currentWord: null,
     turnPlayerIndex: 0,
@@ -180,7 +182,8 @@ function addPlayer(room, socketId, nickname) {
     id: socketId, socketId, playerIndex,
     nickname: nickname || `플레이어 ${playerIndex + 1}`,
     isBot: false, alive: true, connected: true,
-    hearts: MAX_HEARTS, eliminated: false
+    hearts: MAX_HEARTS, eliminated: false, mistakes: 0,
+    waiting: false
   };
   room.players.push(player);
   return player;
@@ -192,7 +195,7 @@ function addBot(room) {
   const player = {
     id: `AI_${room.id}`, socketId: null, playerIndex,
     nickname: "AI", isBot: true, alive: true, connected: true,
-    hearts: MAX_HEARTS, eliminated: false
+    hearts: MAX_HEARTS, eliminated: false, mistakes: 0
   };
   room.players.push(player);
   return player;
@@ -207,7 +210,7 @@ function getPlayerByIndex(room, index) {
 }
 
 function getAlivePlayers(room) {
-  return room.players.filter(p => !p.eliminated);
+  return room.players.filter(p => !p.eliminated && !p.waiting);
 }
 
 function findNextAlivePlayer(room, currentIndex) {
@@ -215,7 +218,7 @@ function findNextAlivePlayer(room, currentIndex) {
   for (let i = 1; i <= total; i++) {
     const index = (currentIndex + i) % total;
     const player = room.players[index];
-    if (player && !player.eliminated) return player.playerIndex;
+    if (player && !player.eliminated && !player.waiting) return player.playerIndex;
   }
   return null;
 }
@@ -231,6 +234,8 @@ function getPublicRoomState(room) {
   if (!room) return null;
   return {
     roomId: room.id,
+    hostSocketId: room.hostSocketId,
+    mode: room.mode,
     currentWord: room.currentWord,
     turnPlayer: room.turnPlayerIndex,
     turnNumber: room.turnNumber,
@@ -247,9 +252,11 @@ function getPublicRoomState(room) {
     players: room.players.map(p => ({
       id: p.id, playerIndex: p.playerIndex, nickname: p.nickname,
       isBot: p.isBot, hearts: p.hearts, alive: p.alive,
-      connected: p.connected, eliminated: p.eliminated
+      connected: p.connected, eliminated: p.eliminated,
+      mistakes: p.mistakes || 0,
+      waiting: p.waiting || false
     })),
-    playerCount: room.players.length,
+    playerCount: room.players.filter(p => !p.isBot && !p.waiting).length,
     maxPlayers: MAX_PLAYERS,
     turnStartedAt: room.turnStartedAt,
     turnEndsAt: room.turnEndsAt
@@ -287,7 +294,7 @@ function startTurnTimer(room, gameSessionId) {
     handleTurnTimeout(room, gameSessionId);
   }, TURN_TIME * 1000);
 
-  if (player.isBot) {
+  if (player.isBot && room.mode === "ai") {
     setTimeout(() => {
       if (room.gameSessionId !== gameSessionId) return;
       runAI(room, gameSessionId);
@@ -300,12 +307,20 @@ function handleTurnTimeout(room, gameSessionId) {
   const player = getPlayerByIndex(room, room.turnPlayerIndex);
   if (!player || player.eliminated) return;
 
-  player.hearts--;
-  if (player.hearts <= 0) { player.hearts = 0; player.eliminated = true; }
+  player.mistakes = (player.mistakes || 0) + 1;
+  let heartLost = false;
+  if (player.mistakes >= MISTAKES_PER_LIFE) {
+    player.mistakes = 0;
+    player.hearts--;
+    heartLost = true;
+    if (player.hearts <= 0) { player.hearts = 0; player.eliminated = true; }
+  }
 
   io.to(room.id).emit("game:timeout", {
     player: player.playerIndex, nickname: player.nickname,
-    hearts: player.hearts, eliminated: player.eliminated
+    hearts: player.hearts, eliminated: player.eliminated,
+    mistakes: player.mistakes, mistakesPerLife: MISTAKES_PER_LIFE,
+    heartLost
   });
 
   const alive = getAlivePlayers(room);
@@ -314,11 +329,12 @@ function handleTurnTimeout(room, gameSessionId) {
     return;
   }
 
-  const next = findNextAlivePlayer(room, player.playerIndex);
-  if (next === null) { finishGame(room, null, player.playerIndex); return; }
-
-  room.turnPlayerIndex = next;
-  room.turnNumber++;
+  if (player.eliminated || heartLost) {
+    const next = findNextAlivePlayer(room, player.playerIndex);
+    if (next === null) { finishGame(room, null, player.playerIndex); return; }
+    room.turnPlayerIndex = next;
+    room.turnNumber++;
+  }
   startTurnTimer(room, gameSessionId);
 }
 
@@ -359,6 +375,10 @@ function startNewGame(room) {
     player.hearts = MAX_HEARTS;
     player.alive = true;
     player.eliminated = false;
+    player.mistakes = 0;
+    if (player.waiting) {
+      player.waiting = false;
+    }
   }
 
   room.currentWord = null;
@@ -380,12 +400,10 @@ function startNewGame(room) {
     depth: getAttackDepth(startWord, ATTACK_DEPTH), turn: 0
   });
 
-  /* 랜덤 선공 */
-  const alivePlayers = room.players.filter(p => !p.isBot || room.players.some(pp => pp.isBot));
-  room.turnPlayerIndex = Math.floor(Math.random() * room.players.length);
-  while (room.players[room.turnPlayerIndex]?.eliminated) {
-    room.turnPlayerIndex = (room.turnPlayerIndex + 1) % room.players.length;
-  }
+  /* 랜덤 선공 — 봇 제외, 사람만 선공 가능 */
+  const humanAlive = room.players.filter(p => !p.eliminated && !p.isBot);
+  if (humanAlive.length === 0) { room.started = false; return false; }
+  room.turnPlayerIndex = humanAlive[Math.floor(Math.random() * humanAlive.length)].playerIndex;
 
   io.to(room.id).emit("game:started", {
     ok: true, startWord: startWord,
@@ -420,10 +438,13 @@ function playWord(room, player, rawWord, gameSessionId) {
     return { ok: false, reason: `"${last}" 다음에 연결할 수 없는 단어입니다.`, allowed: allowedFirstChars(last) };
   }
 
-  /* 한방단어 제한: 3턴까지는 한방단어 사용 금지 */
+  /* 3턴까지는 공격 단어 전체 사용 금지 (attack.txt 포함) + 한방단어 금지 */
   if (room.turnNumber < ONESHOT_FREE_TURNS) {
+    if (isAttackWord(word, ATTACK_DEPTH)) {
+      return { ok: false, reason: `첫 ${ONESHOT_FREE_TURNS}턴은 공격 단어를 사용할 수 없습니다.` };
+    }
     if (isOneShot(word, room.usedWords, WORD_INDEX)) {
-      return { ok: false, reason: `첫 ${ONESHOT_FREE_TURNS}턴은 한방단어를 사용할 수 없습니다.` };
+      return { ok: false, reason: `첫 ${ONESHOT_FREE_TURNS}턴은 한방 단어를 사용할 수 없습니다.` };
     }
   }
 
@@ -466,10 +487,12 @@ function playWord(room, player, rawWord, gameSessionId) {
 
 function runAI(room, gameSessionId) {
   if (!room || room.finished || !room.started || room.gameSessionId !== gameSessionId) return;
+  if (room.mode !== "ai") return;
   const player = getPlayerByIndex(room, room.turnPlayerIndex);
   if (!player || !player.isBot || player.eliminated) return;
+  if (room.turnPlayerIndex !== player.playerIndex) return;
 
-  const word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, room.turnNumber);
+  const word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS);
   if (!word) {
     finishGame(room, findNextAlivePlayer(room, player.playerIndex), player.playerIndex);
     return;
@@ -506,6 +529,12 @@ function removePlayer(room, socketId, reason) {
     room.players.splice(index, 1);
     for (let i = index; i < room.players.length; i++) room.players[i].playerIndex = i;
   }
+
+  if (room.hostSocketId === socketId) {
+    const firstHuman = room.players.find(p => !p.isBot && p.connected);
+    if (firstHuman) room.hostSocketId = firstHuman.socketId;
+  }
+
   broadcastRoomState(room);
 }
 
@@ -513,7 +542,6 @@ function removePlayer(room, socketId, reason) {
    정적 파일
 ========================================================= */
 
-app.use(express.static(ROOT_DIR));
 app.use(express.static(CLIENT_DIR));
 
 app.get("/", (req, res) => {
@@ -542,10 +570,11 @@ io.on("connection", (socket) => {
   socket.on("room:create", async (data) => {
     try {
       const nickname = normalizeWord(data?.nickname) || "플레이어";
+      const mode = data?.mode === "ai" ? "ai" : "online";
       const oldRoom = findRoomBySocket(socket.id);
       if (oldRoom) { socket.leave(oldRoom.id); removePlayer(oldRoom, socket.id, "recreate"); }
 
-      const room = createRoom(socket.id, nickname);
+      const room = createRoom(socket.id, nickname, mode);
       socket.join(room.id);
       socket.data.roomId = room.id;
       socket.data.playerIndex = 0;
@@ -553,8 +582,10 @@ io.on("connection", (socket) => {
 
       socket.emit("room:created", { ok: true, roomId: room.id, playerIndex: 0, state: getPublicRoomState(room) });
 
-      addBot(room);
-      startNewGame(room);
+      if (mode === "ai") {
+        addBot(room);
+        startNewGame(room);
+      }
 
       broadcastRoomState(room);
       console.log(`[ROOM CREATE] ${room.id} / ${socket.id}`);
@@ -583,23 +614,49 @@ io.on("connection", (socket) => {
         socket.data.roomId = room.id;
         socket.data.playerIndex = existing.playerIndex;
         socket.data.playerId = socket.id;
-        socket.emit("room:joined", { ok: true, roomId: room.id, playerIndex: existing.playerIndex, reconnect: true, state: getPublicRoomState(room) });
+        socket.emit("room:joined", { ok: true, roomId: room.id, playerIndex: existing.playerIndex, reconnect: true, waiting: existing.waiting, state: getPublicRoomState(room) });
         broadcastRoomState(room);
         return;
       }
 
+      const nicknameExists = room.players.some(p => !p.isBot && p.nickname === nickname);
+      if (nicknameExists) {
+        socket.emit("room:error", { ok: false, reason: `"${nickname}" 닉네임은 이미 사용 중입니다.` });
+        return;
+      }
+
+      const isMidGame = room.started && !room.finished;
+
+      const bots = room.players.filter(p => p.isBot);
+      for (const bot of bots) {
+        const botIdx = room.players.indexOf(bot);
+        room.players.splice(botIdx, 1);
+        for (let i = botIdx; i < room.players.length; i++) room.players[i].playerIndex = i;
+      }
+
       const player = addPlayer(room, socket.id, nickname);
       if (!player) { socket.emit("room:error", { ok: false, reason: "방에 입장할 수 없습니다." }); return; }
+
+      if (isMidGame) {
+        player.waiting = true;
+        player.alive = false;
+        player.eliminated = true;
+      }
 
       socket.join(room.id);
       socket.data.roomId = room.id;
       socket.data.playerIndex = player.playerIndex;
       socket.data.playerId = socket.id;
 
-      socket.emit("room:joined", { ok: true, roomId: room.id, playerIndex: player.playerIndex, state: getPublicRoomState(room) });
-      io.to(room.id).emit("room:playerJoined", { playerIndex: player.playerIndex, nickname: player.nickname, state: getPublicRoomState(room) });
+      socket.emit("room:joined", {
+        ok: true, roomId: room.id, playerIndex: player.playerIndex,
+        waiting: isMidGame, state: getPublicRoomState(room)
+      });
+      io.to(room.id).emit("room:playerJoined", {
+        playerIndex: player.playerIndex, nickname: player.nickname,
+        waiting: isMidGame, state: getPublicRoomState(room)
+      });
 
-      if (room.players.filter(p => !p.isBot).length >= 2 && !room.started) startNewGame(room);
       broadcastRoomState(room);
       console.log(`[ROOM JOIN] ${room.id} / ${socket.id} / player ${player.playerIndex}`);
     } catch (error) {
@@ -612,21 +669,45 @@ io.on("connection", (socket) => {
     try {
       const room = findRoomBySocket(socket.id);
       if (!room) { socket.emit("game:error", { ok: false, reason: "게임 방에 참여하지 않았습니다." }); return; }
+      if (room.finished || !room.started) { socket.emit("game:error", { ok: false, reason: "게임이 진행 중이 아닙니다." }); return; }
       const player = getPlayerBySocket(room, socket.id);
       if (!player) { socket.emit("game:error", { ok: false, reason: "플레이어를 찾을 수 없습니다." }); return; }
+      if (player.eliminated) { socket.emit("game:error", { ok: false, reason: "탈락한 플레이어입니다." }); return; }
 
       const word = data?.word ?? data?.inputWord ?? "";
       const result = playWord(room, player, word, room.gameSessionId);
 
       if (!result.ok) {
         if (result.allowed) {
-          player.hearts--;
-          if (player.hearts <= 0) { player.hearts = 0; player.eliminated = true; }
-          socket.emit("game:error", { ok: false, reason: result.reason, hearts: player.hearts, allowed: result.allowed });
+          player.mistakes = (player.mistakes || 0) + 1;
+          let heartLost = false;
+          if (player.mistakes >= MISTAKES_PER_LIFE) {
+            player.mistakes = 0;
+            player.hearts--;
+            heartLost = true;
+            if (player.hearts <= 0) { player.hearts = 0; player.eliminated = true; }
+          }
+          socket.emit("game:error", {
+            ok: false, reason: result.reason, hearts: player.hearts,
+            allowed: result.allowed, mistakes: player.mistakes, mistakesPerLife: MISTAKES_PER_LIFE,
+            heartLost
+          });
           broadcastRoomState(room);
           if (room.finished) return;
-          const next = findNextAlivePlayer(room, player.playerIndex);
-          if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
+          const alive = getAlivePlayers(room);
+          if (alive.length <= 1) {
+            finishGame(room, alive.length === 1 ? alive[0].playerIndex : null, player.playerIndex);
+            return;
+          }
+          if (player.eliminated) {
+            const next = findNextAlivePlayer(room, player.playerIndex);
+            if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
+          } else if (heartLost) {
+            const next = findNextAlivePlayer(room, player.playerIndex);
+            if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
+          } else {
+            startTurnTimer(room, room.gameSessionId);
+          }
         } else {
           socket.emit("game:error", result);
         }
@@ -637,10 +718,40 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("game:start", () => {
+    try {
+      const room = findRoomBySocket(socket.id);
+      if (!room) return;
+      if (room.mode !== "online") {
+        socket.emit("game:error", { ok: false, reason: "온라인 모드에서만 시작할 수 있습니다." });
+        return;
+      }
+      if (room.hostSocketId !== socket.id) {
+        socket.emit("game:error", { ok: false, reason: "방장만 게임을 시작할 수 있습니다." });
+        return;
+      }
+      if (room.started && !room.finished) {
+        socket.emit("game:error", { ok: false, reason: "이미 게임이 진행 중입니다." });
+        return;
+      }
+      const humanPlayers = room.players.filter(p => !p.isBot && !p.waiting);
+      if (humanPlayers.length < 2) {
+        socket.emit("game:error", { ok: false, reason: "최소 2명 이상이 필요합니다." });
+        return;
+      }
+      startNewGame(room);
+      console.log(`[GAME START] ${room.id} by ${socket.id}`);
+    } catch (error) { console.error("game:start 오류:", error); }
+  });
+
   socket.on("game:restart", () => {
     try {
       const room = findRoomBySocket(socket.id);
       if (!room) return;
+      if (room.hostSocketId !== socket.id) {
+        socket.emit("game:error", { ok: false, reason: "방장만 게임을 다시 시작할 수 있습니다." });
+        return;
+      }
       startNewGame(room);
       console.log(`[GAME RESTART] ${room.id}`);
     } catch (error) { console.error("game:restart 오류:", error); }
@@ -703,8 +814,9 @@ initDatabase().then(() => {
     console.log(`끝말잇기 서버 실행 중: http://localhost:${PORT}`);
     console.log(`단어: ${WORD_SET.size.toLocaleString()}개`);
     console.log(`공격 단어: ${Object.keys(ATTACK_DEPTH).length.toLocaleString()}개`);
+    console.log(`방어 단어: ${DEFENSE_WORDS.size.toLocaleString()}개`);
     console.log(`데이터베이스: ${dbMode === "pg" ? "PostgreSQL" : "JSON 파일"}`);
-    console.log(`한방단어 금지 턴: ${ONESHOT_FREE_TURNS}턴`);
+    console.log(`공격 단어 금지 턴: ${ONESHOT_FREE_TURNS}턴`);
     console.log("========================================");
   });
 }).catch(err => {

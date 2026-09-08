@@ -68,10 +68,11 @@ const DUEUM = {
   "략": ["략", "약"], "량": ["량", "양"], "련": ["련", "연"],
   "렬": ["렬", "열"], "령": ["령", "영"],
   "로": ["로", "노"], "록": ["록", "녹"], "론": ["론", "논"],
-  "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놉"],
+  "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놑"],
   "롯": ["롯", "놃"], "롱": ["롱", "농"], "뢰": ["뢰", "뇌"],
   "루": ["루", "누"], "륙": ["륙", "육"], "률": ["률", "율"],
-  "륜": ["륜", "윤"], "륭": ["륭", "융"]
+  "륜": ["륜", "윤"], "륭": ["륭", "융"],
+  "렁": ["렁", "엉"], "렴": ["렴", "염"]
 };
 
 function normalizeWord(word) {
@@ -168,7 +169,7 @@ function initSocket() {
     gameSessionId++;
     gameState = data.state;
     renderGameState(gameState);
-    showMessage("방이 생성되었습니다. 게임을 시작합니다.", "success");
+    showMessage(`방이 생성되었습니다. 방 코드: ${data.roomId}`, "success");
   });
 
   socket.on("room:joined", (data) => {
@@ -178,7 +179,11 @@ function initSocket() {
     gameSessionId++;
     gameState = data.state;
     renderGameState(gameState);
-    showMessage(data.reconnect ? "방에 재접속했습니다." : "방에 입장했습니다.", "success");
+    if (data.waiting) {
+      showMessage("게임이 진행 중입니다. 다음 게임부터 참여합니다.", "info");
+    } else {
+      showMessage(data.reconnect ? "방에 재접속했습니다." : "방에 입장했습니다.", "success");
+    }
   });
 
   socket.on("room:error", (data) => {
@@ -188,7 +193,11 @@ function initSocket() {
   socket.on("room:playerJoined", (data) => {
     gameState = data.state;
     renderGameState(gameState);
-    showMessage(`${data.nickname}님이 입장했습니다.`, "info");
+    if (data.waiting) {
+      showMessage(`${data.nickname}님이 입장했습니다 (대기 중).`, "info");
+    } else {
+      showMessage(`${data.nickname}님이 입장했습니다.`, "info");
+    }
   });
 
   socket.on("room:playerLeft", (data) => {
@@ -220,6 +229,8 @@ function initSocket() {
     renderGameState(gameState);
     showMessage("게임이 시작되었습니다!", "success");
     updateRuleNotice(gameState);
+    const hostControls = $("#hostControls");
+    if (hostControls) hostControls.classList.add("hidden");
   });
 
   socket.on("game:word", (data) => {
@@ -232,22 +243,43 @@ function initSocket() {
   });
 
   socket.on("game:error", (data) => {
-    showMessage(data.reason || "오류", "error");
+    if (data.heartLost) {
+      showMessage(data.reason || "하트를 잃었습니다!", "error");
+    } else if (data.allowed) {
+      showMessage(data.reason + " (다시 시도해주세요)", "warning");
+    } else {
+      showMessage(data.reason || "오류", "error");
+    }
     if (data.hearts != null) {
       renderHearts(data.hearts);
+    }
+    if (data.mistakes != null && data.mistakesPerLife != null) {
+      const remaining = data.mistakesPerLife - data.mistakes;
+      renderMistakes(data.mistakes, data.mistakesPerLife);
+      if (remaining > 0 && remaining <= 2) {
+        showMessage(`실수 ${data.mistakes}/${data.mistakesPerLife} (하트까지 ${remaining}번)`, "warning");
+      }
     }
     submitting = false;
     updateInputState();
   });
 
   socket.on("game:timeout", (data) => {
-    const myName = gameState?.players?.find(p => p.playerIndex === playerIndex)?.nickname || "";
     const timeoutName = data.nickname || `플레이어 ${data.player + 1}`;
     if (data.player === playerIndex) {
-      showMessage(`시간 초과! 하트 ${data.hearts}개 남음`, "error");
+      if (data.eliminated) {
+        showMessage(`시간 초과! 탈락!`, "error");
+      } else if (data.heartLost) {
+        showMessage(`시간 초과! 하트 차감! (남은 하트: ${data.hearts})`, "error");
+      } else {
+        const remaining = (data.mistakesPerLife || 5) - (data.mistakes || 0);
+        showMessage(`시간 초과! 실수 ${data.mistakes}/${data.mistakesPerLife} (하트까지 ${remaining}번)`, "warning");
+      }
     } else {
       showMessage(`${timeoutName} 시간 초과!`, "info");
     }
+    if (data.hearts != null) renderHearts(data.hearts);
+    if (data.mistakes != null && data.mistakesPerLife != null) renderMistakes(data.mistakes, data.mistakesPerLife);
   });
 
   socket.on("game:finished", (data) => {
@@ -285,14 +317,16 @@ function renderGameState(state) {
 
   setText(["#startWord"], state.history?.[0]?.word || "-");
 
-  const current = state.players?.find(p => p.playerIndex === state.turnPlayer);
   setText(["#last"], state.currentWord ? state.currentWord.at(-1) : "-");
   setText(["#turn"], state.turnNumber);
 
-  if (state.currentWord && state.finished === false) {
-    const lastChar = state.currentWord.at(-1);
-    const allowed = allowedFirstChars(lastChar);
-    setText(["#depth"], allowed.join(", "));
+  if (state.history && state.history.length > 0) {
+    const lastEntry = state.history[state.history.length - 1];
+    if (lastEntry.depth != null) {
+      setText(["#depth"], lastEntry.depth);
+    } else {
+      setText(["#depth"], "-");
+    }
   } else {
     setText(["#depth"], "-");
   }
@@ -314,10 +348,10 @@ function updateRuleNotice(state) {
   if (!el) return;
 
   if (turn < freeTurns) {
-    el.textContent = `첫 ${freeTurns}턴은 한방단어 사용 금지 (${turn}/${freeTurns})`;
+    el.textContent = `첫 ${freeTurns}턴은 공격 단어 사용 금지 (${turn}/${freeTurns})`;
     el.dataset.active = "true";
   } else {
-    el.textContent = "이제 한방단어 사용 가능";
+    el.textContent = "이제 공격 단어 사용 가능";
     el.dataset.active = "false";
   }
 }
@@ -329,9 +363,6 @@ function renderPlayers(state) {
     ? null
     : ($("#onlinePlayers"));
 
-  setText(["#myNickname"], state.players.find(p => p.playerIndex === playerIndex)?.nickname || "-");
-  setText(["#opponentNickname"], state.players.find(p => p.playerIndex !== playerIndex)?.nickname || "대기 중");
-
   if (container) {
     container.innerHTML = "";
     for (const p of state.players) {
@@ -341,8 +372,9 @@ function renderPlayers(state) {
       if (p.eliminated) row.dataset.eliminated = "true";
 
       const hearts = "♥".repeat(Math.max(0, p.hearts)) + "♡".repeat(Math.max(0, 2 - p.hearts));
-      const status = p.eliminated ? "탈락" : p.connected ? (p.isBot ? "AI" : "접속 중") : "연결 끊김";
-      row.textContent = `${p.nickname} — ${hearts} — ${status}`;
+      const mistakesText = p.mistakes != null && !p.waiting ? ` 실수:${p.mistakes}/5` : "";
+      const status = p.waiting ? "대기 중" : p.eliminated ? "탈락" : p.connected ? (p.isBot ? "AI" : "접속 중") : "연결 끊김";
+      row.textContent = `${p.nickname} — ${p.waiting ? "-" : hearts}${mistakesText} — ${status}`;
       container.appendChild(row);
     }
   }
@@ -354,7 +386,15 @@ function renderPlayers(state) {
 function renderHearts(hearts) {
   const v = Math.max(0, Number(hearts) || 0);
   const text = "♥".repeat(v) + "♡".repeat(Math.max(0, 2 - v));
-  setText(["#hearts", "#heartDisplay"], text);
+  setText(["#hearts", "#heartDisplay", "#heartsOnline"], text);
+}
+
+function renderMistakes(mistakes, maxMistakes) {
+  const remaining = maxMistakes - mistakes;
+  const text = `${mistakes}/${maxMistakes}`;
+  setText(["#mistakesDisplay", "#mistakesDisplayOnline"], text);
+  const els = document.querySelectorAll("#mistakesDisplay, #mistakesDisplayOnline");
+  els.forEach(el => { el.dataset.danger = remaining <= 1 ? "true" : "false"; });
 }
 
 function renderHistory(state) {
@@ -383,11 +423,36 @@ function renderRoomInfo(state) {
   const el = $("#roomInfo");
   if (!el) return;
   if (!state) { el.innerHTML = ""; return; }
+
+  const isHost = state.hostSocketId === socket?.id;
+  const statusText = state.finished ? "게임 종료" : state.started ? "게임 진행 중" : "대기 중";
+
   el.innerHTML = `
-    <div>방 코드: <strong>${state.roomId}</strong></div>
-    <div>인원: ${state.playerCount}/${state.maxPlayers}</div>
-    <div>모드: ${state.mode === "ai" ? "AI" : "온라인"}</div>
+    <div class="room-header">
+      <div>방 코드: <strong class="room-code" title="클릭하면 복사됩니다">${state.roomId}</strong></div>
+      <div class="room-status">${statusText}</div>
+    </div>
+    <div>인원: ${state.playerCount}/${state.maxPlayers}${isHost ? " (방장)" : ""}</div>
   `;
+
+  el.querySelector(".room-code")?.addEventListener("click", () => {
+    navigator.clipboard.writeText(state.roomId).then(() => {
+      showMessage("방 코드가 복사되었습니다!", "success");
+    }).catch(() => {});
+  });
+
+  const hostControls = $("#hostControls");
+  if (hostControls) {
+    if (isHost && (!state.started || state.finished)) {
+      hostControls.classList.remove("hidden");
+      const startBtn = $("#startOnline");
+      if (startBtn) {
+        startBtn.textContent = state.finished ? "다시 시작" : "게임 시작";
+      }
+    } else {
+      hostControls.classList.add("hidden");
+    }
+  }
 }
 
 function hideRoomInfo() {
@@ -421,8 +486,7 @@ function updateInputState() {
   const btn = currentMode === "single" ? $("#singleSend") : $("#onlineSend");
 
   const myTurn = gameState && gameState.started && !gameState.finished
-    && gameState.turnPlayer === playerIndex
-    && gameState.playerCount >= 2;
+    && gameState.turnPlayer === playerIndex;
 
   const disabled = !socketConnected || !roomId || !myTurn || submitting;
 
@@ -558,7 +622,13 @@ document.addEventListener("DOMContentLoaded", () => {
     btn.addEventListener("click", () => {
       $all(".tabs button").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
-      currentMode = btn.dataset.mode;
+      const newMode = btn.dataset.mode;
+
+      if (newMode !== currentMode && roomId) {
+        leaveRoom();
+      }
+
+      currentMode = newMode;
       $all(".panel").forEach(p => p.classList.add("hidden"));
       const target = $(`#${currentMode}`);
       if (target) target.classList.remove("hidden");
@@ -591,6 +661,15 @@ document.addEventListener("DOMContentLoaded", () => {
   /* 온라인 */
   $("#create")?.addEventListener("click", createOnlineRoom);
   $("#join")?.addEventListener("click", joinOnlineRoom);
+  $("#startOnline")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) return;
+    socket.emit("game:start");
+  });
+  $("#onlineLeave")?.addEventListener("click", () => {
+    leaveRoom();
+    $("#hostControls")?.classList.add("hidden");
+    renderRoomInfo(null);
+  });
   $("#onlineSend")?.addEventListener("click", submitOnlineWord);
   $("#onlineInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -599,6 +678,4 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  /* 시작 시 자동으로 싱글게임 시작 */
-  setTimeout(startSingleGame, 1000);
 });
