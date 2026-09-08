@@ -243,7 +243,9 @@ function getCandidates(previousWord, usedWords, WORD_INDEX) {
 ========================================================= */
 
 function isOneShot(word, usedWords, WORD_INDEX) {
-  const next = getCandidates(word, new Set([...usedWords, word]), WORD_INDEX);
+  const ws = new Set(usedWords);
+  ws.add(word);
+  const next = getCandidates(word, ws, WORD_INDEX);
   return next.length === 0;
 }
 
@@ -255,14 +257,20 @@ function isOneShot(word, usedWords, WORD_INDEX) {
 
 function getStartCandidates(usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
   const used = usedWords instanceof Set ? usedWords : new Set();
-  const result = [];
+  const safeWords = [];
   for (const word of WORD_SET) {
     if (used.has(word)) continue;
     if (isAttackWord(word, ATTACK_DEPTH)) continue;
+    safeWords.push(word);
+  }
+  const result = [];
+  const TARGET = 5000;
+  for (const word of safeWords) {
     if (isOneShot(word, new Set([word]), WORD_INDEX)) continue;
     result.push(word);
-    if (result.length >= 5000) break;
+    if (result.length >= TARGET) break;
   }
+  if (result.length === 0 && safeWords.length > 0) return safeWords.slice(0, 100);
   return result;
 }
 
@@ -303,20 +311,40 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   if (turnNumber < 3) {
     const noAttack = pool.filter(w => !isAttackWord(w, ATTACK_DEPTH));
     if (noAttack.length > 0) pool = noAttack;
-    const noOneshot = pool.filter(w => !isOneShot(w, new Set([...newUsed, w]), WORD_INDEX));
-    if (noOneshot.length > 0) pool = noOneshot;
+    const noOneshotPool = [];
+    for (const w of pool) {
+      if (!isOneShot(w, newUsed, WORD_INDEX)) noOneshotPool.push(w);
+    }
+    if (noOneshotPool.length > 0) pool = noOneshotPool;
   }
 
   for (const w of pool) {
-    const next = getCandidates(w, new Set([...newUsed, w]), WORD_INDEX);
+    const next = getCandidates(w, newUsed, WORD_INDEX);
     if (next.length === 0) return w;
+  }
+
+  const EVAL_POOL_MAX = 150;
+  let evalPool = pool;
+  if (pool.length > EVAL_POOL_MAX) {
+    const scored = pool.map(w => {
+      let s = 0;
+      if (ROOT_WORDS && ROOT_WORDS.has(w)) s += 10;
+      const nc = getCandidates(w, newUsed, WORD_INDEX);
+      s -= nc.length;
+      const depth = ATTACK_DEPTH[w];
+      if (Number.isFinite(depth)) s += (turnNumber >= 3 ? 15 : 2) * (20 - depth);
+      return { w, s };
+    });
+    scored.sort((a, b) => b.s - a.s);
+    evalPool = scored.slice(0, EVAL_POOL_MAX).map(x => x.w);
   }
 
   let bestScore = -Infinity;
   let bestWords = [];
 
-  for (const w of pool) {
-    const nextUsed = new Set([...newUsed, w]);
+  for (const w of evalPool) {
+    const nextUsed = new Set(newUsed);
+    nextUsed.add(w);
     const nextCandidates = getCandidates(w, nextUsed, WORD_INDEX);
     const nextCount = nextCandidates.length;
     if (nextCount === 0) return w;
@@ -345,8 +373,14 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     let opponentOneShotCount = 0;
     let opponentDefenseCount = 0;
 
-    for (const oppWord of nextCandidates) {
-      const oppUsed = new Set([...nextUsed, oppWord]);
+    const OPP_EVAL_MAX = 30;
+    const oppSample = nextCandidates.length > OPP_EVAL_MAX
+      ? nextCandidates.slice(0, OPP_EVAL_MAX)
+      : nextCandidates;
+
+    for (const oppWord of oppSample) {
+      const oppUsed = new Set(nextUsed);
+      oppUsed.add(oppWord);
       const oppNext = getCandidates(oppWord, oppUsed, WORD_INDEX);
       const oppNextCount = oppNext.length;
 
@@ -367,15 +401,16 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
       }
     }
 
-    score -= worstOpponentOptions * 1.5;
+    const oppScale = nextCandidates.length > OPP_EVAL_MAX ? OPP_EVAL_MAX / nextCandidates.length : 1;
+    score -= worstOpponentOptions * oppScale * 1.5;
 
     if (Number.isFinite(bestOpponentAttackDepth)) {
       score -= (20 - bestOpponentAttackDepth) * 4;
     }
 
-    score -= opponentOneShotCount * 8;
+    score -= opponentOneShotCount * oppScale * 8;
 
-    score += opponentDefenseCount * 6;
+    score += opponentDefenseCount * oppScale * 6;
 
     const lastChar = w.at(-1);
     if (lastChar) {
@@ -404,6 +439,9 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     }
   }
 
+  if (bestWords.length === 0) {
+    return pool.length > 0 ? pool[0] : null;
+  }
   return bestWords[Math.floor(Math.random() * bestWords.length)];
 }
 

@@ -634,10 +634,15 @@ document.addEventListener("DOMContentLoaded", () => {
       if (target) target.classList.remove("hidden");
 
       if (currentMode === "single") {
-        if (!gameState || !roomId) startSingleGame();
+        if (!gameState || !roomId) {
+          setTimeout(startSingleGame, 100);
+        }
       }
     });
   });
+
+  /* 초기 로드 시 싱글플레이 자동 시작 */
+  setTimeout(startSingleGame, 500);
 
   /* 싱글플레이 */
   $("#newStart")?.addEventListener("click", () => {
