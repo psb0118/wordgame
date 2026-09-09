@@ -596,11 +596,11 @@ function renderRoomInfo(state) {
 
   const hostControls = $("#hostControls");
   if (hostControls) {
-    if (isHost && (!state.started || state.finished)) {
+    if (isHost && !state.started && !state.finished) {
       hostControls.classList.remove("hidden");
       const startBtn = $("#startOnline");
       if (startBtn) {
-        startBtn.textContent = state.finished ? "다시 시작" : "게임 시작";
+        startBtn.textContent = "게임 시작";
       }
     } else {
       hostControls.classList.add("hidden");

@@ -527,7 +527,21 @@ function runAI(room, gameSessionId) {
     finishGame(room, findNextAlivePlayer(room, player.playerIndex), player.playerIndex);
     return;
   }
-  playWord(room, player, word, gameSessionId);
+  if (room.turnNumber > 0 && room.currentWord && !canConnect(room.currentWord, word)) {
+    const fallbackPool = getCandidates(room.currentWord, room.usedWords, WORD_INDEX);
+    const valid = fallbackPool.find(w => canConnect(room.currentWord, w));
+    if (valid) word = valid;
+    else { finishGame(room, findNextAlivePlayer(room, player.playerIndex), player.playerIndex); return; }
+  }
+  const result = playWord(room, player, word, gameSessionId);
+  if (!result.ok && result.penalty) {
+    const fallbackPool = getCandidates(room.currentWord || "", room.usedWords, WORD_INDEX)
+      .filter(w => canConnect(room.currentWord || "", w));
+    if (fallbackPool.length > 0) {
+      const retry = fallbackPool[Math.floor(Math.random() * fallbackPool.length)];
+      playWord(room, player, retry, gameSessionId);
+    }
+  }
 }
 
 /* =========================================================

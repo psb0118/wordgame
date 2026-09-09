@@ -300,39 +300,40 @@ function getCandidates(previousWord, usedWords, WORD_INDEX) {
   const result = [];
   const lastChar = previousWord.at(-1);
   const allowed = allowedFirstChars(lastChar);
+  const existingSet = new Set();
   for (const firstChar of allowed) {
     const bucket = WORD_INDEX.get(firstChar);
     if (!bucket) continue;
     for (const word of bucket) {
-      if (!used.has(word)) result.push(word);
+      if (!used.has(word) && !existingSet.has(word)) {
+        result.push(word);
+        existingSet.add(word);
+      }
     }
   }
 
-  if (result.length < 50) {
-    const jong = getJongsung(lastChar);
-    if (jong && JONGSUNG_ALLOWED_INITIALS[jong]) {
-      const allowedInits = JONGSUNG_ALLOWED_INITIALS[jong];
-      const existingSet = new Set(result);
-      let added = 0;
-      const MAX_DUEUM_ADD = 100;
-      for (const init of allowedInits) {
-        const keys = WORD_INDEX._initialMap?.get(init);
-        if (!keys) continue;
-        for (const key of keys) {
-          const bucket = WORD_INDEX.get(key);
-          if (!bucket) continue;
-          for (const word of bucket) {
-            if (!used.has(word) && !existingSet.has(word)) {
-              result.push(word);
-              existingSet.add(word);
-              added++;
-              if (added >= MAX_DUEUM_ADD) break;
-            }
+  const jong = getJongsung(lastChar);
+  if (jong && JONGSUNG_ALLOWED_INITIALS[jong]) {
+    const allowedInits = JONGSUNG_ALLOWED_INITIALS[jong];
+    let added = 0;
+    const MAX_DUEUM_ADD = 200;
+    for (const init of allowedInits) {
+      const keys = WORD_INDEX._initialMap?.get(init);
+      if (!keys) continue;
+      for (const key of keys) {
+        const bucket = WORD_INDEX.get(key);
+        if (!bucket) continue;
+        for (const word of bucket) {
+          if (!used.has(word) && !existingSet.has(word)) {
+            result.push(word);
+            existingSet.add(word);
+            added++;
+            if (added >= MAX_DUEUM_ADD) break;
           }
-          if (added >= MAX_DUEUM_ADD) break;
         }
         if (added >= MAX_DUEUM_ADD) break;
       }
+      if (added >= MAX_DUEUM_ADD) break;
     }
   }
 
@@ -521,12 +522,15 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   allScored.sort((a, b) => b.score - a.score);
 
   if (allScored.length === 0) {
-    return pool[Math.floor(Math.random() * pool.length)];
+    const fallback = pool[Math.floor(Math.random() * pool.length)];
+    return canConnect(currentWord, fallback) ? fallback : pool.find(w => canConnect(currentWord, w)) || null;
   }
 
   const topN = Math.min(5, allScored.length);
   const topCandidates = allScored.slice(0, topN).map(x => x.w);
-  return topCandidates[Math.floor(Math.random() * topCandidates.length)];
+  const chosen = topCandidates[Math.floor(Math.random() * topCandidates.length)];
+  if (canConnect(currentWord, chosen)) return chosen;
+  return pool.find(w => canConnect(currentWord, w)) || chosen;
 }
 
 /* =========================================================
