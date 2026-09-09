@@ -24,6 +24,7 @@
         <div class="stats">
           <b>시작 <span id="startWord">-</span></b>
           <b>턴 <span id="turn">0</span></b>
+          <b>깊이 <span id="depth">-</span></b>
         </div>
         <div class="game-status">
           <span>♥ <span id="hearts">♥♥</span></span>
@@ -92,6 +93,26 @@
       </div>
       <div id="onlineMessage" class="message"></div>
       <div class="rule-notice" id="onlineRuleNotice"></div>
+
+      <div class="single-header" id="onlineHeader">
+        <div class="stats">
+          <b>시작 <span id="onlineStartWord">-</span></b>
+          <b>턴 <span id="onlineTurn">0</span></b>
+          <b>깊이 <span id="onlineDepth">-</span></b>
+        </div>
+      </div>
+      <div class="game-boxes">
+        <div class="last-char-box">
+          <div class="last-char-label">끝 글자</div>
+          <div class="last-char" id="onlineLast">-</div>
+          <div class="last-hint" id="onlineLastHint"></div>
+        </div>
+        <div class="timer-box">
+          <div class="timer-label">남은 시간</div>
+          <div class="timer-value" id="onlineTimer">-</div>
+        </div>
+        <div class="turn-indicator" id="onlineTurnIndicator"></div>
+      </div>
 
       <div id="onlinePlayers" class="players"></div>
       <div id="onlineHistory" class="history"></div>

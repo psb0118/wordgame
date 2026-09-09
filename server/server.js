@@ -476,6 +476,7 @@ function playWord(room, player, rawWord, gameSessionId) {
     ok: true, word, player: player.playerIndex, nickname: player.nickname,
     depth, nextCount: nextCandidates.length
   });
+  broadcastRoomState(room);
 
   /* 다음 사람이 대응할 단어가 없으면 지금 단어 낸 사람이 승리 */
   if (nextCandidates.length === 0) {
@@ -764,13 +765,18 @@ io.on("connection", (socket) => {
         socket.emit("game:error", { ok: false, reason: "방장만 게임을 시작할 수 있습니다." });
         return;
       }
+      const hostPlayer = room.players.find(p => p.id === socket.id);
+      if (hostPlayer && hostPlayer.eliminated) {
+        socket.emit("game:error", { ok: false, reason: "탈락한 플레이어는 게임을 시작할 수 없습니다." });
+        return;
+      }
       if (room.started && !room.finished) {
         socket.emit("game:error", { ok: false, reason: "이미 게임이 진행 중입니다." });
         return;
       }
-      const humanPlayers = room.players.filter(p => !p.isBot && !p.waiting);
+      const humanPlayers = room.players.filter(p => !p.isBot && !p.waiting && !p.eliminated);
       if (humanPlayers.length < 2) {
-        socket.emit("game:error", { ok: false, reason: "최소 2명 이상이 필요합니다." });
+        socket.emit("game:error", { ok: false, reason: "최소 2명 이상의 살아있는 플레이어가 필요합니다." });
         return;
       }
       startNewGame(room);
@@ -784,6 +790,15 @@ io.on("connection", (socket) => {
       if (!room) return;
       if (room.hostSocketId !== socket.id) {
         socket.emit("game:error", { ok: false, reason: "방장만 게임을 다시 시작할 수 있습니다." });
+        return;
+      }
+      if (!room.finished) {
+        socket.emit("game:error", { ok: false, reason: "게임이 아직 종료되지 않았습니다." });
+        return;
+      }
+      const hostPlayer = room.players.find(p => p.id === socket.id);
+      if (hostPlayer && hostPlayer.eliminated) {
+        socket.emit("game:error", { ok: false, reason: "탈락한 플레이어는 게임을 시작할 수 없습니다." });
         return;
       }
       startNewGame(room);

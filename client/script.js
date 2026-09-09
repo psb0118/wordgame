@@ -367,11 +367,11 @@ function initSocket() {
         const remaining = (data.mistakesPerLife || 5) - (data.mistakes || 0);
         showMessage(`시간 초과! 실수 ${data.mistakes}/${data.mistakesPerLife} (하트까지 ${remaining}번)`, "warning");
       }
+      if (data.hearts != null) renderHearts(data.hearts);
+      if (data.mistakes != null && data.mistakesPerLife != null) renderMistakes(data.mistakes, data.mistakesPerLife);
     } else {
       showMessage(`${timeoutName} 시간 초과!`, "info");
     }
-    if (data.hearts != null) renderHearts(data.hearts);
-    if (data.mistakes != null && data.mistakesPerLife != null) renderMistakes(data.mistakes, data.mistakesPerLife);
     submitting = false;
     updateInputState();
     focusInput();
@@ -422,19 +422,17 @@ function initSocket() {
 --------------------------------------------------------- */
 function renderGameState(state) {
   if (!state) return;
+  const isSingle = currentMode === "single";
+  const prefix = isSingle ? "" : "online";
 
-  if (currentMode === "single") {
-    const syllable = state.startSyllable || state.history?.[0]?.word;
-    setText(["#startWord"], syllable ? syllable.at(0) : "-");
-  } else {
-    setText(["#startWord"], state.startSyllable || state.history?.[0]?.word || "-");
-  }
+  const syllable = state.startSyllable || state.history?.[0]?.word;
+  setText([isSingle ? "#startWord" : "#onlineStartWord"], syllable ? syllable.at(0) : "-");
 
   const lastChar = state.currentWord ? state.currentWord.at(-1) : null;
-  setText(["#last"], lastChar || "-");
+  setText([isSingle ? "#last" : "#onlineLast"], lastChar || "-");
 
   const allowed = lastChar ? allowedFirstChars(lastChar) : [];
-  const hintEl = $("#lastHint");
+  const hintEl = $(isSingle ? "#lastHint" : "#onlineLastHint");
   if (hintEl) {
     if (state.started && !state.finished) {
       if (state.turnNumber === 0) {
@@ -456,29 +454,26 @@ function renderGameState(state) {
     }
   }
 
-  setText(["#turn"], state.turnNumber);
+  setText([isSingle ? "#turn" : "#onlineTurn"], state.turnNumber);
 
   if (state.history && state.history.length > 0) {
     const lastEntry = state.history[state.history.length - 1];
-    if (lastEntry.depth != null) {
-      setText(["#depth"], lastEntry.depth);
-    } else {
-      setText(["#depth"], "-");
-    }
+    setText([isSingle ? "#depth" : "#onlineDepth"], lastEntry.depth != null ? lastEntry.depth : "-");
   } else {
-    setText(["#depth"], "-");
+    setText([isSingle ? "#depth" : "#onlineDepth"], "-");
   }
 
   const myTurn = state.started && !state.finished && state.turnPlayer === playerIndex;
-  const turnIndicator = $("#turnIndicator");
+  const turnIndicator = $(isSingle ? "#turnIndicator" : "#onlineTurnIndicator");
   if (turnIndicator) {
-    if (currentMode === "single" && state.started && !state.finished) {
+    if (state.started && !state.finished) {
       if (myTurn) {
         turnIndicator.textContent = "YOUR TURN";
         turnIndicator.dataset.turn = "mine";
       } else {
-        turnIndicator.textContent = "AI TURN";
-        turnIndicator.dataset.turn = "ai";
+        const currentName = state.players?.find(p => p.playerIndex === state.turnPlayer)?.nickname || "상대";
+        turnIndicator.textContent = `${currentName}의 턴`;
+        turnIndicator.dataset.turn = "other";
       }
       turnIndicator.classList.remove("hidden");
     } else {
@@ -620,9 +615,10 @@ function hideRoomInfo() {
 
 function renderCountdown(state) {
   stopCountdown();
+  const timerSelector = currentMode === "single" ? "#timer" : "#onlineTimer";
   if (!state || !state.turnEndsAt || state.finished || !state.started) {
-    setText(["#countdown", "#timer"], "-");
-    const timerBox = $(".timer-box");
+    setText([timerSelector], "-");
+    const timerBox = $(currentMode === "single" ? ".single-panel .timer-box" : ".online-panel .timer-box") || $(".timer-box");
     if (timerBox) timerBox.dataset.urgent = "false";
     return;
   }
@@ -630,12 +626,9 @@ function renderCountdown(state) {
     if (!gameState?.turnEndsAt) { stopCountdown(); return; }
     const remaining = Math.max(0, gameState.turnEndsAt - Date.now());
     const secs = Math.ceil(remaining / 1000);
-    setText(["#countdown", "#timer"], secs + "s");
-    const timerEl = $("#timer");
-    const timerBox = $(".timer-box");
-    const isUrgent = secs <= 5;
-    if (timerEl) timerEl.dataset.urgent = isUrgent ? "true" : "false";
-    if (timerBox) timerBox.dataset.urgent = isUrgent ? "true" : "false";
+    setText([timerSelector], secs + "s");
+    const timerBox = $(currentMode === "single" ? ".single-panel .timer-box" : ".online-panel .timer-box") || $(".timer-box");
+    if (timerBox) timerBox.dataset.urgent = secs <= 5 ? "true" : "false";
     if (remaining <= 0) stopCountdown();
   };
   update();
@@ -869,7 +862,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!socket || !socketConnected) return;
     const wrap = $("#onlineRestartWrap");
     if (wrap) wrap.classList.add("hidden");
-    socket.emit("game:start");
+    socket.emit("game:restart");
   });
 
 });
