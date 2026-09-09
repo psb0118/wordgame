@@ -40,18 +40,62 @@ function normalizeWord(word) {
 
 /* =========================================================
    두음법칙 — 허용 시작 글자
+
+   두 가지 레벨:
+   1. 음절 단위: DUEUM 매핑 (리→이, 라→나 등)
+   2. 받침 단위: 이전 글자의 받침에 따라 다음 초성 결정
+      - ㄹ 받침 → 다음 초성: ㄹ, ㅇ
+      - ㄴ 받침 → 다음 초성: ㄴ, ㄹ
+      - ㅁ 받침 → 다음 초성: ㅇ
+      - ㅂ 받침 → 다음 초성: ㅇ
+      - ㅅ/ㅆ 받침 → 다음 초성: ㅅ/ㅆ, ㅇ
+      - ㅈ/ㅊ 받침 → 다음 초성: ㅈ/ㅊ, ㅇ
+      - ㄱ/ㅋ 받침 → 다음 초성: ㄱ/ㅋ, ㅇ
+      - ㄷ/ㅌ 받침 → 다음 초성: ㄷ/ㅌ, ㅇ
+      - ㅍ 받침 → 다음 초성: ㅇ
+      - ㅎ 받침 → 다음 초성: ㅇ
 ========================================================= */
+
+const JONGSUNG_ALLOWED_INITIALS = {
+  "ㄹ": new Set(["ㄹ", "ㅇ"]),
+  "ㄴ": new Set(["ㄴ", "ㄹ"]),
+  "ㅁ": new Set(["ㅇ"]),
+  "ㅂ": new Set(["ㅇ"]),
+  "ㅅ": new Set(["ㅅ", "ㅇ"]),
+  "ㅆ": new Set(["ㅆ", "ㅇ"]),
+  "ㅈ": new Set(["ㅈ", "ㅇ"]),
+  "ㅊ": new Set(["ㅊ", "ㅇ"]),
+  "ㄱ": new Set(["ㄱ", "ㅇ"]),
+  "ㄲ": new Set(["ㄲ", "ㅇ"]),
+  "ㅋ": new Set(["ㅋ", "ㅇ"]),
+  "ㄷ": new Set(["ㄷ", "ㅇ"]),
+  "ㅌ": new Set(["ㅌ", "ㅇ"]),
+  "ㅍ": new Set(["ㅍ", "ㅇ"]),
+  "ㅎ": new Set(["ㅎ", "ㅇ"]),
+};
+
+function getJongsung(char) {
+  if (!char || char.length !== 1) return null;
+  const code = char.charCodeAt(0);
+  if (code < 0xAC00 || code > 0xD7A3) return null;
+  const jong = (code - 0xAC00) % 28;
+  if (jong === 0) return null;
+  const JONGSUNG = ["","ㄱ","ㄲ","ㄳ","ㄴ","ㄵ","ㄶ","ㄷ","ㄹ","ㄺ","ㄻ","ㄼ","ㄽ","ㄾ","ㄿ","ㅀ","ㅁ","ㅂ","ㅄ","ㅅ","ㅆ","ㅇ","ㅈ","ㅊ","ㅋ","ㅌ","ㅍ","ㅎ"];
+  return JONGSUNG[jong] || null;
+}
 
 function allowedFirstChars(lastChar) {
   lastChar = normalizeWord(lastChar);
   if (!lastChar) return [];
   const result = new Set();
   result.add(lastChar);
+
   const direct = DUEUM[lastChar];
   if (Array.isArray(direct)) for (const ch of direct) if (ch) result.add(ch);
   for (const [from, values] of Object.entries(DUEUM)) {
     if (Array.isArray(values) && values.includes(lastChar)) result.add(from);
   }
+
   return [...result];
 }
 
@@ -59,13 +103,31 @@ function allowedFirstChars(lastChar) {
    연결 판정
 ========================================================= */
 
+function getInitialConsonant(char) {
+  if (!char || char.length !== 1) return null;
+  const code = char.charCodeAt(0);
+  if (code < 0xAC00 || code > 0xD7A3) return null;
+  const initial = Math.floor((code - 0xAC00) / 588);
+  const INITIALS = ["ㄱ","ㄲ","ㄴ","ㄷ","ㄸ","ㄹ","ㅁ","ㅂ","ㅃ","ㅅ","ㅆ","ㅇ","ㅈ","ㅉ","ㅊ","ㅋ","ㅌ","ㅍ","ㅎ"];
+  return INITIALS[initial] || null;
+}
+
 function canConnect(previousWord, nextWord) {
   previousWord = normalizeWord(previousWord);
   nextWord = normalizeWord(nextWord);
   if (!previousWord || !nextWord) return false;
   const last = previousWord.at(-1);
   const first = nextWord.at(0);
-  return allowedFirstChars(last).includes(first);
+
+  if (allowedFirstChars(last).includes(first)) return true;
+
+  const jong = getJongsung(last);
+  if (jong && JONGSUNG_ALLOWED_INITIALS[jong]) {
+    const firstInit = getInitialConsonant(first);
+    if (firstInit && JONGSUNG_ALLOWED_INITIALS[jong].has(firstInit)) return true;
+  }
+
+  return false;
 }
 
 /* =========================================================
@@ -196,6 +258,17 @@ function loadData(dataDir, rootDir) {
     if (!WORD_INDEX.has(first)) WORD_INDEX.set(first, []);
     WORD_INDEX.get(first).push(word);
   }
+
+  const initialMap = new Map();
+  for (const key of WORD_INDEX.keys()) {
+    if (key.length !== 1) continue;
+    const init = getInitialConsonant(key);
+    if (!init) continue;
+    if (!initialMap.has(init)) initialMap.set(init, []);
+    initialMap.get(init).push(key);
+  }
+  WORD_INDEX._initialMap = initialMap;
+
   console.log(`단어 인덱스 생성 완료: ${WORD_INDEX.size}개 시작 글자`);
 
   return { WORD_SET, ATTACK_DEPTH, WORD_INDEX, ROOT_WORDS, DEFENSE_WORDS };
@@ -225,7 +298,8 @@ function getCandidates(previousWord, usedWords, WORD_INDEX) {
   if (!previousWord) return [];
   const used = usedWords instanceof Set ? usedWords : new Set(usedWords || []);
   const result = [];
-  const allowed = allowedFirstChars(previousWord.at(-1));
+  const lastChar = previousWord.at(-1);
+  const allowed = allowedFirstChars(lastChar);
   for (const firstChar of allowed) {
     const bucket = WORD_INDEX.get(firstChar);
     if (!bucket) continue;
@@ -233,6 +307,35 @@ function getCandidates(previousWord, usedWords, WORD_INDEX) {
       if (!used.has(word)) result.push(word);
     }
   }
+
+  if (result.length < 50) {
+    const jong = getJongsung(lastChar);
+    if (jong && JONGSUNG_ALLOWED_INITIALS[jong]) {
+      const allowedInits = JONGSUNG_ALLOWED_INITIALS[jong];
+      const existingSet = new Set(result);
+      let added = 0;
+      const MAX_DUEUM_ADD = 100;
+      for (const init of allowedInits) {
+        const keys = WORD_INDEX._initialMap?.get(init);
+        if (!keys) continue;
+        for (const key of keys) {
+          const bucket = WORD_INDEX.get(key);
+          if (!bucket) continue;
+          for (const word of bucket) {
+            if (!used.has(word) && !existingSet.has(word)) {
+              result.push(word);
+              existingSet.add(word);
+              added++;
+              if (added >= MAX_DUEUM_ADD) break;
+            }
+          }
+          if (added >= MAX_DUEUM_ADD) break;
+        }
+        if (added >= MAX_DUEUM_ADD) break;
+      }
+    }
+  }
+
   return result;
 }
 
@@ -286,16 +389,16 @@ function chooseStartWord(usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
 }
 
 /* =========================================================
-   AI — 전략적 단어 선택
+   AI — 최강 전략적 단어 선택
 
-   원칙:
-   1. 즉시 승리(한방) 단어 → 무조건 사용
-   2. 방어 단어(지는 단어) 절대 사용 금지
-   3. 첫 턴: 공격/한방 단어 사용 금지, 안전한 단어만
-   4. 이후: 공격 단어 우선 사용 (깊이 낮을수록 강함)
-   5. 상대 선택지 최소화 (다음 후보 적은 단어 선호)
-   6. 상대 역공 방어
-   7. 단어 다양성 확보
+   절대 원칙:
+   1. 즉시 승리(한방) → 무조건 사용
+   2. 방어 단어 절대 사용 금지
+   3. 공격 단어 즉시 사용 (깊이 낮을수록 강함)
+   4. 루트/희귀 루트 단어 우선
+   5. 상대 선택지 최소화
+   6. 상대 역공 차단
+   7. 절대 지지 않는 전략
 ========================================================= */
 
 function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, turnNumber, DEFENSE_WORDS) {
@@ -306,31 +409,35 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   const defenseSet = DEFENSE_WORDS || new Set();
 
   let pool = candidates.filter(w => !defenseSet.has(w));
-  if (pool.length === 0) {
-    pool = candidates.filter(w => {
-      const next = getCandidates(w, new Set([...newUsed, w]), WORD_INDEX);
-      return next.length > 0;
-    });
-    if (pool.length === 0) pool = candidates;
-  }
-
-  if (turnNumber < 1) {
-    const noAttack = pool.filter(w => !isAttackWord(w, ATTACK_DEPTH));
-    if (noAttack.length > 0) pool = noAttack;
-    const noOneshotPool = [];
-    for (const w of pool) {
-      if (!isOneShot(w, newUsed, WORD_INDEX)) noOneshotPool.push(w);
-    }
-    if (noOneshotPool.length > 0) pool = noOneshotPool;
-  }
+  if (pool.length === 0) pool = candidates;
 
   const immediateWins = [];
+  const attackWords = [];
+  const rootWords = [];
+
   for (const w of pool) {
     const next = getCandidates(w, newUsed, WORD_INDEX);
-    if (next.length === 0) immediateWins.push(w);
+    if (next.length === 0) { immediateWins.push(w); continue; }
+    const depth = ATTACK_DEPTH[w];
+    if (Number.isFinite(depth)) attackWords.push({ w, depth, nextCount: next.length });
+    if (ROOT_WORDS && ROOT_WORDS.has(w)) rootWords.push({ w, nextCount: next.length });
   }
+
   if (immediateWins.length > 0) {
     return immediateWins[Math.floor(Math.random() * immediateWins.length)];
+  }
+
+  if (attackWords.length > 0) {
+    attackWords.sort((a, b) => a.depth - b.depth);
+    const bestDepth = attackWords[0].depth;
+    const topAttacks = attackWords.filter(a => a.depth <= bestDepth + 1);
+    if (topAttacks.length > 3) {
+      for (let i = topAttacks.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [topAttacks[i], topAttacks[j]] = [topAttacks[j], topAttacks[i]];
+      }
+    }
+    return topAttacks[Math.floor(Math.random() * Math.min(3, topAttacks.length))].w;
   }
 
   const EVAL_POOL_MAX = 150;
@@ -362,64 +469,51 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
 
     const depth = ATTACK_DEPTH[w];
     const isAttack = Number.isFinite(depth);
-
     if (isAttack) {
-      if (turnNumber >= 1) {
-        score += (20 - depth) * 25;
-      } else {
-        score += (20 - depth) * 3;
-      }
+      score += (20 - depth) * 30;
     }
 
     if (ROOT_WORDS && ROOT_WORDS.has(w)) {
-      score += 15;
+      score += 50;
     }
 
-    if (nextCount <= 2) score += 30;
-    else if (nextCount <= 5) score += 20;
-    else if (nextCount <= 10) score += 10;
+    if (nextCount <= 2) score += 40;
+    else if (nextCount <= 5) score += 25;
+    else if (nextCount <= 10) score += 15;
     else if (nextCount <= 20) score += 5;
-    else score -= Math.min(nextCount, 50) * 0.5;
+    else score -= Math.min(nextCount, 50) * 0.3;
 
-    let opponentEndGameCount = 0;
-    let opponentGoodMoves = 0;
-    let opponentBadMoves = 0;
-
-    const OPP_EVAL_MAX = Math.min(20, nextCandidates.length);
+    const OPP_EVAL_MAX = Math.min(15, nextCandidates.length);
     const oppSample = nextCandidates.length > OPP_EVAL_MAX
       ? nextCandidates.slice(0, OPP_EVAL_MAX)
       : nextCandidates;
+
+    let opponentEndGame = 0;
+    let opponentStrongAttack = 0;
+    let opponentWeakMoves = 0;
 
     for (const oppWord of oppSample) {
       const oppUsed = new Set(nextUsed);
       oppUsed.add(oppWord);
       const oppNext = getCandidates(oppWord, oppUsed, WORD_INDEX);
 
-      if (oppNext.length === 0) {
-        opponentEndGameCount++;
-        score -= 50;
-        continue;
-      }
-
-      if (oppNext.length === 1) {
-        opponentGoodMoves++;
-        score -= 15;
-      } else if (oppNext.length <= 3) {
-        opponentGoodMoves++;
-        score -= 5;
-      } else if (oppNext.length > 10) {
-        opponentBadMoves++;
-        score += 5;
-      }
+      if (oppNext.length === 0) { opponentEndGame++; score -= 80; continue; }
 
       const oppDepth = ATTACK_DEPTH[oppWord];
-      if (Number.isFinite(oppDepth)) {
-        score -= (20 - oppDepth) * 3;
+      if (Number.isFinite(oppDepth) && oppDepth <= 3) {
+        opponentStrongAttack++;
+        score -= (20 - oppDepth) * 8;
       }
+
+      if (oppNext.length >= 10) opponentWeakMoves++;
+      if (oppNext.length === 1) score -= 20;
     }
 
-    score += opponentBadMoves * 3;
-    score += Math.random() * 6;
+    score += opponentWeakMoves * 5;
+
+    if (rootWords.some(r => r.w === w)) score += 10;
+
+    score += Math.random() * 5;
 
     allScored.push({ w, score });
   }

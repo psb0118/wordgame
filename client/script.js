@@ -76,6 +76,43 @@ const DUEUM = {
   "렁": ["렁", "엉"], "렴": ["렴", "염"]
 };
 
+const JONGSUNG_ALLOWED_INITIALS = {
+  "ㄹ": new Set(["ㄹ", "ㅇ"]),
+  "ㄴ": new Set(["ㄴ", "ㄹ"]),
+  "ㅁ": new Set(["ㅇ"]),
+  "ㅂ": new Set(["ㅇ"]),
+  "ㅅ": new Set(["ㅅ", "ㅇ"]),
+  "ㅆ": new Set(["ㅆ", "ㅇ"]),
+  "ㅈ": new Set(["ㅈ", "ㅇ"]),
+  "ㅊ": new Set(["ㅊ", "ㅇ"]),
+  "ㄱ": new Set(["ㄱ", "ㅇ"]),
+  "ㄲ": new Set(["ㄲ", "ㅇ"]),
+  "ㅋ": new Set(["ㅋ", "ㅇ"]),
+  "ㄷ": new Set(["ㄷ", "ㅇ"]),
+  "ㅌ": new Set(["ㅌ", "ㅇ"]),
+  "ㅍ": new Set(["ㅍ", "ㅇ"]),
+  "ㅎ": new Set(["ㅎ", "ㅇ"]),
+};
+
+function getJongsung(char) {
+  if (!char || char.length !== 1) return null;
+  const code = char.charCodeAt(0);
+  if (code < 0xAC00 || code > 0xD7A3) return null;
+  const jong = (code - 0xAC00) % 28;
+  if (jong === 0) return null;
+  const JONGSUNG = ["","ㄱ","ㄲ","ㄳ","ㄴ","ㄵ","ㄶ","ㄷ","ㄹ","ㄺ","ㄻ","ㄼ","ㄽ","ㄾ","ㄿ","ㅀ","ㅁ","ㅂ","ㅄ","ㅅ","ㅆ","ㅇ","ㅈ","ㅊ","ㅋ","ㅌ","ㅍ","ㅎ"];
+  return JONGSUNG[jong] || null;
+}
+
+function getInitialConsonant(char) {
+  if (!char || char.length !== 1) return null;
+  const code = char.charCodeAt(0);
+  if (code < 0xAC00 || code > 0xD7A3) return null;
+  const initial = Math.floor((code - 0xAC00) / 588);
+  const INITIALS = ["ㄱ","ㄲ","ㄴ","ㄷ","ㄸ","ㄹ","ㅁ","ㅂ","ㅃ","ㅅ","ㅆ","ㅇ","ㅈ","ㅉ","ㅊ","ㅋ","ㅌ","ㅍ","ㅎ"];
+  return INITIALS[initial] || null;
+}
+
 function normalizeWord(word) {
   if (typeof word !== "string") return "";
   return word.trim().replace(/\s+/g, "").normalize("NFC");
@@ -91,6 +128,14 @@ function allowedFirstChars(lastChar) {
   for (const [from, values] of Object.entries(DUEUM)) {
     if (Array.isArray(values) && values.includes(lastChar)) result.add(from);
   }
+
+  const jong = getJongsung(lastChar);
+  if (jong && JONGSUNG_ALLOWED_INITIALS[jong]) {
+    for (const init of JONGSUNG_ALLOWED_INITIALS[jong]) {
+      result.add(init);
+    }
+  }
+
   return [...result];
 }
 
