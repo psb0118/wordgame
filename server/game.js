@@ -292,11 +292,10 @@ function chooseStartWord(usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
    1. 즉시 승리(한방) 단어 → 무조건 사용
    2. 방어 단어(지는 단어) 절대 사용 금지
    3. 첫 턴: 공격/한방 단어 사용 금지, 안전한 단어만
-   4. 이후: 공격 단어 우선 사용
-   5. 루트 단어 우선 (안전한 루프 구간)
-   6. 상대 선택지 최소화
-   7. 상대 역공 방어
-   8. 단어 다양성 확보 (같은 패턴 반복 방지)
+   4. 이후: 공격 단어 우선 사용 (깊이 낮을수록 강함)
+   5. 상대 선택지 최소화 (다음 후보 적은 단어 선호)
+   6. 상대 역공 방어
+   7. 단어 다양성 확보
 ========================================================= */
 
 function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, turnNumber, DEFENSE_WORDS) {
@@ -334,7 +333,7 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     return immediateWins[Math.floor(Math.random() * immediateWins.length)];
   }
 
-  const EVAL_POOL_MAX = 200;
+  const EVAL_POOL_MAX = 150;
   let evalPool = pool;
   if (pool.length > EVAL_POOL_MAX) {
     const shuffled = [...pool];
@@ -345,31 +344,95 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     evalPool = shuffled.slice(0, EVAL_POOL_MAX);
   }
 
-  const quickScored = evalPool.map(w => {
-    let s = 0;
-    if (ROOT_WORDS && ROOT_WORDS.has(w)) s += 5;
+  let bestScore = -Infinity;
+  let allScored = [];
+
+  for (const w of evalPool) {
+    const nextUsed = new Set(newUsed);
+    nextUsed.add(w);
+    const nextCandidates = getCandidates(w, nextUsed, WORD_INDEX);
+    const nextCount = nextCandidates.length;
+
+    if (nextCount === 0) {
+      allScored.push({ w, score: 10000 });
+      continue;
+    }
+
+    let score = 0;
+
     const depth = ATTACK_DEPTH[w];
-    if (Number.isFinite(depth)) s += 3 * (20 - depth);
-    s += Math.random() * 100;
-    return { w, s };
-  });
-  quickScored.sort((a, b) => b.s - a.s);
-  const QUICK_TOP = Math.min(20, quickScored.length);
-  const topQuick = quickScored.slice(0, QUICK_TOP).map(x => x.w);
+    const isAttack = Number.isFinite(depth);
 
-  for (let i = topQuick.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [topQuick[i], topQuick[j]] = [topQuick[j], topQuick[i]];
+    if (isAttack) {
+      if (turnNumber >= 1) {
+        score += (20 - depth) * 25;
+      } else {
+        score += (20 - depth) * 3;
+      }
+    }
+
+    if (ROOT_WORDS && ROOT_WORDS.has(w)) {
+      score += 15;
+    }
+
+    if (nextCount <= 2) score += 30;
+    else if (nextCount <= 5) score += 20;
+    else if (nextCount <= 10) score += 10;
+    else if (nextCount <= 20) score += 5;
+    else score -= Math.min(nextCount, 50) * 0.5;
+
+    let opponentEndGameCount = 0;
+    let opponentGoodMoves = 0;
+    let opponentBadMoves = 0;
+
+    const OPP_EVAL_MAX = Math.min(20, nextCandidates.length);
+    const oppSample = nextCandidates.length > OPP_EVAL_MAX
+      ? nextCandidates.slice(0, OPP_EVAL_MAX)
+      : nextCandidates;
+
+    for (const oppWord of oppSample) {
+      const oppUsed = new Set(nextUsed);
+      oppUsed.add(oppWord);
+      const oppNext = getCandidates(oppWord, oppUsed, WORD_INDEX);
+
+      if (oppNext.length === 0) {
+        opponentEndGameCount++;
+        score -= 50;
+        continue;
+      }
+
+      if (oppNext.length === 1) {
+        opponentGoodMoves++;
+        score -= 15;
+      } else if (oppNext.length <= 3) {
+        opponentGoodMoves++;
+        score -= 5;
+      } else if (oppNext.length > 10) {
+        opponentBadMoves++;
+        score += 5;
+      }
+
+      const oppDepth = ATTACK_DEPTH[oppWord];
+      if (Number.isFinite(oppDepth)) {
+        score -= (20 - oppDepth) * 3;
+      }
+    }
+
+    score += opponentBadMoves * 3;
+    score += Math.random() * 6;
+
+    allScored.push({ w, score });
   }
 
-  const safeWords = topQuick.filter(w => {
-    const next = getCandidates(w, newUsed, WORD_INDEX);
-    return next.length > 0 && !defenseSet.has(w);
-  });
-  if (safeWords.length > 0) {
-    return safeWords[Math.floor(Math.random() * safeWords.length)];
+  allScored.sort((a, b) => b.score - a.score);
+
+  if (allScored.length === 0) {
+    return pool[Math.floor(Math.random() * pool.length)];
   }
-  return topQuick[Math.floor(Math.random() * topQuick.length)];
+
+  const topN = Math.min(5, allScored.length);
+  const topCandidates = allScored.slice(0, topN).map(x => x.w);
+  return topCandidates[Math.floor(Math.random() * topCandidates.length)];
 }
 
 /* =========================================================

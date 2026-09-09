@@ -328,8 +328,13 @@ function handleTurnTimeout(room, gameSessionId) {
   }
 
   if (heartLost && !player.eliminated) {
-    io.to(room.id).emit("game:roundReset", { reason: "하트가 소진되어 새 라운드를 시작합니다." });
-    startNewGame(room);
+    if (room.mode === "ai") {
+      io.to(room.id).emit("game:roundReset", { reason: "하트가 소진되어 새 라운드를 시작합니다." });
+      startNewGame(room);
+    } else {
+      const next = findNextAlivePlayer(room, player.playerIndex);
+      if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, gameSessionId); }
+    }
     return;
   }
 
@@ -727,8 +732,13 @@ io.on("connection", (socket) => {
             const next = findNextAlivePlayer(room, player.playerIndex);
             if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
           } else if (heartLost) {
-            io.to(room.id).emit("game:roundReset", { reason: "하트가 소진되어 새 라운드를 시작합니다." });
-            startNewGame(room);
+            if (room.mode === "ai") {
+              io.to(room.id).emit("game:roundReset", { reason: "하트가 소진되어 새 라운드를 시작합니다." });
+              startNewGame(room);
+            } else {
+              const next = findNextAlivePlayer(room, player.playerIndex);
+              if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
+            }
           } else {
             startTurnTimer(room, room.gameSessionId);
           }

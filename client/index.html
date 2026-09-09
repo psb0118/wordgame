@@ -96,6 +96,10 @@
       <div id="onlinePlayers" class="players"></div>
       <div id="onlineHistory" class="history"></div>
 
+      <div id="spectatorNotice" class="hidden" style="text-align:center;padding:10px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);border-radius:8px;margin:8px 0;color:#fca5a5;font-weight:600;">
+        관전 모드 — 탈락했습니다
+      </div>
+
       <div class="entry">
         <input id="onlineInput" placeholder="내 차례에 단어 입력" autocomplete="off">
         <button id="onlineSend">입력</button>
@@ -103,6 +107,10 @@
       <div class="game-status">
         <span>♥ <span id="heartsOnline">♥♥</span></span>
         <span>실수 <span id="mistakesDisplayOnline">0/5</span></span>
+      </div>
+
+      <div id="onlineRestartWrap" class="hidden" style="text-align:center;margin:10px 0;">
+        <button id="onlineRestart" class="wide">새 게임 시작</button>
       </div>
 
       <button id="onlineLeave" class="wide secondary">방 나가기</button>

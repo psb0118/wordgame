@@ -258,6 +258,12 @@ function initSocket() {
     updateRuleNotice(gameState);
     const hostControls = $("#hostControls");
     if (hostControls) hostControls.classList.add("hidden");
+    const wrap = $("#onlineRestartWrap");
+    if (wrap) wrap.classList.add("hidden");
+    const specNotice = $("#spectatorNotice");
+    if (specNotice) specNotice.classList.add("hidden");
+    submitting = false;
+    updateInputState();
     focusInput();
   });
 
@@ -352,6 +358,17 @@ function initSocket() {
     } else {
       showMessage("게임이 종료되었습니다.", "info");
     }
+
+    gameState = data.state || gameState;
+    renderGameState(gameState);
+
+    if (currentMode === "single") {
+      showRestartButton(true);
+    } else {
+      const wrap = $("#onlineRestartWrap");
+      if (wrap) wrap.classList.remove("hidden");
+    }
+  });
 
     if (currentMode === "single") {
       showRestartButton(true);
@@ -595,7 +612,10 @@ function updateInputState() {
   const myTurn = gameState && gameState.started && !gameState.finished
     && gameState.turnPlayer === playerIndex;
 
-  const disabled = !socketConnected || !roomId || !myTurn || submitting;
+  const amEliminated = gameState && gameState.players
+    && gameState.players[playerIndex] && gameState.players[playerIndex].eliminated;
+
+  const disabled = !socketConnected || !roomId || !myTurn || submitting || amEliminated;
 
   if (input) input.disabled = disabled;
   if (btn) btn.disabled = disabled;
@@ -603,6 +623,11 @@ function updateInputState() {
   const inputArea = currentMode === "single" ? $(".single-input-area") : $(".online-input-area");
   if (inputArea) {
     inputArea.dataset.myTurn = myTurn ? "true" : "false";
+  }
+
+  const specNotice = $("#spectatorNotice");
+  if (specNotice) {
+    specNotice.classList.toggle("hidden", !amEliminated || !gameState?.started || gameState?.finished);
   }
 }
 
@@ -798,6 +823,12 @@ document.addEventListener("DOMContentLoaded", () => {
       e.preventDefault();
       submitOnlineWord();
     }
+  });
+  $("#onlineRestart")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) return;
+    const wrap = $("#onlineRestartWrap");
+    if (wrap) wrap.classList.add("hidden");
+    socket.emit("game:start");
   });
 
 });
