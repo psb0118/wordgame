@@ -370,10 +370,6 @@ function initSocket() {
     }
   });
 
-    if (currentMode === "single") {
-      showRestartButton(true);
-    }
-  });
 }
 
 /* ---------------------------------------------------------
