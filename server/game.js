@@ -50,8 +50,8 @@ function normalizeWord(word) {
 ========================================================= */
 
 const JONGSUNG_ALLOWED_INITIALS = {
-  "ㄹ": new Set(["ㄹ", "ㅇ"]),
-  "ㄴ": new Set(["ㄴ", "ㄹ"]),
+  "ㄹ": new Set(["ㅇ", "ㄴ"]),
+  "ㄴ": new Set(["ㅇ"]),
 };
 
 function getJongsung(char) {
@@ -101,10 +101,10 @@ function canConnect(previousWord, nextWord) {
 
   if (allowedFirstChars(last).includes(first)) return true;
 
-  const jong = getJongsung(last);
-  if (jong && JONGSUNG_ALLOWED_INITIALS[jong]) {
+  const lastInit = getInitialConsonant(last);
+  if (lastInit && JONGSUNG_ALLOWED_INITIALS[lastInit]) {
     const firstInit = getInitialConsonant(first);
-    if (firstInit && JONGSUNG_ALLOWED_INITIALS[jong].has(firstInit)) return true;
+    if (firstInit && JONGSUNG_ALLOWED_INITIALS[lastInit].has(firstInit)) return true;
   }
 
   return false;
@@ -292,9 +292,9 @@ function getCandidates(previousWord, usedWords, WORD_INDEX) {
     }
   }
 
-  const jong = getJongsung(lastChar);
-  if (jong && JONGSUNG_ALLOWED_INITIALS[jong]) {
-    const allowedInits = JONGSUNG_ALLOWED_INITIALS[jong];
+  const lastInit = getInitialConsonant(lastChar);
+  if (lastInit && JONGSUNG_ALLOWED_INITIALS[lastInit]) {
+    const allowedInits = JONGSUNG_ALLOWED_INITIALS[lastInit];
     let added = 0;
     const MAX_DUEUM_ADD = 200;
     for (const init of allowedInits) {

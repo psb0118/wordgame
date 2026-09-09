@@ -77,8 +77,8 @@ const DUEUM = {
 };
 
 const JONGSUNG_ALLOWED_INITIALS = {
-  "ㄹ": new Set(["ㄹ", "ㅇ"]),
-  "ㄴ": new Set(["ㄴ", "ㄹ"]),
+  "ㄹ": new Set(["ㅇ", "ㄴ"]),
+  "ㄴ": new Set(["ㅇ"]),
 };
 
 function getJongsung(char) {
@@ -116,9 +116,9 @@ function allowedFirstChars(lastChar) {
     if (Array.isArray(values) && values.includes(lastChar)) result.add(from);
   }
 
-  const jong = getJongsung(lastChar);
-  if (jong && JONGSUNG_ALLOWED_INITIALS[jong]) {
-    for (const init of JONGSUNG_ALLOWED_INITIALS[jong]) {
+  const lastInit = getInitialConsonant(lastChar);
+  if (lastInit && JONGSUNG_ALLOWED_INITIALS[lastInit]) {
+    for (const init of JONGSUNG_ALLOWED_INITIALS[lastInit]) {
       result.add(init);
     }
   }
@@ -431,10 +431,10 @@ function renderGameState(state) {
         const lastChar = state.currentWord ? state.currentWord.at(-1) : "";
         let recvTag = "";
         if (lastChar) {
-          const jong = getJongsung(lastChar);
-          if (jong && JONGSUNG_ALLOWED_INITIALS[jong]) {
-            const inits = [...JONGSUNG_ALLOWED_INITIALS[jong]];
-            recvTag = ` <span class="dueum-tag recv" title="받침 '${jong}' 규칙">${inits.join("/")}</span>`;
+          const lastInit = getInitialConsonant(lastChar);
+          if (lastInit && JONGSUNG_ALLOWED_INITIALS[lastInit]) {
+            const inits = [...JONGSUNG_ALLOWED_INITIALS[lastInit]];
+            recvTag = ` <span class="dueum-tag recv" title="초성 '${lastInit}' 두음 규칙">${inits.join("/")}</span>`;
           }
         }
         hintEl.innerHTML = `다음 글자: ${tags}${recvTag}`;
