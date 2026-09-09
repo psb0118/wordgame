@@ -439,6 +439,13 @@ button:disabled {
   color: #bfdbfe;
 }
 
+.last-hint .dueum-tag.recv {
+  background: rgba(168, 85, 247, 0.2);
+  border-color: rgba(168, 85, 247, 0.4);
+  color: #d8b4fe;
+  font-size: 0.85em;
+}
+
 .last-hint.hidden {
   display: none;
 }

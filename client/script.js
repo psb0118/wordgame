@@ -440,13 +440,17 @@ function renderGameState(state) {
         hintEl.innerHTML = `"${syllable}"(으)로 시작하는 단어`;
         hintEl.classList.remove("hidden");
       } else {
-        const isDueum = allowed.length > 1;
-        if (isDueum) {
-          const tags = allowed.map(c => `<span class="dueum-tag">${c}</span>`).join(" ");
-          hintEl.innerHTML = `다음 글자: ${tags}`;
-        } else {
-          hintEl.innerHTML = `다음 글자: <span class="dueum-tag">${allowed[0] || "-"}</span>`;
+        const tags = allowed.map(c => `<span class="dueum-tag">${c}</span>`).join(" ");
+        const lastChar = state.currentWord ? state.currentWord.at(-1) : "";
+        let recvTag = "";
+        if (lastChar) {
+          const jong = getJongsung(lastChar);
+          if (jong && JONGSUNG_ALLOWED_INITIALS[jong]) {
+            const inits = [...JONGSUNG_ALLOWED_INITIALS[jong]];
+            recvTag = ` <span class="dueum-tag recv" title="받침 '${jong}' 규칙">${inits.join("/")}</span>`;
+          }
         }
+        hintEl.innerHTML = `다음 글자: ${tags}${recvTag}`;
         hintEl.classList.remove("hidden");
       }
     } else {
