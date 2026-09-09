@@ -79,19 +79,6 @@ const DUEUM = {
 const JONGSUNG_ALLOWED_INITIALS = {
   "ㄹ": new Set(["ㄹ", "ㅇ"]),
   "ㄴ": new Set(["ㄴ", "ㄹ"]),
-  "ㅁ": new Set(["ㅇ"]),
-  "ㅂ": new Set(["ㅇ"]),
-  "ㅅ": new Set(["ㅅ", "ㅇ"]),
-  "ㅆ": new Set(["ㅆ", "ㅇ"]),
-  "ㅈ": new Set(["ㅈ", "ㅇ"]),
-  "ㅊ": new Set(["ㅊ", "ㅇ"]),
-  "ㄱ": new Set(["ㄱ", "ㅇ"]),
-  "ㄲ": new Set(["ㄲ", "ㅇ"]),
-  "ㅋ": new Set(["ㅋ", "ㅇ"]),
-  "ㄷ": new Set(["ㄷ", "ㅇ"]),
-  "ㅌ": new Set(["ㅌ", "ㅇ"]),
-  "ㅍ": new Set(["ㅍ", "ㅇ"]),
-  "ㅎ": new Set(["ㅎ", "ㅇ"]),
 };
 
 function getJongsung(char) {
