@@ -321,6 +321,9 @@ function initSocket() {
     }
     if (data.hearts != null) renderHearts(data.hearts);
     if (data.mistakes != null && data.mistakesPerLife != null) renderMistakes(data.mistakes, data.mistakesPerLife);
+    submitting = false;
+    updateInputState();
+    focusInput();
   });
 
   socket.on("game:finished", (data) => {
@@ -378,10 +381,16 @@ function renderGameState(state) {
     if (state.started && !state.finished) {
       if (state.turnNumber === 0) {
         const syllable = state.startSyllable || "";
-        hintEl.textContent = `"${syllable}"(으)로 시작하는 단어`;
+        hintEl.innerHTML = `"${syllable}"(으)로 시작하는 단어`;
         hintEl.classList.remove("hidden");
       } else {
-        hintEl.textContent = `(${allowed.join(", ")})`;
+        const isDueum = allowed.length > 1;
+        if (isDueum) {
+          const tags = allowed.map(c => `<span class="dueum-tag">${c}</span>`).join(" ");
+          hintEl.innerHTML = `다음 글자: ${tags}`;
+        } else {
+          hintEl.innerHTML = `다음 글자: <span class="dueum-tag">${allowed[0] || "-"}</span>`;
+        }
         hintEl.classList.remove("hidden");
       }
     } else {

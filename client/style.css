@@ -422,9 +422,21 @@ button:disabled {
 }
 
 .last-hint {
-  font-size: 0.8rem;
+  font-size: 0.85rem;
   color: #93c5fd;
   margin-top: 4px;
+  line-height: 1.4;
+}
+
+.last-hint .dueum-tag {
+  display: inline-block;
+  background: rgba(96, 165, 250, 0.2);
+  border: 1px solid rgba(96, 165, 250, 0.4);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin: 1px 2px;
+  font-weight: 600;
+  color: #bfdbfe;
 }
 
 .last-hint.hidden {
