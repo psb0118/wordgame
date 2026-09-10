@@ -256,6 +256,64 @@ button:disabled {
   color: #fbbf24;
 }
 
+/* 닉네임 바 */
+.name-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  background: #111827;
+  border: 1px solid #3b4b63;
+  border-radius: 10px;
+}
+
+.name-bar label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: #aab5c9;
+}
+
+.name-bar input {
+  width: 160px;
+  padding: 6px 10px;
+  background: #1f2937;
+  border: 1px solid #3b4b63;
+  border-radius: 6px;
+  color: #f9fafb;
+  font-size: 0.9rem;
+}
+
+.name-bar input.missing {
+  border-color: #fbbf24;
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.3);
+}
+
+.name-bar #nickMsg {
+  font-size: 0.8rem;
+  color: #aab5c9;
+}
+
+.name-bar #nickMsg[data-type="ok"] {
+  color: #4ade80;
+}
+
+.name-bar #nickMsg[data-type="warn"] {
+  color: #fbbf24;
+}
+
+.name-bar #nickMsg[data-type="error"] {
+  color: #f87171;
+}
+
+.name-bar.attention {
+  animation: shakeX 0.4s ease;
+  border-color: #f87171;
+}
+
 /* 온라인 상단 */
 .onlineTop {
   display: flex;

@@ -17,6 +17,7 @@ let submitting = false;
 let countdownTimer = null;
 let gameSessionId = 0;
 let startingGame = false;
+let myNickname = localStorage.getItem("kkNickname") || "";
 
 const localStats = JSON.parse(localStorage.getItem("kkStats") || '{"wins":0,"losses":0,"games":0,"totalLength":0}');
 let localUsedWords = new Set();
@@ -56,6 +57,72 @@ function showMessage(text, type) {
 }
 
 /* ---------------------------------------------------------
+   닉네임
+--------------------------------------------------------- */
+function makeNickname(raw) {
+  const n = normalizeWord(raw != null ? raw : myNickname);
+  return n || "플레이어";
+}
+
+function initNicknameBar() {
+  const input = $("#nickInput");
+  if (input) input.value = myNickname;
+  updateNicknameUI();
+}
+
+function updateNicknameUI() {
+  const hasName = !!myNickname;
+  const input = $("#nickInput");
+  if (input) {
+    input.classList.toggle("missing", !hasName);
+    input.dataset.hasName = hasName ? "true" : "false";
+  }
+  const msg = $("#nickMsg");
+  if (msg) {
+    if (hasName) {
+      msg.textContent = `현재 이름: ${myNickname}`;
+      msg.dataset.type = "ok";
+    } else {
+      msg.textContent = "이름을 설정해 주세요. (리더보드에 표시됩니다)";
+      msg.dataset.type = "warn";
+    }
+  }
+  const bar = $(".name-bar");
+  if (bar) bar.classList.toggle("attention", !hasName);
+}
+
+function saveNickname() {
+  const raw = normalizeWord($("#nickInput")?.value || "");
+  const msg = $("#nickMsg");
+  if (!raw) {
+    if (msg) { msg.textContent = "이름을 입력해주세요."; msg.dataset.type = "error"; }
+    return;
+  }
+  if (raw.length > 12) {
+    if (msg) { msg.textContent = "이름은 12자 이내로 입력해주세요."; msg.dataset.type = "error"; }
+    return;
+  }
+  if (socket && socketConnected && socket.id) {
+    socket.emit("player:setName", { nickname: raw });
+  } else {
+    myNickname = raw;
+    localStorage.setItem("kkNickname", myNickname);
+    updateNicknameUI();
+  }
+}
+
+function requireNickname() {
+  if (myNickname) return true;
+  showMessage("먼저 닉네임을 설정해 주세요.", "error");
+  const bar = $(".name-bar");
+  if (bar) {
+    bar.classList.add("attention");
+    setTimeout(() => bar.classList.remove("attention"), 2000);
+  }
+  return false;
+}
+
+/* ---------------------------------------------------------
    정규화 & 두음
 --------------------------------------------------------- */
 const DUEUM = {
@@ -75,26 +142,6 @@ const DUEUM = {
   "륜": ["륜", "윤"], "륭": ["륭", "융"],
   "렁": ["렁", "엉"], "렴": ["렴", "염"]
 };
-
-const VOWELS = ["ㅏ","ㅐ","ㅑ","ㅒ","ㅓ","ㅔ","ㅕ","ㅖ","ㅗ","ㅘ","ㅙ","ㅚ","ㅛ","ㅜ","ㅝ","ㅞ","ㅟ","ㅠ","ㅡ","ㅢ","ㅣ"];
-const Y_VOWELS = new Set(["ㅣ", "ㅑ", "ㅒ", "ㅕ", "ㅖ", "ㅛ", "ㅠ"]);
-
-function getVowel(char) {
-  if (!char || typeof char !== "string" || char.length !== 1) return null;
-  const code = char.charCodeAt(0);
-  if (code < 0xAC00 || code > 0xD7A3) return null;
-  return VOWELS[Math.floor((code - 0xAC00) / 28) % 21] || null;
-}
-
-function getTwoEumInitials(lastChar) {
-  if (!lastChar || typeof lastChar !== "string" || lastChar.length !== 1) return null;
-  const init = getInitialConsonant(lastChar);
-  if (init !== "ㄹ" && init !== "ㄴ") return null;
-  const vowel = getVowel(lastChar);
-  const isYVowel = !!(vowel && Y_VOWELS.has(vowel));
-  if (init === "ㄹ") return isYVowel ? ["ㄹ", "ㅇ"] : ["ㄹ", "ㄴ"];
-  return isYVowel ? ["ㄴ", "ㅇ"] : ["ㄴ", "ㄹ"];
-}
 
 function getJongsung(char) {
   if (!char || char.length !== 1) return null;
@@ -234,6 +281,21 @@ function initSocket() {
     setText(["#singleRating", "#onlineRating"], data.rating);
     setText(["#singleWins", "#onlineWins"], data.wins);
     setText(["#singleLosses", "#onlineLosses"], data.losses);
+  });
+
+  /* -- 닉네임 ----------------------------------------- */
+  socket.on("player:nameUpdated", (data) => {
+    if (!data) return;
+    if (data.ok && data.nickname) {
+      myNickname = data.nickname;
+      localStorage.setItem("kkNickname", myNickname);
+      updateNicknameUI();
+      showMessage("닉네임이 저장되었습니다.", "success");
+    } else if (data.reason) {
+      const msg = $("#nickMsg");
+      if (msg) { msg.textContent = data.reason; msg.dataset.type = "error"; }
+      else showMessage(data.reason, "error");
+    }
   });
 
   /* -- 방 이벤트 --------------------------------------- */
@@ -477,17 +539,7 @@ function renderGameState(state) {
         hintEl.classList.remove("hidden");
       } else {
         const tags = allowed.map(c => `<span class="dueum-tag">${c}</span>`).join(" ");
-        const lastChar = state.currentWord ? state.currentWord.at(-1) : "";
-        let recvTag = "";
-        if (lastChar) {
-          const lastInit = getInitialConsonant(lastChar);
-          const twoEum = getTwoEumInitials(lastChar);
-          if (lastInit && twoEum) {
-            const inits = twoEum.join("/");
-            recvTag = ` <span class="dueum-tag recv" title="두음법칙: 끝 음절 초성 ${lastInit} → 다음 초성 ${inits.toUpperCase()}">두음 ${inits}</span>`;
-          }
-        }
-        hintEl.innerHTML = `다음 글자: ${tags}${recvTag}`;
+        hintEl.innerHTML = `다음 글자: ${tags}`;
         hintEl.classList.remove("hidden");
       }
     } else {
@@ -749,7 +801,7 @@ function startSingleGame() {
   gameState = null;
 
   socket.emit("room:create", {
-    nickname: "플레이어",
+    nickname: makeNickname(),
     mode: "ai"
   });
 }
@@ -780,8 +832,9 @@ function createOnlineRoom() {
     showMessage("서버에 연결 중입니다...", "waiting");
     return;
   }
+  if (!requireNickname()) return;
 
-  const nickname = normalizeWord($("#name")?.value) || "플레이어";
+  const nickname = makeNickname();
 
   socket.emit("room:create", {
     nickname,
@@ -796,6 +849,7 @@ function joinOnlineRoom() {
     showMessage("서버에 연결 중입니다...", "waiting");
     return;
   }
+  if (!requireNickname()) return;
 
   const code = normalizeWord($("#roomCode")?.value);
   if (!code) {
@@ -803,7 +857,7 @@ function joinOnlineRoom() {
     return;
   }
 
-  const nickname = normalizeWord($("#name")?.value) || "플레이어";
+  const nickname = makeNickname();
 
   socket.emit("room:join", {
     roomId: code,
@@ -892,6 +946,7 @@ async function toggleLeaderboard() {
 --------------------------------------------------------- */
 document.addEventListener("DOMContentLoaded", () => {
   initSocket();
+  initNicknameBar();
   updateStatsUI();
 
   /* 탭 전환 */
@@ -971,5 +1026,14 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   $("#loadLb")?.addEventListener("click", toggleLeaderboard);
+
+  /* 닉네임 */
+  $("#nickSave")?.addEventListener("click", saveNickname);
+  $("#nickInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      saveNickname();
+    }
+  });
 
 });

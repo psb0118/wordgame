@@ -1013,6 +1013,35 @@ io.on("connection", (socket) => {
       socket.emit("player:ranking", { ...data, rank: calculateRank(data.rating) });
     } catch (err) { console.error("랭킹 조회 오류:", err); }
   });
+
+  socket.on("player:setName", async (data) => {
+    try {
+      const nickname = normalizeWord(data?.nickname);
+      if (!nickname) {
+        socket.emit("player:nameUpdated", { ok: false, reason: "이름을 입력해주세요." });
+        return;
+      }
+      if (nickname.length > 12) {
+        socket.emit("player:nameUpdated", { ok: false, reason: "이름은 12자 이내로 입력해주세요." });
+        return;
+      }
+      const room = findRoomBySocket(socket.id);
+      if (room) {
+        const dup = room.players.find(p => !p.isBot && p.socketId !== socket.id && p.nickname === nickname);
+        if (dup) {
+          socket.emit("player:nameUpdated", { ok: false, reason: "이미 사용 중인 닉네임입니다." });
+          return;
+        }
+        const me = room.players.find(p => p.socketId === socket.id);
+        if (me) me.nickname = nickname;
+      }
+      const playerData = await getPlayerData(socket.id);
+      playerData.nickname = nickname;
+      await savePlayerData(socket.id, playerData);
+      socket.emit("player:nameUpdated", { ok: true, nickname });
+      if (room) broadcastRoomState(room);
+    } catch (err) { console.error("닉네임 설정 오류:", err); }
+  });
 });
 
 /* =========================================================

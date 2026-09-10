@@ -41,35 +41,10 @@ function normalizeWord(word) {
 /* =========================================================
    두음법칙 — 허용 시작 글자
 
-   두 가지 레벨:
-   1. 음절 단위: DUEUM 매핑 (리→이, 라→나 등)
-   2. 받침 단위: 이전 음절의 초성과 모음에 따라 다음 초성 결정
-      - 초성 ㄹ + 모음 y/ㅣ 계열(이·여·요·유…) → 다음 초성 ㄹ, ㅇ
-      - 초성 ㄹ + 그 외 모음(으·아·오·우…)     → 다음 초성 ㄹ, ㄴ
-      - 초성 ㄴ + 모음 y/ㅣ 계열              → 다음 초성 ㄴ, ㅇ
-      - 초성 ㄴ + 그 외 모음                  → 다음 초성 ㄴ, ㄹ
-      (ㄱ/ㄷ/ㅅ/ㅈ/ㅊ/ㅍ/ㅎ 등은 두음법칙 없음)
+   기본 규칙: 이전 단어의 마지막 음절과 동일한 음절로 시작해야 함.
+   두음법칙에 따라 DUEUM 매핑된 음절(리→이, 락→낙, 라→나 등)도 허용.
+   (초성 기반의 임의 확장은 허용하지 않는다 — 락→라 같은 잘못된 연결 차단)
 ========================================================= */
-
-const VOWELS = ["ㅏ","ㅐ","ㅑ","ㅒ","ㅓ","ㅔ","ㅕ","ㅖ","ㅗ","ㅘ","ㅙ","ㅚ","ㅛ","ㅜ","ㅝ","ㅞ","ㅟ","ㅠ","ㅡ","ㅢ","ㅣ"];
-const Y_VOWELS = new Set(["ㅣ", "ㅑ", "ㅒ", "ㅕ", "ㅖ", "ㅛ", "ㅠ"]);
-
-function getVowel(char) {
-  if (!char || typeof char !== "string" || char.length !== 1) return null;
-  const code = char.charCodeAt(0);
-  if (code < 0xAC00 || code > 0xD7A3) return null;
-  return VOWELS[Math.floor((code - 0xAC00) / 28) % 21] || null;
-}
-
-function getTwoEumInitials(lastChar) {
-  if (!lastChar || typeof lastChar !== "string" || lastChar.length !== 1) return null;
-  const init = getInitialConsonant(lastChar);
-  if (init !== "ㄹ" && init !== "ㄴ") return null;
-  const vowel = getVowel(lastChar);
-  const isYVowel = !!(vowel && Y_VOWELS.has(vowel));
-  if (init === "ㄹ") return isYVowel ? ["ㄹ", "ㅇ"] : ["ㄹ", "ㄴ"];
-  return isYVowel ? ["ㄴ", "ㅇ"] : ["ㄴ", "ㄹ"];
-}
 
 function getJongsung(char) {
   if (!char || char.length !== 1) return null;
@@ -116,15 +91,7 @@ function canConnect(previousWord, nextWord) {
   const last = previousWord.at(-1);
   const first = nextWord.at(0);
 
-  if (allowedFirstChars(last).includes(first)) return true;
-
-  const twoEum = getTwoEumInitials(last);
-  if (twoEum) {
-    const firstInit = getInitialConsonant(first);
-    if (firstInit && twoEum.includes(firstInit)) return true;
-  }
-
-  return false;
+  return allowedFirstChars(last).includes(first);
 }
 
 /* =========================================================
@@ -256,16 +223,6 @@ function loadData(dataDir, rootDir) {
     WORD_INDEX.get(first).push(word);
   }
 
-  const initialMap = new Map();
-  for (const key of WORD_INDEX.keys()) {
-    if (key.length !== 1) continue;
-    const init = getInitialConsonant(key);
-    if (!init) continue;
-    if (!initialMap.has(init)) initialMap.set(init, []);
-    initialMap.get(init).push(key);
-  }
-  WORD_INDEX._initialMap = initialMap;
-
   console.log(`단어 인덱스 생성 완료: ${WORD_INDEX.size}개 시작 글자`);
 
   return { WORD_SET, ATTACK_DEPTH, WORD_INDEX, ROOT_WORDS, DEFENSE_WORDS };
@@ -306,30 +263,6 @@ function getCandidates(previousWord, usedWords, WORD_INDEX) {
         result.push(word);
         existingSet.add(word);
       }
-    }
-  }
-
-  const twoEum = getTwoEumInitials(lastChar);
-  if (twoEum) {
-    let added = 0;
-    const MAX_DUEUM_ADD = 200;
-    for (const init of twoEum) {
-      const keys = WORD_INDEX._initialMap?.get(init);
-      if (!keys) continue;
-      for (const key of keys) {
-        const bucket = WORD_INDEX.get(key);
-        if (!bucket) continue;
-        for (const word of bucket) {
-          if (!used.has(word) && !existingSet.has(word)) {
-            result.push(word);
-            existingSet.add(word);
-            added++;
-            if (added >= MAX_DUEUM_ADD) break;
-          }
-        }
-        if (added >= MAX_DUEUM_ADD) break;
-      }
-      if (added >= MAX_DUEUM_ADD) break;
     }
   }
 
@@ -388,14 +321,14 @@ function chooseStartWord(usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
 /* =========================================================
    AI — 최강 전략적 단어 선택
 
-   절대 원칙:
+   절대 원칙 (우선순위):
    1. 즉시 승리(한방) → 무조건 사용
-   2. 방어 단어 절대 사용 금지
-   3. 공격 단어 즉시 사용 (깊이 낮을수록 강함)
-   4. 루트/희귀 루트 단어 우선
-   5. 상대 선택지 최소화
-   6. 상대 역공 차단
-   7. 절대 지지 않는 전략
+   2. 공격 단어로 받아칠 수 있으면 무조건 공격 단어 (깊이 낮을수록 강함)
+   3. 공격 단어가 없으면 루트/희귀 루트 단어 사용
+   4. 그마저 없으면 일반(비방어) 단어 중 상대 선택지를 최소화
+   5. 모든 후보가 방어 단어일 때만 마지막 수단으로 사용
+   - 방어 단어는 지지 않기 위해 평소엔 절대 쓰지 않는다
+   - 상대에게 즉시 승리(한방)를 주는 단어는 회피
 ========================================================= */
 
 function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, turnNumber, DEFENSE_WORDS) {
@@ -405,128 +338,67 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   const newUsed = new Set([...usedWords]);
   const defenseSet = DEFENSE_WORDS || new Set();
 
-  let pool = candidates.filter(w => !defenseSet.has(w));
-  if (pool.length === 0) pool = candidates;
-
-  const immediateWins = [];
-  const attackWords = [];
-  const rootWords = [];
-
-  for (const w of pool) {
+  const infos = candidates.map(w => {
     const next = getCandidates(w, newUsed, WORD_INDEX);
-    if (next.length === 0) { immediateWins.push(w); continue; }
     const depth = ATTACK_DEPTH[w];
-    if (Number.isFinite(depth)) attackWords.push({ w, depth, nextCount: next.length });
-    if (ROOT_WORDS && ROOT_WORDS.has(w)) rootWords.push({ w, nextCount: next.length });
-  }
+    return {
+      w, nextCount: next.length, depth,
+      isAttack: Number.isFinite(depth),
+      isRoot: !!(ROOT_WORDS && ROOT_WORDS.has(w)),
+      isDefense: !!defenseSet.has(w)
+    };
+  });
 
-  if (immediateWins.length > 0) {
-    return immediateWins[Math.floor(Math.random() * immediateWins.length)];
-  }
+  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 
-  if (attackWords.length > 0) {
-    attackWords.sort((a, b) => a.depth - b.depth);
-    const bestDepth = attackWords[0].depth;
-    const topAttacks = attackWords.filter(a => a.depth <= bestDepth + 1);
-    if (topAttacks.length > 3) {
-      for (let i = topAttacks.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [topAttacks[i], topAttacks[j]] = [topAttacks[j], topAttacks[i]];
-      }
-    }
-    return topAttacks[Math.floor(Math.random() * Math.min(3, topAttacks.length))].w;
-  }
-
-  const EVAL_POOL_MAX = 150;
-  let evalPool = pool;
-  if (pool.length > EVAL_POOL_MAX) {
-    const shuffled = [...pool];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
-    evalPool = shuffled.slice(0, EVAL_POOL_MAX);
-  }
-
-  let bestScore = -Infinity;
-  let allScored = [];
-
-  for (const w of evalPool) {
-    const nextUsed = new Set(newUsed);
-    nextUsed.add(w);
-    const nextCandidates = getCandidates(w, nextUsed, WORD_INDEX);
-    const nextCount = nextCandidates.length;
-
-    if (nextCount === 0) {
-      allScored.push({ w, score: 10000 });
-      continue;
-    }
-
+  /* 상대 입장 평가: 이 단어를 맞은 뒤 상대가 쓸 수 있는 옵션/역공 점검 */
+  const oppScore = (info) => {
     let score = 0;
-
-    const depth = ATTACK_DEPTH[w];
-    const isAttack = Number.isFinite(depth);
-    if (isAttack) {
-      score += (20 - depth) * 30;
+    score -= info.nextCount * 2;                 /* 상대 선택지 적을수록 좋음 */
+    const opp = getCandidates(info.w, newUsed, WORD_INDEX);
+    const sample = opp.slice(0, 15);
+    for (const ow of sample) {
+      const owUsed = new Set(newUsed);
+      owUsed.add(info.w);
+      const owNext = getCandidates(ow, owUsed, WORD_INDEX);
+      if (owNext.length === 0) score -= 80;      /* 상대 즉시 승리 주면 안 됨 */
+      else if (Number.isFinite(ATTACK_DEPTH[ow]) && ATTACK_DEPTH[ow] <= 2) score -= 40;
+      else if (ROOT_WORDS && ROOT_WORDS.has(ow)) score -= 25;
     }
+    score += Math.random() * 3;
+    return score;
+  };
 
-    if (ROOT_WORDS && ROOT_WORDS.has(w)) {
-      score += 50;
-    }
+  const bestFrom = (group) => {
+    const scored = group.map(i => ({ i, s: oppScore(i) }));
+    scored.sort((a, b) => b.s - a.s);
+    const topScore = scored[0].s;
+    const top = scored.filter(x => x.s >= topScore - 5);
+    return pick(top).i.w;
+  };
 
-    if (nextCount <= 2) score += 40;
-    else if (nextCount <= 5) score += 25;
-    else if (nextCount <= 10) score += 15;
-    else if (nextCount <= 20) score += 5;
-    else score -= Math.min(nextCount, 50) * 0.3;
+  /* 1. 즉시 승리 */
+  const wins = infos.filter(i => i.nextCount === 0);
+  if (wins.length) return pick(wins).w;
 
-    const OPP_EVAL_MAX = Math.min(15, nextCandidates.length);
-    const oppSample = nextCandidates.length > OPP_EVAL_MAX
-      ? nextCandidates.slice(0, OPP_EVAL_MAX)
-      : nextCandidates;
-
-    let opponentEndGame = 0;
-    let opponentStrongAttack = 0;
-    let opponentWeakMoves = 0;
-
-    for (const oppWord of oppSample) {
-      const oppUsed = new Set(nextUsed);
-      oppUsed.add(oppWord);
-      const oppNext = getCandidates(oppWord, oppUsed, WORD_INDEX);
-
-      if (oppNext.length === 0) { opponentEndGame++; score -= 80; continue; }
-
-      const oppDepth = ATTACK_DEPTH[oppWord];
-      if (Number.isFinite(oppDepth) && oppDepth <= 3) {
-        opponentStrongAttack++;
-        score -= (20 - oppDepth) * 8;
-      }
-
-      if (oppNext.length >= 10) opponentWeakMoves++;
-      if (oppNext.length === 1) score -= 20;
-    }
-
-    score += opponentWeakMoves * 5;
-
-    if (rootWords.some(r => r.w === w)) score += 10;
-
-    score += Math.random() * 5;
-
-    allScored.push({ w, score });
+  /* 2. 공격 단어 — 깊이 최저만 사용 */
+  const attacks = infos.filter(i => i.isAttack);
+  if (attacks.length) {
+    const minDepth = Math.min(...attacks.map(i => i.depth));
+    const bestAttacks = attacks.filter(i => i.depth === minDepth);
+    return bestFrom(bestAttacks);
   }
 
-  allScored.sort((a, b) => b.score - a.score);
+  /* 3. 루트/희귀 루트 단어 */
+  const roots = infos.filter(i => i.isRoot);
+  if (roots.length) return bestFrom(roots);
 
-  if (allScored.length === 0) {
-    const fallback = pool[Math.floor(Math.random() * pool.length)];
-    return canConnect(currentWord, fallback) ? fallback : pool.find(w => canConnect(currentWord, w)) || null;
-  }
+  /* 4. 일반(비방어) 단어 — 지지 않는 최선 */
+  const normals = infos.filter(i => !i.isDefense);
+  if (normals.length) return bestFrom(normals);
 
-  const topN = Math.min(5, allScored.length);
-  const topCandidates = allScored.slice(0, topN).map(x => x.w);
-  const chosen = topCandidates[Math.floor(Math.random() * topCandidates.length)];
-  if (canConnect(currentWord, chosen)) return chosen;
-  return pool.find(w => canConnect(currentWord, w)) || chosen;
+  /* 5. 전부 방어 단어일 때만 최후 수단 */
+  return bestFrom(infos);
 }
 
 /* =========================================================
@@ -555,7 +427,6 @@ function calculateElo(winnerRating, loserRating, K = 32) {
 
 module.exports = {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
-  getVowel, getTwoEumInitials,
   loadData, hasWord, getAttackDepth, isAttackWord,
   getCandidates, isOneShot, getStartCandidates, chooseStartWord,
   chooseAIWord, calculateRank, calculateElo

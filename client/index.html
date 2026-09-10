@@ -13,6 +13,12 @@
       <p>끄글 단어 목록 기반 · AI · 온라인 멀티플레이</p>
     </header>
 
+    <div class="name-bar">
+      <label>닉네임<input id="nickInput" maxlength="12" placeholder="이름을 입력하세요"></label>
+      <button id="nickSave">저장</button>
+      <span id="nickMsg"></span>
+    </div>
+
     <nav class="tabs">
       <button data-mode="single" class="active">싱글플레이</button>
       <button data-mode="online">온라인 멀티</button>
@@ -82,7 +88,6 @@
     <!-- 온라인 멀티 -->
     <section id="online" class="panel hidden">
       <div class="onlineTop">
-        <label>닉네임<input id="name" maxlength="20" placeholder="Player"></label>
         <button id="create">방 만들기</button>
         <label>방 코드<input id="roomCode" maxlength="6" placeholder="X8F2KD"></label>
         <button id="join">방 참가</button>
