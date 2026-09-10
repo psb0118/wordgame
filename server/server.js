@@ -629,6 +629,13 @@ function removePlayer(room, socketId, reason) {
   } else {
     room.players.splice(index, 1);
     for (let i = index; i < room.players.length; i++) room.players[i].playerIndex = i;
+
+    /* 남은 유저에게 자기 playerIndex 재전달 — 로비에서 인덱스가 밀린 경우 대응 */
+    for (const p of room.players) {
+      if (p.isBot || !p.connected || !p.socketId) continue;
+      const s = io.sockets.sockets.get(p.socketId);
+      if (s) s.emit("room:playerIndex", { playerIndex: p.playerIndex });
+    }
   }
 
   if (room.hostSocketId === socketId) {
@@ -654,6 +661,29 @@ app.get("/", (req, res) => {
 
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length, rooms: ROOMS.size, uptime: process.uptime() });
+});
+
+app.get("/api/leaderboard", async (req, res) => {
+  try {
+    const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit || "10"), 10) || 10));
+    let rows = [];
+    if (dbMode === "pg") {
+      rows = (await dbPool.query(
+        "SELECT id, nickname, rating, wins, losses FROM players WHERE id <> $1 ORDER BY rating DESC LIMIT $2",
+        [AI_PLAYER_ID, limit]
+      )).rows;
+    } else {
+      rows = [...playerCache.values()]
+        .filter(p => p && p.id !== AI_PLAYER_ID)
+        .sort((a, b) => (b.rating || 1000) - (a.rating || 1000))
+        .slice(0, limit)
+        .map(p => ({ id: p.id, nickname: p.nickname, rating: p.rating, wins: p.wins, losses: p.losses }));
+    }
+    res.json(rows.map((r, i) => ({ ...r, rank: i + 1, tier: calculateRank(r.rating) })));
+  } catch (err) {
+    console.error("리더보드 조회 오류:", err.message);
+    res.status(500).json({ ok: false, error: "리더보드를 불러오지 못했습니다." });
+  }
 });
 
 /* =========================================================
@@ -764,6 +794,9 @@ io.on("connection", (socket) => {
         player.eliminated = true;
       }
 
+      /* AI(싱글) 방에 두 번째 사람이 들어오면 멀티플레이 방으로 전환 */
+      if (room.mode === "ai") room.mode = "online";
+
       socket.join(room.id);
       socket.data.roomId = room.id;
       socket.data.playerIndex = player.playerIndex;
@@ -841,6 +874,39 @@ io.on("connection", (socket) => {
     } catch (error) {
       console.error("game:word 오류:", error);
       socket.emit("game:error", { ok: false, reason: "단어 처리 중 오류가 발생했습니다." });
+    }
+  });
+
+  socket.on("game:hint", () => {
+    try {
+      const room = findRoomBySocket(socket.id);
+      if (!room) { socket.emit("game:hint", { ok: false, reason: "게임 방에 참여하지 않았습니다." }); return; }
+      if (room.mode !== "ai") { socket.emit("game:hint", { ok: false, reason: "싱글플레이에서만 힌트를 사용할 수 있습니다." }); return; }
+      if (!room.started || room.finished) { socket.emit("game:hint", { ok: false, reason: "게임이 진행 중이 아닙니다." }); return; }
+      const player = getPlayerBySocket(room, socket.id);
+      if (!player) { socket.emit("game:hint", { ok: false, reason: "플레이어를 찾을 수 없습니다." }); return; }
+      if (player.eliminated) { socket.emit("game:hint", { ok: false, reason: "탈락한 플레이어입니다." }); return; }
+      if (room.turnPlayerIndex !== player.playerIndex) { socket.emit("game:hint", { ok: false, reason: "지금은 당신의 차례가 아닙니다." }); return; }
+
+      let candidates;
+      if (room.turnNumber === 0) {
+        const syllable = room.startSyllable || "";
+        candidates = getCandidates(syllable, room.usedWords, WORD_INDEX)
+          .filter(w => w.startsWith(syllable)
+            && !isAttackWord(w, ATTACK_DEPTH)
+            && !isOneShot(w, room.usedWords, WORD_INDEX));
+      } else {
+        const cur = room.currentWord || "";
+        candidates = getCandidates(cur, room.usedWords, WORD_INDEX)
+          .filter(w => canConnect(cur, w));
+      }
+
+      if (candidates.length === 0) { socket.emit("game:hint", { ok: false, reason: "힌트를 찾을 수 없습니다." }); return; }
+      const word = candidates[Math.floor(Math.random() * candidates.length)];
+      socket.emit("game:hint", { ok: true, word });
+    } catch (error) {
+      console.error("game:hint 오류:", error);
+      socket.emit("game:hint", { ok: false, reason: "힌트 처리 중 오류가 발생했습니다." });
     }
   });
 

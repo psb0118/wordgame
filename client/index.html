@@ -53,6 +53,7 @@
 
       <div class="single-input-area">
         <input id="singleInput" placeholder="단어 입력" autocomplete="off">
+        <button id="hintBtn">힌트</button>
         <button id="singleSend">입력</button>
       </div>
 
@@ -143,6 +144,11 @@
           <span>승: <strong id="onlineWins">0</strong></span>
           <span>패: <strong id="onlineLosses">0</strong></span>
         </div>
+      </div>
+
+      <div class="lb">
+        <button id="loadLb" class="wide secondary">리더보드 보기</button>
+        <div id="leaderboard" class="hidden"></div>
       </div>
     </section>
   </main>

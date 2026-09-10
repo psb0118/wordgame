@@ -76,10 +76,25 @@ const DUEUM = {
   "렁": ["렁", "엉"], "렴": ["렴", "염"]
 };
 
-const JONGSUNG_ALLOWED_INITIALS = {
-  "ㄹ": new Set(["ㅇ", "ㄴ"]),
-  "ㄴ": new Set(["ㅇ"]),
-};
+const VOWELS = ["ㅏ","ㅐ","ㅑ","ㅒ","ㅓ","ㅔ","ㅕ","ㅖ","ㅗ","ㅘ","ㅙ","ㅚ","ㅛ","ㅜ","ㅝ","ㅞ","ㅟ","ㅠ","ㅡ","ㅢ","ㅣ"];
+const Y_VOWELS = new Set(["ㅣ", "ㅑ", "ㅒ", "ㅕ", "ㅖ", "ㅛ", "ㅠ"]);
+
+function getVowel(char) {
+  if (!char || typeof char !== "string" || char.length !== 1) return null;
+  const code = char.charCodeAt(0);
+  if (code < 0xAC00 || code > 0xD7A3) return null;
+  return VOWELS[Math.floor((code - 0xAC00) / 28) % 21] || null;
+}
+
+function getTwoEumInitials(lastChar) {
+  if (!lastChar || typeof lastChar !== "string" || lastChar.length !== 1) return null;
+  const init = getInitialConsonant(lastChar);
+  if (init !== "ㄹ" && init !== "ㄴ") return null;
+  const vowel = getVowel(lastChar);
+  const isYVowel = !!(vowel && Y_VOWELS.has(vowel));
+  if (init === "ㄹ") return isYVowel ? ["ㄹ", "ㅇ"] : ["ㄹ", "ㄴ"];
+  return isYVowel ? ["ㄴ", "ㅇ"] : ["ㄴ", "ㄹ"];
+}
 
 function getJongsung(char) {
   if (!char || char.length !== 1) return null;
@@ -174,6 +189,11 @@ function focusInput() {
     const input = currentMode === "single" ? $("#singleInput") : $("#onlineInput");
     if (input && !input.disabled) input.focus();
   }, 100);
+}
+
+function clearInput() {
+  const input = currentMode === "single" ? $("#singleInput") : $("#onlineInput");
+  if (input) input.value = "";
 }
 
 /* ---------------------------------------------------------
@@ -274,6 +294,26 @@ function initSocket() {
     hideRoomInfo();
   });
 
+  socket.on("room:playerIndex", (data) => {
+    if (data && typeof data.playerIndex === "number") {
+      playerIndex = data.playerIndex;
+      renderGameState(gameState);
+    }
+  });
+
+  socket.on("game:hint", (data) => {
+    if (!data) return;
+    if (data.ok && data.word) {
+      const input = currentMode === "single" ? $("#singleInput") : null;
+      if (input) {
+        input.value = data.word;
+        focusInput();
+      }
+    } else if (data.reason) {
+      showMessage(data.reason, "info");
+    }
+  });
+
   /* -- 게임 이벤트 ------------------------------------- */
   socket.on("game:state", (data) => {
     const wasMyTurn = gameState && gameState.turnPlayer === playerIndex;
@@ -289,6 +329,7 @@ function initSocket() {
     gameState = data.state;
     gameSessionId++;
     localUsedWords.clear();
+    clearInput();
     renderGameState(gameState);
     showMessage("게임이 시작되었습니다!", "success");
     socket.emit("player:getRanking");
@@ -313,6 +354,7 @@ function initSocket() {
       const isMyWord = data.player === playerIndex;
       if (isMyWord) {
         submitting = false;
+        clearInput();
         updateInputState();
       }
       if (!isMyTurn()) {
@@ -372,6 +414,7 @@ function initSocket() {
   socket.on("game:finished", (data) => {
     submitting = false;
     stopCountdown();
+    clearInput();
     updateInputState();
 
     if (data.winner !== null && data.winner === playerIndex) {
@@ -438,9 +481,10 @@ function renderGameState(state) {
         let recvTag = "";
         if (lastChar) {
           const lastInit = getInitialConsonant(lastChar);
-          if (lastInit && JONGSUNG_ALLOWED_INITIALS[lastInit]) {
-            const inits = [...JONGSUNG_ALLOWED_INITIALS[lastInit]];
-            recvTag = ` <span class="dueum-tag recv" title="초성 '${lastInit}' 두음 규칙">${inits.join("/")}</span>`;
+          const twoEum = getTwoEumInitials(lastChar);
+          if (lastInit && twoEum) {
+            const inits = twoEum.join("/");
+            recvTag = ` <span class="dueum-tag recv" title="두음법칙: 끝 음절 초성 ${lastInit} → 다음 초성 ${inits.toUpperCase()}">두음 ${inits}</span>`;
           }
         }
         hintEl.innerHTML = `다음 글자: ${tags}${recvTag}`;
@@ -531,10 +575,23 @@ function renderPlayers(state) {
   if (me) renderHearts(me.hearts);
 }
 
+let lastHearts = null;
+
 function renderHearts(hearts) {
   const v = Math.max(0, Number(hearts) || 0);
+  const lost = lastHearts !== null && v < lastHearts;
+  lastHearts = v;
   const text = "♥".repeat(v) + "♡".repeat(Math.max(0, 2 - v));
   setText(["#hearts", "#heartDisplay", "#heartsOnline"], text);
+  if (lost) {
+    for (const sel of ["#hearts", "#heartDisplay", "#heartsOnline"]) {
+      const node = $(sel);
+      if (!node) continue;
+      node.classList.remove("shake");
+      void node.offsetWidth;
+      node.classList.add("shake");
+    }
+  }
 }
 
 function renderMistakes(mistakes, maxMistakes) {
@@ -640,6 +697,7 @@ function stopCountdown() {
 function updateInputState() {
   const input = currentMode === "single" ? $("#singleInput") : $("#onlineInput");
   const btn = currentMode === "single" ? $("#singleSend") : $("#onlineSend");
+  const hintBtn = $("#hintBtn");
 
   const myTurn = gameState && gameState.started && !gameState.finished
     && gameState.turnPlayer === playerIndex;
@@ -651,6 +709,7 @@ function updateInputState() {
 
   if (input) input.disabled = disabled;
   if (btn) btn.disabled = disabled;
+  if (hintBtn) hintBtn.disabled = disabled || currentMode !== "single";
 
   const inputArea = currentMode === "single" ? $(".single-input-area") : $(".online-input-area");
   if (inputArea) {
@@ -710,7 +769,6 @@ function submitSingleWord() {
 
   submitting = true;
   socket.emit("game:word", { word });
-  input.value = "";
   updateInputState();
 }
 
@@ -770,7 +828,6 @@ function submitOnlineWord() {
 
   submitting = true;
   socket.emit("game:word", { word });
-  input.value = "";
   updateInputState();
 }
 
@@ -782,6 +839,52 @@ function leaveRoom() {
   gameState = null;
   localUsedWords.clear();
   startingGame = false;
+}
+
+/* ---------------------------------------------------------
+   리더보드
+--------------------------------------------------------- */
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+async function toggleLeaderboard() {
+  const box = $("#leaderboard");
+  const btn = $("#loadLb");
+  if (!box) return;
+  if (!box.classList.contains("hidden")) {
+    box.classList.add("hidden");
+    if (btn) btn.textContent = "리더보드 보기";
+    return;
+  }
+  if (btn) btn.textContent = "불러오는 중...";
+  try {
+    const res = await fetch("/api/leaderboard?limit=10");
+    const rows = await res.json();
+    if (!Array.isArray(rows)) throw new Error("bad payload");
+    if (rows.length === 0) {
+      box.innerHTML = `<div class="lb-empty">아직 기록이 없습니다.</div>`;
+    } else {
+      box.innerHTML = rows.map(r => {
+        const tier = r.tier ? (r.tier.sub ? `${r.tier.tier} ${r.tier.sub}` : r.tier.tier) : "-";
+        const cls = r.rank === 1 ? " top1" : r.rank <= 3 ? " top3" : "";
+        return `<div class="lb-row${cls}">
+            <span class="lb-rank">${r.rank}</span>
+            <span class="lb-name">${escapeHtml(r.nickname || "플레이어")}</span>
+            <span class="lb-tier">${escapeHtml(tier)}</span>
+            <span class="lb-rating">${r.rating}점 · ${r.wins}승 ${r.losses}패</span>
+          </div>`;
+      }).join("");
+    }
+    box.classList.remove("hidden");
+    if (btn) btn.textContent = "리더보드 접기";
+  } catch (err) {
+    box.innerHTML = `<div class="lb-empty" style="color:#f87171">리더보드를 불러오지 못했습니다.</div>`;
+    box.classList.remove("hidden");
+    if (btn) btn.textContent = "리더보드 보기";
+  }
 }
 
 /* ---------------------------------------------------------
@@ -830,6 +933,10 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   $("#singleSend")?.addEventListener("click", submitSingleWord);
+  $("#hintBtn")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) return;
+    socket.emit("game:hint");
+  });
   $("#singleInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -862,5 +969,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (wrap) wrap.classList.add("hidden");
     socket.emit("game:restart");
   });
+
+  $("#loadLb")?.addEventListener("click", toggleLeaderboard);
 
 });

@@ -43,16 +43,33 @@ function normalizeWord(word) {
 
    두 가지 레벨:
    1. 음절 단위: DUEUM 매핑 (리→이, 라→나 등)
-   2. 받침 단위: 이전 글자의 받침에 따라 다음 초성 결정
-      - ㄹ 받침 → 다음 초성: ㄹ, ㅇ
-      - ㄴ 받침 → 다음 초성: ㄴ, ㄹ
+   2. 받침 단위: 이전 음절의 초성과 모음에 따라 다음 초성 결정
+      - 초성 ㄹ + 모음 y/ㅣ 계열(이·여·요·유…) → 다음 초성 ㄹ, ㅇ
+      - 초성 ㄹ + 그 외 모음(으·아·오·우…)     → 다음 초성 ㄹ, ㄴ
+      - 초성 ㄴ + 모음 y/ㅣ 계열              → 다음 초성 ㄴ, ㅇ
+      - 초성 ㄴ + 그 외 모음                  → 다음 초성 ㄴ, ㄹ
       (ㄱ/ㄷ/ㅅ/ㅈ/ㅊ/ㅍ/ㅎ 등은 두음법칙 없음)
 ========================================================= */
 
-const JONGSUNG_ALLOWED_INITIALS = {
-  "ㄹ": new Set(["ㅇ", "ㄴ"]),
-  "ㄴ": new Set(["ㅇ"]),
-};
+const VOWELS = ["ㅏ","ㅐ","ㅑ","ㅒ","ㅓ","ㅔ","ㅕ","ㅖ","ㅗ","ㅘ","ㅙ","ㅚ","ㅛ","ㅜ","ㅝ","ㅞ","ㅟ","ㅠ","ㅡ","ㅢ","ㅣ"];
+const Y_VOWELS = new Set(["ㅣ", "ㅑ", "ㅒ", "ㅕ", "ㅖ", "ㅛ", "ㅠ"]);
+
+function getVowel(char) {
+  if (!char || typeof char !== "string" || char.length !== 1) return null;
+  const code = char.charCodeAt(0);
+  if (code < 0xAC00 || code > 0xD7A3) return null;
+  return VOWELS[Math.floor((code - 0xAC00) / 28) % 21] || null;
+}
+
+function getTwoEumInitials(lastChar) {
+  if (!lastChar || typeof lastChar !== "string" || lastChar.length !== 1) return null;
+  const init = getInitialConsonant(lastChar);
+  if (init !== "ㄹ" && init !== "ㄴ") return null;
+  const vowel = getVowel(lastChar);
+  const isYVowel = !!(vowel && Y_VOWELS.has(vowel));
+  if (init === "ㄹ") return isYVowel ? ["ㄹ", "ㅇ"] : ["ㄹ", "ㄴ"];
+  return isYVowel ? ["ㄴ", "ㅇ"] : ["ㄴ", "ㄹ"];
+}
 
 function getJongsung(char) {
   if (!char || char.length !== 1) return null;
@@ -101,10 +118,10 @@ function canConnect(previousWord, nextWord) {
 
   if (allowedFirstChars(last).includes(first)) return true;
 
-  const lastInit = getInitialConsonant(last);
-  if (lastInit && JONGSUNG_ALLOWED_INITIALS[lastInit]) {
+  const twoEum = getTwoEumInitials(last);
+  if (twoEum) {
     const firstInit = getInitialConsonant(first);
-    if (firstInit && JONGSUNG_ALLOWED_INITIALS[lastInit].has(firstInit)) return true;
+    if (firstInit && twoEum.includes(firstInit)) return true;
   }
 
   return false;
@@ -292,12 +309,11 @@ function getCandidates(previousWord, usedWords, WORD_INDEX) {
     }
   }
 
-  const lastInit = getInitialConsonant(lastChar);
-  if (lastInit && JONGSUNG_ALLOWED_INITIALS[lastInit]) {
-    const allowedInits = JONGSUNG_ALLOWED_INITIALS[lastInit];
+  const twoEum = getTwoEumInitials(lastChar);
+  if (twoEum) {
     let added = 0;
     const MAX_DUEUM_ADD = 200;
-    for (const init of allowedInits) {
+    for (const init of twoEum) {
       const keys = WORD_INDEX._initialMap?.get(init);
       if (!keys) continue;
       for (const key of keys) {
@@ -539,6 +555,7 @@ function calculateElo(winnerRating, loserRating, K = 32) {
 
 module.exports = {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
+  getVowel, getTwoEumInitials,
   loadData, hasWord, getAttackDepth, isAttackWord,
   getCandidates, isOneShot, getStartCandidates, chooseStartWord,
   chooseAIWord, calculateRank, calculateElo
