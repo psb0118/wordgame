@@ -116,13 +116,6 @@ function allowedFirstChars(lastChar) {
     if (Array.isArray(values) && values.includes(lastChar)) result.add(from);
   }
 
-  const lastInit = getInitialConsonant(lastChar);
-  if (lastInit && JONGSUNG_ALLOWED_INITIALS[lastInit]) {
-    for (const init of JONGSUNG_ALLOWED_INITIALS[lastInit]) {
-      result.add(init);
-    }
-  }
-
   return [...result];
 }
 
@@ -210,6 +203,17 @@ function initSocket() {
   socket.on("server:ready", (data) => {
     socketConnected = true;
     console.log("[SOCKET] 서버 준비 완료:", data);
+    socket.emit("player:getRanking");
+  });
+
+  /* -- 랭킹 ------------------------------------------- */
+  socket.on("player:ranking", (data) => {
+    if (!data) return;
+    const rank = data.rank || calculateRank(data.rating);
+    setText(["#singleRank", "#onlineRank"], formatRank(rank));
+    setText(["#singleRating", "#onlineRating"], data.rating);
+    setText(["#singleWins", "#onlineWins"], data.wins);
+    setText(["#singleLosses", "#onlineLosses"], data.losses);
   });
 
   /* -- 방 이벤트 --------------------------------------- */
@@ -287,6 +291,7 @@ function initSocket() {
     localUsedWords.clear();
     renderGameState(gameState);
     showMessage("게임이 시작되었습니다!", "success");
+    socket.emit("player:getRanking");
     updateRuleNotice(gameState);
     const hostControls = $("#hostControls");
     if (hostControls) hostControls.classList.add("hidden");
@@ -393,6 +398,7 @@ function initSocket() {
 
     gameState = data.state || gameState;
     renderGameState(gameState);
+    socket.emit("player:getRanking");
 
     if (currentMode === "single") {
       showRestartButton(true);
@@ -482,7 +488,7 @@ function renderGameState(state) {
 
 function updateRuleNotice(state) {
   if (!state) return;
-  const freeTurns = state.oneShotFreeTurns || 3;
+  const freeTurns = state.oneShotFreeTurns || 1;
   const turn = state.turnNumber || 0;
   const selector = currentMode === "single" ? "#ruleNotice" : "#onlineRuleNotice";
   const el = $(selector);
@@ -513,7 +519,8 @@ function renderPlayers(state) {
       if (p.eliminated) row.dataset.eliminated = "true";
 
       const hearts = "♥".repeat(Math.max(0, p.hearts)) + "♡".repeat(Math.max(0, 2 - p.hearts));
-      const mistakesText = p.mistakes != null && !p.waiting ? ` 실수:${p.mistakes}/5` : "";
+      const mistakesMax = state.mistakesPerLife || 5;
+      const mistakesText = p.mistakes != null && !p.waiting ? ` 실수:${p.mistakes}/${mistakesMax}` : "";
       const status = p.waiting ? "대기 중" : p.eliminated ? "탈락" : p.connected ? (p.isBot ? "AI" : "접속 중") : "연결 끊김";
       row.textContent = `${p.nickname} — ${p.waiting ? "-" : hearts}${mistakesText} — ${status}`;
       container.appendChild(row);
