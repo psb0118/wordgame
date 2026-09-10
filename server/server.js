@@ -27,16 +27,82 @@ const PORT = process.env.PORT || 3000;
 const ROOT_DIR = path.join(__dirname, "..");
 const CLIENT_DIR = path.join(ROOT_DIR, "client");
 const DATA_DIR = path.join(ROOT_DIR, "data");
-const MAX_HEARTS = 2;
-const TURN_TIME = 20;
-const MAX_PLAYERS = 10;
-const ONESHOT_FREE_TURNS = 2;
-const MISTAKES_PER_LIFE = 5;
+let MAX_HEARTS = 2;
+let TURN_TIME = 20;
+let MAX_PLAYERS = 10;
+let ONESHOT_FREE_TURNS = 1;
+let MISTAKES_PER_LIFE = 5;
 const AI_PLAYER_ID = "ai";
 const STARTING_SYLLABLES = [
-  "가", "나", "다", "라", "마", "바", "사", "아", "자", "차", "카", "타", "파", "하",
-  "기", "이", "지"
+  "가", "나", "다", "마", "자", "기", "지", "아", "이"
 ];
+
+/* =========================================================
+   관리자 설정 — 수치로 조정 가능한 모든 값
+========================================================= */
+
+let adminPassword = null;
+const adminConfigPath = path.join(DATA_DIR, "admin-config.json");
+
+function getConfig() {
+  return {
+    turnTime: TURN_TIME,
+    maxHearts: MAX_HEARTS,
+    maxPlayers: MAX_PLAYERS,
+    oneShotFreeTurns: ONESHOT_FREE_TURNS,
+    mistakesPerLife: MISTAKES_PER_LIFE
+  };
+}
+
+function clampNum(value, min, max, fallback) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+const CONFIG_RANGES = {
+  turnTime: [5, 120],
+  maxHearts: [1, 10],
+  maxPlayers: [2, 50],
+  oneShotFreeTurns: [0, 5],
+  mistakesPerLife: [1, 20]
+};
+
+function applyConfigValue(key, raw) {
+  const range = CONFIG_RANGES[key];
+  if (!range) return null;
+  const fallback = {
+    turnTime: TURN_TIME, maxHearts: MAX_HEARTS, maxPlayers: MAX_PLAYERS,
+    oneShotFreeTurns: ONESHOT_FREE_TURNS, mistakesPerLife: MISTAKES_PER_LIFE
+  }[key];
+  const val = clampNum(raw, range[0], range[1], fallback);
+  if (key === "turnTime") TURN_TIME = val;
+  else if (key === "maxHearts") MAX_HEARTS = val;
+  else if (key === "maxPlayers") MAX_PLAYERS = val;
+  else if (key === "oneShotFreeTurns") ONESHOT_FREE_TURNS = val;
+  else if (key === "mistakesPerLife") MISTAKES_PER_LIFE = val;
+  return val;
+}
+
+function saveAdminConfig() {
+  try {
+    fs.writeFileSync(adminConfigPath, JSON.stringify({ adminPassword, config: getConfig() }, null, 2));
+  } catch (e) { console.warn("관리자 설정 저장 실패:", e.message); }
+}
+
+function loadAdminConfig() {
+  try {
+    if (fs.existsSync(adminConfigPath)) {
+      const data = JSON.parse(fs.readFileSync(adminConfigPath, "utf8"));
+      if (typeof data.adminPassword === "string" && data.adminPassword) adminPassword = data.adminPassword;
+      const c = data.config || {};
+      for (const key of Object.keys(CONFIG_RANGES)) {
+        if (typeof c[key] === "number") applyConfigValue(key, c[key]);
+      }
+      console.log("관리자 설정 로드 완료:", JSON.stringify(getConfig()));
+    }
+  } catch (e) { console.warn("관리자 설정 로드 실패:", e.message); }
+}
 
 /* =========================================================
    데이터 로드
@@ -1116,6 +1182,75 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("랭킹 조회 오류:", err); }
   });
 
+  /* -- 관리자 패널 ------------------------------------- */
+  const requireNickname = async (socket) => {
+    const pd = await getPlayerData(socket.id);
+    const nickname = String(pd.nickname || "").trim();
+    if (!nickname || nickname === "플레이어") {
+      return { ok: false, reason: "관리자 기능을 사용하려면 먼저 닉네임을 등록해주세요." };
+    }
+    return { ok: true, nickname };
+  };
+
+  socket.on("admin:getPanel", async () => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
+      socket.emit("admin:panel", {
+        ok: true,
+        hasPassword: !!adminPassword,
+        config: getConfig(),
+        startSyllables: STARTING_SYLLABLES
+      });
+    } catch (err) { console.error("관리자 패널 오류:", err); }
+  });
+
+  socket.on("admin:setPassword", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
+      const current = String(data?.current ?? "");
+      const next = String(data?.next ?? "");
+      if (next.length < 4) {
+        socket.emit("admin:panel", { ok: false, reason: "비밀번호는 4자 이상이어야 합니다." });
+        return;
+      }
+      if (adminPassword && current !== adminPassword) {
+        socket.emit("admin:panel", { ok: false, reason: "현재 비밀번호가 올바르지 않습니다." });
+        return;
+      }
+      adminPassword = next;
+      saveAdminConfig();
+      socket.emit("admin:panel", {
+        ok: true, hasPassword: true,
+        message: adminPassword ? "비밀번호가 변경되었습니다." : "비밀번호가 설정되었습니다.",
+        config: getConfig()
+      });
+    } catch (err) { console.error("관리자 비밀번호 오류:", err); }
+  });
+
+  socket.on("admin:updateConfig", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
+      if (!adminPassword || String(data?.password ?? "") !== adminPassword) {
+        socket.emit("admin:panel", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
+        return;
+      }
+      const key = String(data?.key ?? "");
+      const range = CONFIG_RANGES[key];
+      if (!range) {
+        socket.emit("admin:panel", { ok: false, reason: "조정할 수 없는 항목입니다." });
+        return;
+      }
+      const val = applyConfigValue(key, data?.value);
+      saveAdminConfig();
+      io.emit("admin:configUpdated", getConfig());
+      socket.emit("admin:panel", { ok: true, message: "설정이 적용되었습니다.", config: getConfig() });
+      console.log(`[ADMIN] ${reg.nickname}님이 ${key} → ${val} 변경`);
+    } catch (err) { console.error("관리자 설정 오류:", err); }
+  });
+
   socket.on("player:setName", async (data) => {
     try {
       const nickname = normalizeWord(data?.nickname);
@@ -1151,6 +1286,7 @@ io.on("connection", (socket) => {
 ========================================================= */
 
 initDatabase().then(() => {
+  loadAdminConfig();
   server.listen(PORT, "0.0.0.0", () => {
     console.log("========================================");
     console.log(`끝말잇기 서버 실행 중: http://localhost:${PORT}`);

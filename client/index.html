@@ -155,8 +155,20 @@
         <button id="loadLb" class="wide secondary">리더보드 보기</button>
         <div id="leaderboard" class="hidden"><div class="lb-heading"></div></div>
       </div>
+
+      <div id="adminHotspot" aria-hidden="true"></div>
     </section>
   </main>
+
+  <div id="adminModal" class="modal hidden">
+    <div class="modal-box admin-box">
+      <div class="admin-head">
+        <h3>관리자 패널</h3>
+        <button class="modal-close" data-admin-close>✕</button>
+      </div>
+      <div id="adminBody"></div>
+    </div>
+  </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="script.js"></script>

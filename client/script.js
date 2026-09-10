@@ -132,9 +132,11 @@ const DUEUM = {
   "료": ["료", "요"], "류": ["류", "유"], "리": ["리", "이"],
   "라": ["라", "나"], "락": ["락", "낙"], "란": ["란", "난"],
   "랄": ["랄", "날"], "람": ["람", "남"], "랍": ["랍", "납"],
-  "랏": ["랏", "낫"], "랑": ["랑", "낭"], "래": ["래", "내"], "랭": ["랭", "냉"],
+  "랏": ["랏", "낫"], "랑": ["랑", "낭"], "래": ["래", "내"], "랭": ["랭", "냉"], "럿": ["럿", "엇", "넛"],
   "략": ["략", "약"], "량": ["량", "양"], "련": ["련", "연"],
   "렬": ["렬", "열"], "령": ["령", "영"],
+  "러": ["러", "너"], "럭": ["럭", "넉"], "런": ["런", "넌"],
+  "럴": ["럴", "널"], "럼": ["럼", "넘"], "럽": ["럽", "넙"],
   "로": ["로", "노"], "록": ["록", "녹"], "론": ["론", "논"],
   "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놑"],
   "롯": ["롯", "놃"], "롱": ["롱", "농"], "뢰": ["뢰", "뇌"],
@@ -304,6 +306,20 @@ function initSocket() {
       const msg = $("#nickMsg");
       if (msg) { msg.textContent = data.reason; msg.dataset.type = "error"; }
       else showMessage(data.reason, "error");
+    }
+  });
+
+  /* -- 관리자 패널 ------------------------------------- */
+  socket.on("admin:panel", (data) => {
+    if (!data) return;
+    renderAdminBody(data);
+  });
+
+  socket.on("admin:configUpdated", (cfg) => {
+    if (cfg) {
+      showMessage("서버 설정이 관리자에 의해 변경되었습니다.", "info");
+      if (!adminModalOpen) return;
+      socket.emit("admin:getPanel");
     }
   });
 
@@ -929,6 +945,135 @@ function leaveRoom() {
 }
 
 /* ---------------------------------------------------------
+   관리자 패널 (숨겨진 설정) — 온라인 오른쪽 아래를 여러 번 연타
+--------------------------------------------------------- */
+const ADMIN_CLICK_NEEDED = 7;
+const ADMIN_CLICK_GAP_MS = 1200;
+let adminClicks = 0;
+let adminClickLast = 0;
+let adminModalOpen = false;
+
+const ADMIN_CONFIG_LABELS = {
+  turnTime: "턴 시간 (초)",
+  maxHearts: "최대 하트",
+  maxPlayers: "방 최대 인원",
+  oneShotFreeTurns: "공격 단어 금지 턴",
+  mistakesPerLife: "목숨당 실수 횟수"
+};
+
+function onAdminHotspotClick() {
+  const now = Date.now();
+  if (adminClickLast && now - adminClickLast > ADMIN_CLICK_GAP_MS) adminClicks = 0;
+  adminClickLast = now;
+  adminClicks++;
+  if (adminClicks >= ADMIN_CLICK_NEEDED) {
+    adminClicks = 0;
+    openAdminPanel();
+  }
+}
+
+function openAdminPanel() {
+  const modal = $("#adminModal");
+  if (!modal) return;
+  adminModalOpen = true;
+  modal.classList.remove("hidden");
+  const body = $("#adminBody");
+  if (body) body.innerHTML = `<div class="admin-loading">불러오는 중...</div>`;
+  if (socket && socketConnected) socket.emit("admin:getPanel");
+  else if (body) body.innerHTML = `<div class="admin-msg error">서버에 연결되어 있지 않습니다.</div>`;
+}
+
+function closeAdminPanel() {
+  const modal = $("#adminModal");
+  if (modal) modal.classList.add("hidden");
+  adminModalOpen = false;
+}
+
+function renderAdminBody(data) {
+  const body = $("#adminBody");
+  if (!body) return;
+  if (!data.ok) {
+    body.innerHTML = `<div class="admin-msg error">${escapeHtml(data.reason || "접근할 수 없습니다.")}</div>`;
+    if (/닉네임/.test(data.reason || "")) {
+      body.innerHTML += `<button class="wide secondary" data-admin-goto-nick="1">닉네임 설정하러 가기</button>`;
+    }
+    bindAdminBody();
+    return;
+  }
+
+  const cfg = data.config || {};
+  const rows = Object.keys(ADMIN_CONFIG_LABELS).map(key => `
+    <label class="admin-row">
+      <span>${ADMIN_CONFIG_LABELS[key]}</span>
+      <input type="number" class="admin-num" data-admin-key="${key}" value="${Number(cfg[key]) ?? ""}" min="1">
+      <button type="button" class="admin-apply" data-admin-apply="${key}">적용</button>
+    </label>
+  `).join("");
+
+  const da = data.hasPassword ? "비밀번호 변경" : "비밀번호 설정";
+  const pwCard = data.hasPassword ? `
+    <div class="admin-card">
+      <h4>비밀번호 변경 (현재 비밀번호를 알아야 합니다)</h4>
+      <input type="password" id="adminPwCurrent" placeholder="현재 비밀번호" autocomplete="off">
+      <input type="password" id="adminPwNext" placeholder="새 비밀번호 (4자 이상)" autocomplete="off">
+      <button class="admin-pw-change" data-admin-pw="change">${da}</button>
+    </div>
+  ` : `
+    <div class="admin-card">
+      <h4>첫 설정 — 비밀번호 생성</h4>
+      <input type="password" id="adminPwNext" placeholder="새 비밀번호 (4자 이상)" autocomplete="off">
+      <button class="admin-pw-change" data-admin-pw="set">${da}</button>
+    </div>
+  `;
+
+  body.innerHTML = `
+    ${data.hasPassword ? `<div class="admin-msg ok">관리자 비밀번호가 설정되어 있습니다.</div>` : `<div class="admin-msg warn">첫 실행입니다. 비밀번호를 설정해주세요.</div>`}
+    <div class="admin-info">시작 음절: <b>${(data.startSyllables || []).join(" ")}</b> &nbsp;·&nbsp; 현재 연결: <b>${escapeHtml(myNickname || "-")}</b></div>
+    ${pwCard}
+    <div class="admin-card">
+      <h4>수치 조정</h4>
+      <input type="password" id="adminPw" placeholder="관리자 비밀번호 (변경 시 필요)" autocomplete="off">
+      ${rows}
+    </div>
+    <div class="admin-status" id="adminStatus"></div>
+  `;
+  bindAdminBody();
+}
+
+function bindAdminBody() {
+  const modal = $("#adminModal");
+  if (!modal) return;
+
+  const gotoNick = modal.querySelector("[data-admin-goto-nick]");
+  if (gotoNick) gotoNick.addEventListener("click", () => { closeAdminPanel(); $("#nickInput")?.focus(); });
+
+  const pwBtn = modal.querySelector("[data-admin-pw]");
+  if (pwBtn) pwBtn.addEventListener("click", () => {
+    const current = modal.querySelector("#adminPwCurrent")?.value ?? "";
+    const next = modal.querySelector("#adminPwNext")?.value ?? "";
+    if (!next || next.length < 4) { setAdminStatus("비밀번호는 4자 이상이어야 합니다.", "error"); return; }
+    socket.emit("admin:setPassword", { current, next });
+  });
+
+  modal.querySelectorAll("[data-admin-apply]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.adminApply;
+      const input = modal.querySelector(`[data-admin-key="${key}"]`);
+      const pw = modal.querySelector("#adminPw")?.value ?? "";
+      if (!pw) { setAdminStatus("수치 변경에는 관리자 비밀번호가 필요합니다.", "error"); return; }
+      socket.emit("admin:updateConfig", { key, value: Number(input?.value), password: pw });
+    });
+  });
+}
+
+function setAdminStatus(text, type) {
+  const el = $("#adminStatus");
+  if (!el) return;
+  el.textContent = text;
+  el.dataset.type = type || "ok";
+}
+
+/* ---------------------------------------------------------
    리더보드
 --------------------------------------------------------- */
 function escapeHtml(str) {
@@ -956,7 +1101,7 @@ function lbMarkup(rows) {
             <span class="lb-rank">${r.rank}</span>
             <span class="lb-name">${escapeHtml(r.nickname || "플레이어")}</span>
             <span class="lb-tier">${escapeHtml(tier)}</span>
-            <span class="lb-rating">${r.ranking}점 · ${r.wins}승 ${r.losses}패</span>
+            <span class="lb-rating"><strong>${r.ranking}점</strong> · ${r.wins}승 ${r.losses}패</span>
           </div>`;
     }).join("");
   }
@@ -1096,6 +1241,19 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   $("#loadLb")?.addEventListener("click", toggleLeaderboard);
+
+  /* 관리자 패널 (숨김 진입점 — 온라인 오른쪽 아래 여러 번 클릭) */
+  $("#adminHotspot")?.addEventListener("click", onAdminHotspotClick);
+  const adminModal = $("#adminModal");
+  if (adminModal) {
+    adminModal.addEventListener("click", (e) => {
+      if (e.target.closest("[data-admin-close]")) { closeAdminPanel(); return; }
+      if (e.target === adminModal) closeAdminPanel();
+    });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeAdminPanel();
+  });
 
   /* 닉네임 */
   $("#nickSave")?.addEventListener("click", saveNickname);
