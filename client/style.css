@@ -186,10 +186,9 @@ button:disabled {
 
 @keyframes shakeX {
   0%, 100% { transform: translateX(0); }
-  20% { transform: translateX(-8px); }
-  40% { transform: translateX(8px); }
-  60% { transform: translateX(-5px); }
-  80% { transform: translateX(5px); }
+  25% { transform: translateX(-5px); }
+  50% { transform: translateX(5px); }
+  75% { transform: translateX(-3px); }
 }
 
 /* 규칙 안내 */
@@ -753,6 +752,37 @@ button:disabled {
   border: 1px solid #3b4b63;
   border-radius: 10px;
   padding: 8px;
+}
+
+.lb-heading {
+  text-align: center;
+  font-weight: bold;
+  color: #e5e7eb;
+  padding: 4px 0 8px;
+}
+
+.lb-toggle {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 8px;
+}
+
+.lb-toggle button {
+  flex: 1;
+  padding: 6px 8px;
+  background: #1f2937;
+  border: 1px solid #3b4b63;
+  border-radius: 8px;
+  color: #aab5c9;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.lb-toggle button.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
 }
 
 .lb-empty {

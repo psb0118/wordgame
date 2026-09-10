@@ -26,6 +26,10 @@ const DUEUM = {
   "롯": ["롯", "놃"], "롱": ["롱", "농"], "뢰": ["뢰", "뇌"],
   "루": ["루", "누"], "륙": ["륙", "육"], "률": ["률", "율"],
   "륜": ["륜", "윤"], "륭": ["륭", "융"],
+  "르": ["르", "느"], "른": ["른", "는"],
+  "릇": ["릇", "늣"], "룩": ["룩", "눅"], "룅": ["룅", "뇡"],
+  "럼": ["럼", "엄", "넘"], "름": ["름", "늠"],
+  "륨": ["륨", "늄", "윰"], "늉": ["늉", "융"],
   "렁": ["렁", "엉"], "렴": ["렴", "염"]
 };
 
@@ -320,15 +324,16 @@ function chooseStartWord(usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
 
 /* =========================================================
    AI — 최강 전략적 단어 선택
-
    절대 원칙 (우선순위):
    1. 즉시 승리(한방) → 무조건 사용
    2. 공격 단어로 받아칠 수 있으면 무조건 공격 단어 (깊이 낮을수록 강함)
-   3. 공격 단어가 없으면 루트/희귀 루트 단어 사용
-   4. 그마저 없으면 일반(비방어) 단어 중 상대 선택지를 최소화
-   5. 모든 후보가 방어 단어일 때만 마지막 수단으로 사용
+   3. 값으로 끝나는 루트 단어(값표, 표준값, ~~값) → 상대가 받아치기 힘든 승리 루트
+   4. 공격 단어가 없으면 루트/희귀 루트 단어 사용
+   5. 그마저 없으면 일반(비방어) 단어 중 상대 선택지를 최소화
+   6. 모든 후보가 방어 단어일 때만 마지막 수단으로 사용
    - 방어 단어는 지지 않기 위해 평소엔 절대 쓰지 않는다
    - 상대에게 즉시 승리(한방)를 주는 단어는 회피
+   - 상대가 이 단어를 받아친 뒤에도 AI가 이길 수 있는지 2수 먼저 내다본다
 ========================================================= */
 
 function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, turnNumber, DEFENSE_WORDS) {
@@ -338,39 +343,65 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   const newUsed = new Set([...usedWords]);
   const defenseSet = DEFENSE_WORDS || new Set();
 
-  const infos = candidates.map(w => {
+  /* 2수 평가 비용 제한용 샘플 크기 */
+  const EVAL_CAP = 60;
+  const OPP_CAP = 10;
+  const OPP_PLY_CAP = 4;
+
+  let list = candidates.map(w => {
     const next = getCandidates(w, newUsed, WORD_INDEX);
     const depth = ATTACK_DEPTH[w];
     return {
       w, nextCount: next.length, depth,
       isAttack: Number.isFinite(depth),
       isRoot: !!(ROOT_WORDS && ROOT_WORDS.has(w)),
-      isDefense: !!defenseSet.has(w)
+      isDefense: !!defenseSet.has(w),
+      isValue: w.endsWith("값")
     };
   });
 
   const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 
-  /* 상대 입장 평가: 이 단어를 맞은 뒤 상대가 쓸 수 있는 옵션/역공 점검 */
+  const capSample = (arr) => {
+    if (arr.length <= EVAL_CAP) return arr;
+    const pool = [...arr];
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    return pool.slice(0, EVAL_CAP);
+  };
+
+  /* 상대 입장 평가: 이 단어를 맞은 뒤 상대가 쓸 수 있는 옵션/역공 점검.
+     상대가 곧바로 한방을 내는지(1수), 그 한방을 받아칠 수 없는지(2수)까지 본다. */
   const oppScore = (info) => {
     let score = 0;
-    score -= info.nextCount * 2;                 /* 상대 선택지 적을수록 좋음 */
+    if (info.isValue) score += 90;                /* 값 루트 강력 우선 */
+    score -= info.nextCount * 2;                  /* 상대 선택지 적을수록 좋음 */
     const opp = getCandidates(info.w, newUsed, WORD_INDEX);
-    const sample = opp.slice(0, 15);
+    const sample = opp.slice(0, OPP_CAP);
     for (const ow of sample) {
       const owUsed = new Set(newUsed);
       owUsed.add(info.w);
       const owNext = getCandidates(ow, owUsed, WORD_INDEX);
-      if (owNext.length === 0) score -= 80;      /* 상대 즉시 승리 주면 안 됨 */
-      else if (Number.isFinite(ATTACK_DEPTH[ow]) && ATTACK_DEPTH[ow] <= 2) score -= 40;
-      else if (ROOT_WORDS && ROOT_WORDS.has(ow)) score -= 25;
+      if (owNext.length === 0) { score -= 110; continue; }  /* 상대 즉시 승리 금지 */
+      if (Number.isFinite(ATTACK_DEPTH[ow]) && ATTACK_DEPTH[ow] <= 2) score -= 45;
+      if (ROOT_WORDS && ROOT_WORDS.has(ow)) score -= 25;
+      if (ow.endsWith("값")) score -= 30;
+      /* 2수: 상대의 답 중 AI가 받아칠 수 없는 한방이 있으면 크게 감점 */
+      const ply = owNext.slice(0, OPP_PLY_CAP);
+      for (const o2 of ply) {
+        const o2Used = new Set(owUsed);
+        o2Used.add(o2);
+        if (getCandidates(o2, o2Used, WORD_INDEX).length === 0) { score -= 120; break; }
+      }
     }
-    score += Math.random() * 3;
+    score += Math.random() * 5;
     return score;
   };
 
   const bestFrom = (group) => {
-    const scored = group.map(i => ({ i, s: oppScore(i) }));
+    const scored = capSample(group).map(i => ({ i, s: oppScore(i) }));
     scored.sort((a, b) => b.s - a.s);
     const topScore = scored[0].s;
     const top = scored.filter(x => x.s >= topScore - 5);
@@ -378,27 +409,30 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   };
 
   /* 1. 즉시 승리 */
-  const wins = infos.filter(i => i.nextCount === 0);
+  const wins = list.filter(i => i.nextCount === 0);
   if (wins.length) return pick(wins).w;
 
   /* 2. 공격 단어 — 깊이 최저만 사용 */
-  const attacks = infos.filter(i => i.isAttack);
+  const attacks = list.filter(i => i.isAttack);
   if (attacks.length) {
     const minDepth = Math.min(...attacks.map(i => i.depth));
-    const bestAttacks = attacks.filter(i => i.depth === minDepth);
-    return bestFrom(bestAttacks);
+    return bestFrom(attacks.filter(i => i.depth === minDepth));
   }
 
-  /* 3. 루트/희귀 루트 단어 */
-  const roots = infos.filter(i => i.isRoot);
+  /* 3. 값 루트 — ~~값/값표/표준값. 받아치기 어려운 강력한 수 */
+  const values = list.filter(i => i.isValue);
+  if (values.length) return bestFrom(values);
+
+  /* 4. 루트/희귀 루트 단어 */
+  const roots = list.filter(i => i.isRoot);
   if (roots.length) return bestFrom(roots);
 
-  /* 4. 일반(비방어) 단어 — 지지 않는 최선 */
-  const normals = infos.filter(i => !i.isDefense);
+  /* 5. 일반(비방어) 단어 — 지지 않는 최선 */
+  const normals = list.filter(i => !i.isDefense);
   if (normals.length) return bestFrom(normals);
 
-  /* 5. 전부 방어 단어일 때만 최후 수단 */
-  return bestFrom(infos);
+  /* 6. 전부 방어 단어일 때만 최후 수단 */
+  return bestFrom(list);
 }
 
 /* =========================================================

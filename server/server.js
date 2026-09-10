@@ -30,10 +30,13 @@ const DATA_DIR = path.join(ROOT_DIR, "data");
 const MAX_HEARTS = 2;
 const TURN_TIME = 20;
 const MAX_PLAYERS = 10;
-const ONESHOT_FREE_TURNS = 1;
+const ONESHOT_FREE_TURNS = 2;
 const MISTAKES_PER_LIFE = 5;
 const AI_PLAYER_ID = "ai";
-const STARTING_SYLLABLES = ["가", "나", "다", "기", "마", "자", "아", "이", "지"];
+const STARTING_SYLLABLES = [
+  "가", "나", "다", "라", "마", "바", "사", "아", "자", "차", "카", "타", "파", "하",
+  "기", "이", "지"
+];
 
 /* =========================================================
    데이터 로드
@@ -81,9 +84,18 @@ async function initDatabase() {
           rating INTEGER DEFAULT 1000,
           wins INTEGER DEFAULT 0,
           losses INTEGER DEFAULT 0,
+          single_rating INTEGER DEFAULT 1000,
+          single_wins INTEGER DEFAULT 0,
+          single_losses INTEGER DEFAULT 0,
           created_at TIMESTAMP DEFAULT NOW(),
           updated_at TIMESTAMP DEFAULT NOW()
         )
+      `);
+      await dbPool.query(`
+        ALTER TABLE players
+          ADD COLUMN IF NOT EXISTS single_rating INTEGER DEFAULT 1000,
+          ADD COLUMN IF NOT EXISTS single_wins INTEGER DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS single_losses INTEGER DEFAULT 0
       `);
       dbMode = "pg";
       console.log("데이터베이스: PostgreSQL 연결 완료");
@@ -97,45 +109,79 @@ async function initDatabase() {
   console.log("데이터베이스: JSON 파일 모드");
 }
 
+const MODE_DEFAULT = { rating: 1000, wins: 0, losses: 0 };
+
+function migratePlayerData(p) {
+  /* 이전 단일 rating 스키마 → 싱글/멀티 분리 스키마 변환 */
+  if (p && !p.single && !p.multi && typeof p.rating === "number") {
+    p.single = { rating: p.rating, wins: p.wins || 0, losses: p.losses || 0 };
+    p.multi = { rating: p.rating, wins: p.wins || 0, losses: p.losses || 0 };
+  }
+  p.single = Object.assign({ ...MODE_DEFAULT }, p.single || {});
+  p.multi = Object.assign({ ...MODE_DEFAULT }, p.multi || {});
+  return p;
+}
+
 async function getPlayerData(playerId) {
-  if (playerCache.has(playerId)) return { ...playerCache.get(playerId) };
+  if (playerCache.has(playerId)) return migratePlayerData({ ...playerCache.get(playerId) });
   if (dbMode === "pg") {
     try {
       const result = await dbPool.query("SELECT * FROM players WHERE id = $1", [playerId]);
-      if (result.rows.length > 0) { playerCache.set(playerId, result.rows[0]); return { ...result.rows[0] }; }
+      if (result.rows.length > 0) {
+        const row = result.rows[0];
+        const data = {
+          id: row.id,
+          nickname: row.nickname,
+          multi: { rating: row.rating, wins: row.wins, losses: row.losses },
+          single: { rating: row.single_rating, wins: row.single_wins, losses: row.single_losses }
+        };
+        const migrated = migratePlayerData(data);
+        playerCache.set(playerId, migrated);
+        return { ...migrated };
+      }
     } catch (err) { console.error("DB 읽기 오류:", err.message); }
   }
-  const defaultData = { id: playerId, nickname: "플레이어", rating: 1000, wins: 0, losses: 0 };
+  const defaultData = migratePlayerData({ id: playerId, nickname: "플레이어" });
   playerCache.set(playerId, defaultData);
   return { ...defaultData };
 }
 
 async function savePlayerData(playerId, data) {
-  playerCache.set(playerId, data);
+  const safe = migratePlayerData(data);
+  safe.single = { rating: Number(safe.single.rating) || 1000, wins: Number(safe.single.wins) || 0, losses: Number(safe.single.losses) || 0 };
+  safe.multi = { rating: Number(safe.multi.rating) || 1000, wins: Number(safe.multi.wins) || 0, losses: Number(safe.multi.losses) || 0 };
+  playerCache.set(playerId, safe);
   if (dbMode === "pg") {
     try {
       await dbPool.query(`
-        INSERT INTO players (id, nickname, rating, wins, losses, updated_at)
-        VALUES ($1, $2, $3, $4, $5, NOW())
-        ON CONFLICT (id) DO UPDATE SET nickname=$2, rating=$3, wins=$4, losses=$5, updated_at=NOW()
-      `, [playerId, data.nickname || "플레이어", data.rating, data.wins, data.losses]);
+        INSERT INTO players (id, nickname, rating, wins, losses, single_rating, single_wins, single_losses, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+        ON CONFLICT (id) DO UPDATE SET
+          nickname=$2, rating=$3, wins=$4, losses=$5,
+          single_rating=$6, single_wins=$7, single_losses=$8, updated_at=NOW()
+      `, [
+        playerId, safe.nickname || "플레이어",
+        safe.multi.rating, safe.multi.wins, safe.multi.losses,
+        safe.single.rating, safe.single.wins, safe.single.losses
+      ]);
     } catch (err) { console.error("DB 쓰기 오류:", err.message); }
   } else {
     saveJsonDb();
   }
 }
 
-async function updateRating(winnerId, loserId, winnerNickname, loserNickname) {
+async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mode = "multi") {
+  const key = mode === "single" ? "single" : "multi";
   const winner = await getPlayerData(winnerId);
   const loser = await getPlayerData(loserId);
-  const { newWinnerRating, newLoserRating } = calculateElo(winner.rating, loser.rating);
-  winner.rating = newWinnerRating; winner.wins += 1; winner.nickname = winnerNickname || winner.nickname;
-  loser.rating = newLoserRating; loser.losses += 1; loser.nickname = loserNickname || loser.nickname;
+  const { newWinnerRating, newLoserRating } = calculateElo(winner[key].rating, loser[key].rating);
+  winner[key].rating = newWinnerRating; winner[key].wins += 1; winner.nickname = winnerNickname || winner.nickname;
+  loser[key].rating = newLoserRating; loser[key].losses += 1; loser.nickname = loserNickname || loser.nickname;
   await savePlayerData(winnerId, winner);
   await savePlayerData(loserId, loser);
   return {
-    winner: { ...winner, rank: calculateRank(winner.rating) },
-    loser: { ...loser, rank: calculateRank(loser.rating) }
+    winner: { ...winner, rank: calculateRank(winner[key].rating) },
+    loser: { ...loser, rank: calculateRank(loser[key].rating) }
   };
 }
 
@@ -170,6 +216,7 @@ function createRoom(socketId, nickname, mode) {
     timer: null,
     turnStartedAt: null,
     turnEndsAt: null,
+    lastSyllable: null,
     gameSessionId: 0
   };
   addPlayer(room, socketId, nickname);
@@ -288,6 +335,9 @@ function startTurnTimer(room, gameSessionId) {
   const player = getPlayerByIndex(room, room.turnPlayerIndex);
   if (!player || player.eliminated) return;
 
+  /* 내 차례가 돌아오면 이전 턴의 실수는 초기화 (하트는 게임 동안 유지) */
+  player.mistakes = 0;
+
   const now = Date.now();
   room.turnStartedAt = now;
   room.turnEndsAt = now + TURN_TIME * 1000;
@@ -368,7 +418,11 @@ function finishGame(room, winnerIndex, loserIndex) {
   if (w && l && w.id !== l.id && (room.mode === "online" || w.isBot || l.isBot)) {
     const winnerId = w.isBot ? AI_PLAYER_ID : w.id;
     const loserId = l.isBot ? AI_PLAYER_ID : l.id;
-    updateRating(winnerId, loserId, w.nickname || "플레이어", l.nickname || "플레이어")
+    updateRating(
+      winnerId, loserId,
+      w.nickname || "플레이어", l.nickname || "플레이어",
+      room.mode === "ai" ? "single" : "multi"
+    )
       .then((result) => {
         for (const [data, p] of [[result.winner, w], [result.loser, l]]) {
           if (p && !p.isBot && p.socketId) {
@@ -433,26 +487,40 @@ function startNewGame(room, opts = {}) {
 
   if (room.players.length === 0) { ROOMS.delete(room.id); return false; }
 
-  room.currentWord = null;
+  /* 하트를 건너뛰는 새 라운드(라운드 리셋)에서는 사용 단어/기록을 유지해
+     같은 게임(목숨이 다 닳기 전) 안에서는 중복 단어를 계속 검사한다 */
+  if (!preserveHearts) {
+    room.currentWord = null;
+    room.history = [];
+    room.usedWords = new Set();
+  } else {
+    room.currentWord = null;
+  }
   room.turnNumber = 0;
-  room.history = [];
-  room.usedWords = new Set();
   room.finished = false;
   room.started = true;
   room.winner = null;
   room.loser = null;
 
-  const syllable = STARTING_SYLLABLES[Math.floor(Math.random() * STARTING_SYLLABLES.length)];
+  /* 시작 음절 — 이전 라운드와 같은 음절이 반복되지 않도록 회피 */
+  let pool = STARTING_SYLLABLES;
+  if (room.lastSyllable && pool.length > 1) {
+    pool = pool.filter(s => s !== room.lastSyllable);
+  }
+  const syllable = pool[Math.floor(Math.random() * pool.length)];
+  room.lastSyllable = syllable;
   room.startSyllable = syllable;
   room.currentWord = syllable;
   room.history.push({
     word: syllable, player: -1, nickname: "시작",
-    depth: null, turn: 0
+    depth: null, turn: room.history.length
   });
 
-  const humanAlive = room.players.filter(p => !p.eliminated && !p.isBot);
-  if (humanAlive.length === 0) { room.started = false; return false; }
-  room.turnPlayerIndex = humanAlive[Math.floor(Math.random() * humanAlive.length)].playerIndex;
+  /* 첫 선공 랜덤 — AI 모드에서는 AI가 먼저 시작할 수도 있다 */
+  const eligibleFirst = room.players.filter(p => !p.eliminated && !p.waiting &&
+    (room.mode === "ai" ? true : !p.isBot));
+  if (eligibleFirst.length === 0) { room.started = false; return false; }
+  room.turnPlayerIndex = eligibleFirst[Math.floor(Math.random() * eligibleFirst.length)].playerIndex;
 
   io.to(room.id).emit("game:started", {
     ok: true, startWord: syllable,
@@ -665,21 +733,40 @@ app.get("/api/health", (req, res) => {
 
 app.get("/api/leaderboard", async (req, res) => {
   try {
+    const mode = req.query.mode === "single" ? "single" : "multi";
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit || "10"), 10) || 10));
     let rows = [];
     if (dbMode === "pg") {
+      const col = mode === "single" ? "single_rating" : "rating";
       rows = (await dbPool.query(
-        "SELECT id, nickname, rating, wins, losses FROM players WHERE id <> $1 ORDER BY rating DESC LIMIT $2",
+        `SELECT id, nickname, ${col} AS stat_rating, ${
+          mode === "single" ? "single_wins" : "wins"
+        } AS stat_wins, ${
+          mode === "single" ? "single_losses" : "losses"
+        } AS stat_losses FROM players WHERE id <> $1 ORDER BY ${col} DESC LIMIT $2`,
         [AI_PLAYER_ID, limit]
       )).rows;
     } else {
       rows = [...playerCache.values()]
         .filter(p => p && p.id !== AI_PLAYER_ID)
-        .sort((a, b) => (b.rating || 1000) - (a.rating || 1000))
-        .slice(0, limit)
-        .map(p => ({ id: p.id, nickname: p.nickname, rating: p.rating, wins: p.wins, losses: p.losses }));
+        .map(p => {
+          const s = (p && (mode === "single" ? p.single : p.multi)) ||
+            (typeof p.rating === "number"
+              ? { rating: p.rating, wins: p.wins, losses: p.losses }
+              : { rating: 1000, wins: 0, losses: 0 });
+          return {
+            id: p.id, nickname: p.nickname,
+            stat_rating: s.rating, stat_wins: s.wins, stat_losses: s.losses
+          };
+        })
+        .sort((a, b) => (b.stat_rating || 1000) - (a.stat_rating || 1000))
+        .slice(0, limit);
     }
-    res.json(rows.map((r, i) => ({ ...r, rank: i + 1, tier: calculateRank(r.rating) })));
+    res.json(rows.map((r, i) => ({
+      id: r.id, nickname: r.nickname, mode,
+      ranking: r.stat_rating, wins: r.stat_wins, losses: r.stat_losses,
+      rank: i + 1, tier: calculateRank(r.stat_rating)
+    })));
   } catch (err) {
     console.error("리더보드 조회 오류:", err.message);
     res.status(500).json({ ok: false, error: "리더보드를 불러오지 못했습니다." });
@@ -864,9 +951,8 @@ io.on("connection", (socket) => {
               const next = findNextAlivePlayer(room, player.playerIndex);
               if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
             }
-          } else {
-            startTurnTimer(room, room.gameSessionId);
           }
+          /* 일반 실수(하트 손실 아님): 터닝 시간을 초기화하지 않고 이번 턴의 20초를 유지 */
         } else {
           socket.emit("game:error", { ok: false, reason: result.reason });
         }
@@ -896,13 +982,25 @@ io.on("connection", (socket) => {
             && !isAttackWord(w, ATTACK_DEPTH)
             && !isOneShot(w, room.usedWords, WORD_INDEX));
       } else {
-        const cur = room.currentWord || "";
-        candidates = getCandidates(cur, room.usedWords, WORD_INDEX)
-          .filter(w => canConnect(cur, w));
+        const aiPick = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS);
+        candidates = aiPick ? [aiPick] : [];
       }
 
       if (candidates.length === 0) { socket.emit("game:hint", { ok: false, reason: "힌트를 찾을 수 없습니다." }); return; }
-      const word = candidates[Math.floor(Math.random() * candidates.length)];
+
+      /* 첫 턴도 '최선의 수' — 상대 선택지를 가장 적게 주는 단어를 권한다 */
+      let word;
+      if (room.turnNumber === 0) {
+        let best = candidates[0];
+        let bestCount = Infinity;
+        for (const c of candidates) {
+          const n = getCandidates(c, room.usedWords, WORD_INDEX).length;
+          if (n < bestCount) { bestCount = n; best = c; }
+        }
+        word = best;
+      } else {
+        word = candidates[0];
+      }
       socket.emit("game:hint", { ok: true, word });
     } catch (error) {
       console.error("game:hint 오류:", error);
@@ -1010,7 +1108,11 @@ io.on("connection", (socket) => {
   socket.on("player:getRanking", async () => {
     try {
       const data = await getPlayerData(socket.id);
-      socket.emit("player:ranking", { ...data, rank: calculateRank(data.rating) });
+      socket.emit("player:ranking", {
+        nickname: data.nickname,
+        single: { ...data.single, rank: calculateRank(data.single.rating) },
+        multi: { ...data.multi, rank: calculateRank(data.multi.rating) }
+      });
     } catch (err) { console.error("랭킹 조회 오류:", err); }
   });
 

@@ -140,6 +140,10 @@ const DUEUM = {
   "롯": ["롯", "놃"], "롱": ["롱", "농"], "뢰": ["뢰", "뇌"],
   "루": ["루", "누"], "륙": ["륙", "육"], "률": ["률", "율"],
   "륜": ["륜", "윤"], "륭": ["륭", "융"],
+  "르": ["르", "느"], "른": ["른", "는"],
+  "릇": ["릇", "늣"], "룩": ["룩", "눅"], "룅": ["룅", "뇡"],
+  "럼": ["럼", "엄", "넘"], "름": ["름", "늠"],
+  "륨": ["륨", "늄", "윰"], "늉": ["늉", "융"],
   "렁": ["렁", "엉"], "렴": ["렴", "염"]
 };
 
@@ -264,6 +268,10 @@ function initSocket() {
 
   socket.on("disconnect", () => {
     socketConnected = false;
+    submitting = false;
+    startingGame = false;
+    stopCountdown();
+    updateInputState();
     showMessage("서버와 연결이 끊어졌습니다.", "error");
   });
 
@@ -276,11 +284,12 @@ function initSocket() {
   /* -- 랭킹 ------------------------------------------- */
   socket.on("player:ranking", (data) => {
     if (!data) return;
-    const rank = data.rank || calculateRank(data.rating);
-    setText(["#singleRank", "#onlineRank"], formatRank(rank));
-    setText(["#singleRating", "#onlineRating"], data.rating);
-    setText(["#singleWins", "#onlineWins"], data.wins);
-    setText(["#singleLosses", "#onlineLosses"], data.losses);
+    const sng = data.single || { rank: null, rating: null, wins: 0, losses: 0 };
+    const mul = data.multi || { rank: null, rating: null, wins: 0, losses: 0 };
+    setText(["#singleRank"], formatRank(sng.rank || calculateRank(sng.rating)));
+    setText(["#singleRating", "#singleWins", "#singleLosses"], [sng.rating, sng.wins, sng.losses]);
+    setText(["#onlineRank"], formatRank(mul.rank || calculateRank(mul.rating)));
+    setText(["#onlineRating", "#onlineWins", "#onlineLosses"], [mul.rating, mul.wins, mul.losses]);
   });
 
   /* -- 닉네임 ----------------------------------------- */
@@ -591,10 +600,10 @@ function updateRuleNotice(state) {
   if (!el) return;
 
   if (turn < freeTurns) {
-    el.textContent = `첫 ${freeTurns}턴은 공격 단어 사용 금지 (${turn}/${freeTurns})`;
+    el.textContent = `첫 ${freeTurns}턴은 공격 단어 사용 금지 (${turn}/${freeTurns}) · 실수는 내 차례마다 초기화`;
     el.dataset.active = "true";
   } else {
-    el.textContent = "이제 공격 단어 사용 가능";
+    el.textContent = "이제 공격 단어 사용 가능 · 실수는 내 차례마다 초기화";
     el.dataset.active = "false";
   }
 }
@@ -808,10 +817,22 @@ function startSingleGame() {
 
 function submitSingleWord() {
   if (submitting) return;
-  if (!socket || !socketConnected) return;
-  if (!roomId || !gameState) return;
-  if (!gameState.started || gameState.finished) return;
-  if (gameState.turnPlayer !== playerIndex) return;
+  if (!socket || !socketConnected) {
+    showMessage("서버에 연결 중입니다...", "waiting");
+    return;
+  }
+  if (!roomId || !gameState) {
+    showMessage("게임 준비 중입니다...", "waiting");
+    return;
+  }
+  if (!gameState.started || gameState.finished) {
+    showMessage("게임이 아직 시작되지 않았습니다.", "info");
+    return;
+  }
+  if (gameState.turnPlayer !== playerIndex) {
+    showMessage("아직 내 차례가 아닙니다.", "info");
+    return;
+  }
 
   const input = $("#singleInput");
   if (!input) return;
@@ -869,10 +890,22 @@ function joinOnlineRoom() {
 
 function submitOnlineWord() {
   if (submitting) return;
-  if (!socket || !socketConnected) return;
-  if (!roomId || !gameState) return;
-  if (!gameState.started || gameState.finished) return;
-  if (gameState.turnPlayer !== playerIndex) return;
+  if (!socket || !socketConnected) {
+    showMessage("서버에 연결 중입니다...", "waiting");
+    return;
+  }
+  if (!roomId || !gameState) {
+    showMessage("게임 준비 중입니다...", "waiting");
+    return;
+  }
+  if (!gameState.started || gameState.finished) {
+    showMessage("게임이 아직 시작되지 않았습니다.", "info");
+    return;
+  }
+  if (gameState.turnPlayer !== playerIndex) {
+    showMessage("아직 내 차례가 아닙니다.", "info");
+    return;
+  }
 
   const input = $("#onlineInput");
   if (!input) return;
@@ -904,6 +937,42 @@ function escapeHtml(str) {
   }[c]));
 }
 
+let lbMode = "single";
+
+function lbMarkup(rows) {
+  const modeLabel = lbMode === "single" ? "싱글플레이" : "온라인 멀티";
+  const toggle = `<div class="lb-toggle">
+        <button data-mode="single">싱글플레이</button>
+        <button data-mode="multi">온라인 멀티</button>
+      </div>`;
+  let body;
+  if (rows.length === 0) {
+    body = `<div class="lb-empty">아직 기록이 없습니다.</div>`;
+  } else {
+    body = rows.map(r => {
+      const tier = r.tier ? (r.tier.sub ? `${r.tier.tier} ${r.tier.sub}` : r.tier.tier) : "-";
+      const cls = r.rank === 1 ? " top1" : r.rank <= 3 ? " top3" : "";
+      return `<div class="lb-row${cls}">
+            <span class="lb-rank">${r.rank}</span>
+            <span class="lb-name">${escapeHtml(r.nickname || "플레이어")}</span>
+            <span class="lb-tier">${escapeHtml(tier)}</span>
+            <span class="lb-rating">${r.ranking}점 · ${r.wins}승 ${r.losses}패</span>
+          </div>`;
+    }).join("");
+  }
+  return `<div class="lb-heading">리더보드 · ${modeLabel}</div>${toggle}${body}`;
+}
+
+function bindLbToggles(box, btn) {
+  box.querySelectorAll(".lb-toggle button").forEach(b => {
+    b.classList.toggle("active", b.dataset.mode === lbMode);
+    b.addEventListener("click", () => {
+      lbMode = b.dataset.mode === "multi" ? "multi" : "single";
+      loadLeaderboardRows(box, btn);
+    });
+  });
+}
+
 async function toggleLeaderboard() {
   const box = $("#leaderboard");
   const btn = $("#loadLb");
@@ -915,29 +984,30 @@ async function toggleLeaderboard() {
   }
   if (btn) btn.textContent = "불러오는 중...";
   try {
-    const res = await fetch("/api/leaderboard?limit=10");
+    const res = await fetch(`/api/leaderboard?limit=10&mode=${lbMode}`);
     const rows = await res.json();
     if (!Array.isArray(rows)) throw new Error("bad payload");
-    if (rows.length === 0) {
-      box.innerHTML = `<div class="lb-empty">아직 기록이 없습니다.</div>`;
-    } else {
-      box.innerHTML = rows.map(r => {
-        const tier = r.tier ? (r.tier.sub ? `${r.tier.tier} ${r.tier.sub}` : r.tier.tier) : "-";
-        const cls = r.rank === 1 ? " top1" : r.rank <= 3 ? " top3" : "";
-        return `<div class="lb-row${cls}">
-            <span class="lb-rank">${r.rank}</span>
-            <span class="lb-name">${escapeHtml(r.nickname || "플레이어")}</span>
-            <span class="lb-tier">${escapeHtml(tier)}</span>
-            <span class="lb-rating">${r.rating}점 · ${r.wins}승 ${r.losses}패</span>
-          </div>`;
-      }).join("");
-    }
+    box.innerHTML = lbMarkup(rows);
+    bindLbToggles(box, btn);
     box.classList.remove("hidden");
     if (btn) btn.textContent = "리더보드 접기";
   } catch (err) {
     box.innerHTML = `<div class="lb-empty" style="color:#f87171">리더보드를 불러오지 못했습니다.</div>`;
     box.classList.remove("hidden");
     if (btn) btn.textContent = "리더보드 보기";
+  }
+}
+
+async function loadLeaderboardRows(box, btn) {
+  if (!box) return;
+  try {
+    const res = await fetch(`/api/leaderboard?limit=10&mode=${lbMode}`);
+    const rows = await res.json();
+    if (!Array.isArray(rows)) throw new Error("bad payload");
+    box.innerHTML = lbMarkup(rows);
+    bindLbToggles(box, btn);
+  } catch (err) {
+    box.innerHTML = `<div class="lb-empty" style="color:#f87171">리더보드를 불러오지 못했습니다.</div>`;
   }
 }
 
