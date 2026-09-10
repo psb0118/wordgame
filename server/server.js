@@ -42,6 +42,7 @@ const STARTING_SYLLABLES = [
 ========================================================= */
 
 let adminPassword = null;
+const ADMIN_NICKNAME = "blossomIng_0";
 const adminConfigPath = path.join(DATA_DIR, "admin-config.json");
 
 function getConfig() {
@@ -214,8 +215,9 @@ async function getPlayerData(playerId) {
 
 async function savePlayerData(playerId, data) {
   const safe = migratePlayerData(data);
-  safe.single = { rating: Number(safe.single.rating) || 1000, wins: Number(safe.single.wins) || 0, losses: Number(safe.single.losses) || 0 };
-  safe.multi = { rating: Number(safe.multi.rating) || 1000, wins: Number(safe.multi.wins) || 0, losses: Number(safe.multi.losses) || 0 };
+  const num = (v, fallback) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };
+  safe.single = { rating: num(safe.single.rating, 1000), wins: num(safe.single.wins, 0), losses: num(safe.single.losses, 0) };
+  safe.multi = { rating: num(safe.multi.rating, 1000), wins: num(safe.multi.wins, 0), losses: num(safe.multi.losses, 0) };
   playerCache.set(playerId, safe);
   if (dbMode === "pg") {
     try {
@@ -1186,10 +1188,22 @@ io.on("connection", (socket) => {
   const requireNickname = async (socket) => {
     const pd = await getPlayerData(socket.id);
     const nickname = String(pd.nickname || "").trim();
-    if (!nickname || nickname === "플레이어") {
-      return { ok: false, reason: "관리자 기능을 사용하려면 먼저 닉네임을 등록해주세요." };
+    if (!nickname || nickname !== ADMIN_NICKNAME) {
+      return { ok: false, reason: "관리자 권한이 없습니다." };
     }
     return { ok: true, nickname };
+  };
+
+  /* 닉네임으로 플레이어 조회 (JSON DB / PostgreSQL 공통) */
+  const findPlayerIdByNickname = async (nickname) => {
+    if (dbMode === "pg") {
+      const result = await dbPool.query("SELECT id FROM players WHERE nickname = $1 LIMIT 1", [nickname]);
+      return result.rows.length ? result.rows[0].id : null;
+    }
+    for (const [id, p] of playerCache) {
+      if (String(p?.nickname || "").trim() === nickname) return id;
+    }
+    return null;
   };
 
   socket.on("admin:getPanel", async () => {
@@ -1203,6 +1217,64 @@ io.on("connection", (socket) => {
         startSyllables: STARTING_SYLLABLES
       });
     } catch (err) { console.error("관리자 패널 오류:", err); }
+  });
+
+  socket.on("admin:findPlayer", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:findResult", { ok: false, reason: reg.reason }); return; }
+      if (!adminPassword || String(data?.password ?? "") !== adminPassword) {
+        socket.emit("admin:findResult", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
+        return;
+      }
+      const nickname = String(data?.nickname ?? "").trim();
+      if (!nickname) {
+        socket.emit("admin:findResult", { ok: false, reason: "닉네임을 입력해주세요." });
+        return;
+      }
+      const id = await findPlayerIdByNickname(nickname);
+      if (!id) {
+        socket.emit("admin:findResult", { ok: false, reason: `'${nickname}' 닉네임을 찾을 수 없습니다.` });
+        return;
+      }
+      const pd = await getPlayerData(id);
+      socket.emit("admin:findResult", {
+        ok: true,
+        player: { id, nickname: pd.nickname, single: { ...pd.single }, multi: { ...pd.multi } }
+      });
+    } catch (err) { console.error("관리자 플레이어 조회 오류:", err); }
+  });
+
+  socket.on("admin:setPlayerStats", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:statsUpdated", { ok: false, reason: reg.reason }); return; }
+      if (!adminPassword || String(data?.password ?? "") !== adminPassword) {
+        socket.emit("admin:statsUpdated", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
+        return;
+      }
+      const nickname = String(data?.nickname ?? "").trim();
+      const mode = data?.mode === "multi" ? "multi" : "single";
+      if (!nickname) {
+        socket.emit("admin:statsUpdated", { ok: false, reason: "닉네임을 입력해주세요." });
+        return;
+      }
+      const id = await findPlayerIdByNickname(nickname);
+      if (!id) {
+        socket.emit("admin:statsUpdated", { ok: false, reason: `'${nickname}' 닉네임을 찾을 수 없습니다.` });
+        return;
+      }
+      const pd = await getPlayerData(id);
+      pd[mode].rating = clampNum(data?.rating, 0, 9999, pd[mode].rating);
+      pd[mode].wins = clampNum(data?.wins, 0, 100000, pd[mode].wins);
+      pd[mode].losses = clampNum(data?.losses, 0, 100000, pd[mode].losses);
+      await savePlayerData(id, pd);
+      socket.emit("admin:statsUpdated", {
+        ok: true,
+        player: { id, nickname: pd.nickname, single: { ...pd.single }, multi: { ...pd.multi } }
+      });
+      console.log(`[ADMIN] ${reg.nickname}님이 '${nickname}'(${mode}) 통계 수정:`, JSON.stringify(pd[mode]));
+    } catch (err) { console.error("관리자 통계 수정 오류:", err); }
   });
 
   socket.on("admin:setPassword", async (data) => {

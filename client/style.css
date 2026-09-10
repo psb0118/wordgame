@@ -879,6 +879,10 @@ button:disabled {
   background: transparent;
 }
 
+#adminHotspot[hidden] {
+  display: none;
+}
+
 .modal {
   position: fixed;
   inset: 0;
@@ -942,7 +946,8 @@ button:disabled {
 }
 
 .admin-card input[type="password"],
-.admin-card input.admin-num {
+.admin-card input.admin-num,
+.admin-card input.admin-text {
   width: 100%;
   box-sizing: border-box;
   margin: 4px 0;
@@ -1033,4 +1038,23 @@ button:disabled {
   text-align: center;
   color: #9ca3af;
   padding: 18px;
+}
+
+.admin-found-head {
+  color: #e5e7eb;
+  font-size: 0.88rem;
+  margin: 8px 0 4px;
+}
+
+.admin-stats-mode {
+  border: 1px dashed #2b3a55;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 8px 0;
+}
+
+.admin-stats-title {
+  color: #93c5fd;
+  font-size: 0.85rem;
+  margin-bottom: 4px;
 }

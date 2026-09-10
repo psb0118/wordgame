@@ -77,6 +77,8 @@ function updateNicknameUI() {
     input.classList.toggle("missing", !hasName);
     input.dataset.hasName = hasName ? "true" : "false";
   }
+const bar = $(".name-bar");
+  if (bar) bar.classList.toggle("attention", !hasName);
   const msg = $("#nickMsg");
   if (msg) {
     if (hasName) {
@@ -87,8 +89,16 @@ function updateNicknameUI() {
       msg.dataset.type = "warn";
     }
   }
-  const bar = $(".name-bar");
-  if (bar) bar.classList.toggle("attention", !hasName);
+  updateAdminVisibility();
+}
+
+/* 관리자 패널은 'blossomIng_0' 이름을 가진 사람에게만 보임 */
+function updateAdminVisibility() {
+  const spot = $("#adminHotspot");
+  if (!spot) return;
+  const isAdmin = myNickname === ADMIN_NICKNAME;
+  spot.hidden = !isAdmin;
+  if (!isAdmin && adminModalOpen) closeAdminPanel();
 }
 
 function saveNickname() {
@@ -320,6 +330,21 @@ function initSocket() {
       showMessage("서버 설정이 관리자에 의해 변경되었습니다.", "info");
       if (!adminModalOpen) return;
       socket.emit("admin:getPanel");
+    }
+  });
+
+  socket.on("admin:findResult", (data) => {
+    if (!data) return;
+    renderAdminFound(data);
+  });
+
+  socket.on("admin:statsUpdated", (data) => {
+    if (!data) return;
+    if (data.ok && data.player) {
+      renderAdminFound({ ok: true, player: data.player });
+      setAdminStatus(`'${data.player.nickname}' 통계가 수정되었습니다.`, "ok");
+    } else {
+      setAdminStatus(data.reason || "통계 수정에 실패했습니다.", "error");
     }
   });
 
@@ -949,9 +974,11 @@ function leaveRoom() {
 --------------------------------------------------------- */
 const ADMIN_CLICK_NEEDED = 7;
 const ADMIN_CLICK_GAP_MS = 1200;
+const ADMIN_NICKNAME = "blossomIng_0";
 let adminClicks = 0;
 let adminClickLast = 0;
 let adminModalOpen = false;
+let adminFoundNick = null;
 
 const ADMIN_CONFIG_LABELS = {
   turnTime: "턴 시간 (초)",
@@ -1035,9 +1062,60 @@ function renderAdminBody(data) {
       <input type="password" id="adminPw" placeholder="관리자 비밀번호 (변경 시 필요)" autocomplete="off">
       ${rows}
     </div>
+    <div class="admin-card">
+      <h4>플레이어 통계 관리</h4>
+      <div class="admin-row">
+        <input type="text" id="adminFindNick" class="admin-text" placeholder="닉네임 검색" autocomplete="off">
+        <button type="button" class="admin-apply" data-admin-find="1">검색</button>
+      </div>
+      <div id="adminFound"><div class="admin-info">닉네임을 검색하면 그 유저의 AI 승·플레이어 승 등 개인 통계를 관리할 수 있습니다.</div></div>
+    </div>
     <div class="admin-status" id="adminStatus"></div>
   `;
   bindAdminBody();
+}
+
+function renderAdminFound(data) {
+  const wrap = $("#adminFound");
+  if (!wrap) return;
+  if (!data.ok) {
+    wrap.innerHTML = `<div class="admin-msg error">${escapeHtml(data.reason || "검색할 수 없습니다.")}</div>`;
+    return;
+  }
+  const p = data.player;
+  adminFoundNick = p.nickname;
+  const statsRow = (mode, label) => {
+    const s = p[mode] || {};
+    return `
+      <div class="admin-stats-mode">
+        <div class="admin-stats-title">${label}</div>
+        <label class="admin-row"><span>점수</span><input type="number" class="admin-num" data-admin-m="${mode}" data-admin-f="rating" value="${s.rating ?? 0}" min="0" max="9999"></label>
+        <label class="admin-row"><span>승 (플레이어 승)</span><input type="number" class="admin-num" data-admin-m="${mode}" data-admin-f="wins" value="${s.wins ?? 0}" min="0"></label>
+        <label class="admin-row"><span>패 (AI 승)</span><input type="number" class="admin-num" data-admin-m="${mode}" data-admin-f="losses" value="${s.losses ?? 0}" min="0"></label>
+        <div class="admin-row"><span></span><button type="button" class="admin-apply" data-admin-stats="${mode}">${label} 통계 적용</button></div>
+      </div>`;
+  };
+  wrap.innerHTML = `
+    <div class="admin-found-head">대상: <b>${escapeHtml(p.nickname)}</b></div>
+    ${statsRow("single", "싱글 (AI 대전)")}
+    ${statsRow("multi", "멀티 (온라인)")}
+    <div class="admin-info">※ 승·패·점수를 직접 조정합니다. 저장 후 새 게임 결과부터 반영됩니다.</div>
+  `;
+  wrap.querySelectorAll("[data-admin-stats]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const mode = btn.dataset.adminStats;
+      const pw = $("#adminPw")?.value ?? "";
+      if (!pw) { setAdminStatus("통계 수정에는 관리자 비밀번호가 필요합니다.", "error"); return; }
+      const get = (f) => {
+        const i = wrap.querySelector(`[data-admin-m="${mode}"][data-admin-f="${f}"]`);
+        return Number(i?.value ?? 0);
+      };
+      socket.emit("admin:setPlayerStats", {
+        nickname: adminFoundNick, mode, password: pw,
+        rating: get("rating"), wins: get("wins"), losses: get("losses")
+      });
+    });
+  });
 }
 
 function bindAdminBody() {
@@ -1055,9 +1133,19 @@ function bindAdminBody() {
     socket.emit("admin:setPassword", { current, next });
   });
 
+  const foundBtn = modal.querySelector("[data-admin-find]");
+  if (foundBtn) foundBtn.addEventListener("click", () => {
+    const nick = modal.querySelector("#adminFindNick")?.value.trim() ?? "";
+    const pw = modal.querySelector("#adminPw")?.value ?? "";
+    if (!nick) { setAdminStatus("검색할 닉네임을 입력해주세요.", "error"); return; }
+    if (!pw) { setAdminStatus("검색에는 관리자 비밀번호가 필요합니다.", "error"); return; }
+    socket.emit("admin:findPlayer", { nickname: nick, password: pw });
+  });
+
   modal.querySelectorAll("[data-admin-apply]").forEach(btn => {
     btn.addEventListener("click", () => {
       const key = btn.dataset.adminApply;
+      if (btn.hasAttribute("data-admin-find")) return;
       const input = modal.querySelector(`[data-admin-key="${key}"]`);
       const pw = modal.querySelector("#adminPw")?.value ?? "";
       if (!pw) { setAdminStatus("수치 변경에는 관리자 비밀번호가 필요합니다.", "error"); return; }
