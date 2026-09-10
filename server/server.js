@@ -1185,10 +1185,12 @@ io.on("connection", (socket) => {
   });
 
   /* -- 관리자 패널 ------------------------------------- */
+  /* name 정규화(공백 제거) 후 대소문자 무시 비교 */
+  const isAdminNick = (nick) => String(nick || "").replace(/\s+/g, "").toLowerCase() === ADMIN_NICKNAME.replace(/\s+/g, "").toLowerCase();
   const requireNickname = async (socket) => {
     const pd = await getPlayerData(socket.id);
     const nickname = String(pd.nickname || "").trim();
-    if (!nickname || nickname !== ADMIN_NICKNAME) {
+    if (!isAdminNick(nickname)) {
       return { ok: false, reason: "관리자 권한이 없습니다." };
     }
     return { ok: true, nickname };

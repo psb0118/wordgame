@@ -92,11 +92,15 @@ const bar = $(".name-bar");
   updateAdminVisibility();
 }
 
-/* 관리자 패널은 'blossomIng_0' 이름을 가진 사람에게만 보임 */
+/* 관리자 패널은 'blossomIng_0' 이름을 가진 사람에게만 보임 (대소문자 무시) */
+function isAdminNick(nick) {
+  return String(nick || "").replace(/\s+/g, "").toLowerCase() === ADMIN_NICKNAME.replace(/\s+/g, "").toLowerCase();
+}
+
 function updateAdminVisibility() {
   const spot = $("#adminHotspot");
   if (!spot) return;
-  const isAdmin = myNickname === ADMIN_NICKNAME;
+  const isAdmin = isAdminNick(myNickname);
   spot.hidden = !isAdmin;
   if (!isAdmin && adminModalOpen) closeAdminPanel();
 }
@@ -151,6 +155,7 @@ const DUEUM = {
   "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놑"],
   "롯": ["롯", "놃"], "롱": ["롱", "농"], "뢰": ["뢰", "뇌"],
   "루": ["루", "누"], "륙": ["륙", "육"], "률": ["률", "율"],
+  "룬": ["룬", "운"],
   "륜": ["륜", "윤"], "륭": ["륭", "융"],
   "르": ["르", "느"], "른": ["른", "는"],
   "릇": ["릇", "늣"], "룩": ["룩", "눅"], "룅": ["룅", "뇡"],
@@ -276,6 +281,8 @@ function initSocket() {
   socket.on("connect", () => {
     socketConnected = true;
     console.log("[SOCKET] 연결됨:", socket.id);
+    /* 브라우저 새로고침(새 소켓) 후에도 서버가 닉네임을 알도록 재적용 */
+    if (myNickname) socket.emit("player:setName", { nickname: myNickname });
   });
 
   socket.on("disconnect", () => {
