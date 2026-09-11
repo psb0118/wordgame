@@ -19,6 +19,9 @@ let gameSessionId = 0;
 let startingGame = false;
 let myNickname = localStorage.getItem("kkNickname") || "";
 let myPassword = localStorage.getItem("kkPassword") || "";
+let friends = [];
+let friendsPanelOpen = false;
+let pendingInvite = null;
 
 const localStats = JSON.parse(localStorage.getItem("kkStats") || '{"wins":0,"losses":0,"games":0,"totalLength":0}');
 let localUsedWords = new Set();
@@ -300,6 +303,7 @@ function initSocket() {
     /* 브라우저 새로고침(새 소켓) 후에도 서버가 닉네임을 알도록 재적용 */
     if (myNickname) socket.emit("player:setName", { nickname: myNickname, password: myPassword });
     socket.emit("admin:getRole");
+    socket.emit("friends:list");
   });
 
   socket.on("disconnect", () => {
@@ -340,6 +344,7 @@ function initSocket() {
       updateNicknameUI();
       showMessage("닉네임이 저장되었습니다.", "success");
       socket.emit("admin:getRole");
+      socket.emit("friends:list");
     } else if (data.adminRequired) {
       const msg = $("#nickMsg");
       if (msg) { msg.textContent = data.reason || "관리자 계정 비밀번호를 입력해주세요."; msg.dataset.type = "error"; }
@@ -438,6 +443,29 @@ function initSocket() {
 
   socket.on("room:playerDisconnected", (data) => {
     showMessage(`${data.nickname}님의 연결이 끊어졌습니다.`, "warning");
+  });
+
+  /* -- 친구 / 초대 ------------------------------------ */
+  socket.on("friends:updated", (data) => {
+    if (!data) return;
+    if (Array.isArray(data.friends)) friends = data.friends;
+    renderFriends();
+    if (data.reason) showMessage(data.reason, data.ok ? "success" : "error");
+  });
+
+  socket.on("room:inviteSent", (data) => {
+    if (!data) return;
+    if (data.ok) showMessage(`'${data.nickname}' 님에게 초대를 보냈습니다.`, "success");
+    else showMessage(data.reason || "초대에 실패했습니다.", "error");
+  });
+
+  socket.on("room:inviteReceived", (data) => {
+    if (!data || !data.from || !data.roomId) return;
+    pendingInvite = { from: data.from, roomId: data.roomId };
+    const toast = $("#inviteToast");
+    if (!toast) return;
+    $("#inviteText").textContent = `${data.from} 님이 게임에 초대했습니다.`;
+    toast.classList.remove("hidden");
   });
 
   socket.on("room:kicked", (data) => {
@@ -1137,7 +1165,7 @@ function renderAdminBody(data) {
   const configCard = isSuper ? `
     <div class="admin-card">
       <h4>수치 조정 (게임 전체 설정 — 최고 관리자 전용)</h4>
-      <input type="password" id="adminPw" placeholder="관리자 비밀번호 (변경 시 필요)" autocomplete="off">
+      <input type="password" id="adminPw" placeholder="관리자 비밀번호 (변경 시 필요)" autocomplete="off" data-pw-toggle>
       ${rows}
     </div>
   ` : "";
@@ -1155,7 +1183,7 @@ function renderAdminBody(data) {
       <h4>서브 관리자 관리 (권한: 개인 통계만) — 최고 관리자 전용</h4>
       <div class="admin-row">
         <input type="text" id="adminSubNick" class="admin-text" placeholder="새 관리자 닉네임" autocomplete="off">
-        <input type="password" id="adminSubPw" class="admin-text" placeholder="새 관리자 계정 비밀번호 (4자 이상)" autocomplete="off">
+        <input type="password" id="adminSubPw" class="admin-text" placeholder="새 관리자 계정 비밀번호 (4자 이상)" autocomplete="off" data-pw-toggle>
         <button type="button" class="admin-apply" data-admin-addsub="1">추가</button>
       </div>
       <ul class="admin-sub-list">${subList || '<li class="admin-info">등록된 서브 관리자가 없습니다.</li>'}</ul>
@@ -1164,13 +1192,26 @@ function renderAdminBody(data) {
     </div>
   ` : "";
 
+  /* 계정 비밀번호 초기화 — 이름 검색으로, 최고 관리자 전용 */
+  const resetCard = isSuper ? `
+    <div class="admin-card">
+      <h4>계정 비밀번호 초기화 (이름 검색)</h4>
+      <div class="admin-row">
+        <input type="text" id="adminResetNick" class="admin-text" placeholder="초기화할 관리자 닉네임" autocomplete="off" data-admin-enter="[data-admin-resetsub-search]">
+        <input type="password" id="adminResetNewPw" class="admin-text" placeholder="새 비밀번호 (4자 이상)" autocomplete="off" data-pw-toggle>
+        <button type="button" class="admin-apply" data-admin-resetsub-search="1">초기화</button>
+      </div>
+      <div class="admin-info">※ 서브 관리자가 계정 비밀번호를 잊어버린 경우, 이름을 검색해 새 비밀번호로 초기화할 수 있습니다.</div>
+    </div>
+  ` : "";
+
   /* 플레이어 통계 관리 — 최고/서브 모두 가능 (자기 비밀번호 필요) */
   const statsCard = `
     <div class="admin-card">
       <h4>플레이어 통계 관리</h4>
-      ${isSuper ? "" : `<input type="password" id="adminPw" placeholder="내 관리자 비밀번호 (검색/수정 시 필요)" autocomplete="off">`}
+      ${isSuper ? "" : `<input type="password" id="adminPw" placeholder="내 관리자 비밀번호 (검색/수정 시 필요)" autocomplete="off" data-pw-toggle>`}
       <div class="admin-row">
-        <input type="text" id="adminFindNick" class="admin-text" placeholder="닉네임 검색" autocomplete="off">
+        <input type="text" id="adminFindNick" class="admin-text" placeholder="닉네임 검색" autocomplete="off" data-admin-enter="[data-admin-find]">
         <button type="button" class="admin-apply" data-admin-find="1">검색</button>
       </div>
       <div id="adminFound"><div class="admin-info">닉네임을 검색하면 그 유저의 AI 승·플레이어 승 등 개인 통계를 관리할 수 있습니다.</div></div>
@@ -1180,8 +1221,8 @@ function renderAdminBody(data) {
   const pwCard = `
     <div class="admin-card">
       <h4>${role === "super" ? "비밀번호 변경 (현재 비밀번호를 알아야 합니다)" : "내 관리자 비밀번호 변경 (현재 비밀번호를 알아야 합니다)"}</h4>
-      <input type="password" id="adminPwCurrent" placeholder="현재 비밀번호" autocomplete="off">
-      <input type="password" id="adminPwNext" placeholder="새 비밀번호 (4자 이상)" autocomplete="off">
+      <input type="password" id="adminPwCurrent" placeholder="현재 비밀번호" autocomplete="off" data-pw-toggle>
+      <input type="password" id="adminPwNext" placeholder="새 비밀번호 (4자 이상)" autocomplete="off" data-pw-toggle>
       <button class="admin-pw-change" data-admin-pw="${role === "super" ? "change" : "subchange"}">비밀번호 변경</button>
     </div>
   `;
@@ -1197,6 +1238,7 @@ function renderAdminBody(data) {
     <div class="admin-info">시작 음절: <b>${(data.startSyllables || []).join(" ")}</b> &nbsp;·&nbsp; 현재 연결: <b>${escapeHtml(myNickname || "-")}</b></div>
     ${pwCard}
     ${subCard}
+    ${resetCard}
     ${configCard}
     ${statsCard}
     <div class="admin-status" id="adminStatus"></div>
@@ -1304,6 +1346,30 @@ function bindAdminBody() {
     socket.emit("admin:findPlayer", { nickname: nick, password: pw });
   });
 
+  const resetSubSearch = modal.querySelector("[data-admin-resetsub-search]");
+  if (resetSubSearch) resetSubSearch.addEventListener("click", () => {
+    const nickname = modal.querySelector("#adminResetNick")?.value.trim() ?? "";
+    const newPassword = modal.querySelector("#adminResetNewPw")?.value ?? "";
+    const password = modal.querySelector("#adminPw")?.value ?? "";
+    if (!nickname) { setAdminStatus("초기화할 관리자 닉네임을 입력해주세요.", "error"); return; }
+    if (newPassword.length < 4) { setAdminStatus("새 비밀번호는 4자 이상이어야 합니다.", "error"); return; }
+    if (!password) { setAdminStatus("진행하려면 상단 관리자 비밀번호가 필요합니다.", "error"); return; }
+    socket.emit("admin:resetSubPassword", { nickname, password, newPassword });
+  });
+
+  /* 엔터 키로 버튼 실행 (데이터 어트리뷰트로 지정된 버튼) */
+  modal.querySelectorAll("[data-admin-enter]").forEach(inp => {
+    inp.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const btn = modal.querySelector(inp.dataset.adminEnter);
+      if (btn) btn.click();
+    });
+  });
+
+  /* 비밀번호 보기/숨기기 편의 토글 */
+  modal.querySelectorAll("[data-pw-toggle]").forEach(setupPwToggleInput);
+
   modal.querySelectorAll("[data-admin-apply]").forEach(btn => {
     btn.addEventListener("click", () => {
       const key = btn.dataset.adminApply;
@@ -1321,6 +1387,114 @@ function setAdminStatus(text, type) {
   if (!el) return;
   el.textContent = text;
   el.dataset.type = type || "ok";
+}
+
+/* 비밀번호 보기/숨기기 토글 — input을 감싸고 버튼을 붙인다 */
+function setupPwToggleInput(input) {
+  if (!input || input.dataset.pwToggled) return;
+  input.dataset.pwToggled = "1";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "pw-toggle";
+  btn.textContent = "보기";
+  btn.setAttribute("aria-label", "비밀번호 보기/숨기기");
+  btn.addEventListener("click", () => {
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    btn.textContent = show ? "숨김" : "보기";
+    input.focus();
+  });
+  const wrap = document.createElement("span");
+  wrap.className = "pw-wrap";
+  input.parentNode.insertBefore(wrap, input);
+  wrap.appendChild(input);
+  wrap.appendChild(btn);
+}
+
+/* ---------------------------------------------------------
+   친구 패널 & 초대
+--------------------------------------------------------- */
+function toggleFriendsPanel(force) {
+  const panel = $("#friendsPanel");
+  if (!panel) return;
+  friendsPanelOpen = typeof force === "boolean" ? force : !friendsPanelOpen;
+  panel.classList.toggle("hidden", !friendsPanelOpen);
+  if (friendsPanelOpen) {
+    socket?.emit("friends:list");
+    $("#friendsAddInput")?.focus();
+  }
+}
+
+function renderFriends() {
+  const list = $("#friendsList");
+  if (!list) return;
+  const count = $("#friendsCount");
+  if (count) {
+    count.classList.toggle("hidden", friends.length === 0);
+    count.textContent = friends.length;
+  }
+  if (!myNickname) {
+    list.innerHTML = `<div class="friends-empty">닉네임을 먼저 저장해주세요.</div>`;
+    return;
+  }
+  if (friends.length === 0) {
+    list.innerHTML = `<div class="friends-empty">아직 친구가 없습니다.<br>위 입력란에 친구 닉네임을 입력해 추가하세요.</div>`;
+    return;
+  }
+  list.innerHTML = friends.map(f => `
+    <div class="friend-row${f.online ? " online" : ""}">
+      <span class="friend-dot"></span>
+      <span class="friend-name">${escapeHtml(f.nickname)}</span>
+      ${f.online ? `<button class="friend-invite" data-friend-invite="${escapeHtml(f.nickname)}">초대</button>` : `<span class="friend-offline">오프라인</span>`}
+      <button class="friend-del" data-friend-del="${escapeHtml(f.nickname)}">삭제</button>
+    </div>`).join("");
+  list.querySelectorAll("[data-friend-invite]").forEach(btn => {
+    btn.addEventListener("click", () => inviteByNickname(btn.dataset.friendInvite));
+  });
+  list.querySelectorAll("[data-friend-del]").forEach(btn => {
+    btn.addEventListener("click", () => socket?.emit("friends:remove", { nickname: btn.dataset.friendDel }));
+  });
+}
+
+/* 친구/닉네임으로 초대 — 온라인 방이 없으면 자동으로 만들어 초대 */
+function inviteByNickname(nick) {
+  const name = String(nick || "").trim();
+  if (!name) { showMessage("초대할 닉네임을 입력해주세요.", "error"); return; }
+  if (!myNickname) { toggleFriendsPanel(true); showMessage("초대하려면 먼저 닉네임을 저장해주세요.", "error"); return; }
+  const inOnlineRoom = gameState && gameState.mode === "online";
+  if (inOnlineRoom) {
+    socket.emit("room:invite", { nickname: name });
+    return;
+  }
+  showMessage("초대용 온라인 방을 만들고 있습니다...", "info");
+  const t = setTimeout(() => { startingGame = false; }, 6000);
+  const created = (d) => {
+    socket.off("room:created", created);
+    clearTimeout(t);
+    if (d && d.ok) socket.emit("room:invite", { nickname: name });
+    else showMessage("온라인 방을 만들지 못해 초대를 보내지 못했습니다.", "error");
+  };
+  socket.once("room:created", created);
+  socket.emit("room:create", { nickname: myNickname, mode: "online" });
+}
+
+function acceptInvite() {
+  const inv = pendingInvite;
+  const toast = $("#inviteToast");
+  if (toast) toast.classList.add("hidden");
+  pendingInvite = null;
+  if (!inv) return;
+  if (!myNickname) { showMessage("초대를 수락하려면 닉네임을 먼저 저장해주세요.", "error"); return; }
+  if (roomId) leaveRoom();
+  socket.emit("room:join", { roomId: inv.roomId, nickname: myNickname });
+  const tab = $(".tabs button[data-mode='online']");
+  if (tab) tab.click();
+}
+
+function declineInvite() {
+  const toast = $("#inviteToast");
+  if (toast) toast.classList.add("hidden");
+  pendingInvite = null;
 }
 
 /* ---------------------------------------------------------
@@ -1493,6 +1667,28 @@ document.addEventListener("DOMContentLoaded", () => {
 
   $("#loadLb")?.addEventListener("click", toggleLeaderboard);
 
+  /* 친구 패널 & 초대 */
+  $("#friendsBtn")?.addEventListener("click", () => toggleFriendsPanel());
+  $("#friendsClose")?.addEventListener("click", () => toggleFriendsPanel(false));
+  $("#friendsAddInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); $("#friendsAddBtn")?.click(); }
+  });
+  $("#friendsAddBtn")?.addEventListener("click", () => {
+    const nick = $("#friendsAddInput")?.value.trim() ?? "";
+    if (!myNickname) { toggleFriendsPanel(true); showMessage("친구를 추가하려면 먼저 닉네임을 저장해주세요.", "error"); return; }
+    if (!nick) { showMessage("친구 닉네임을 입력해주세요.", "error"); return; }
+    socket?.emit("friends:add", { nickname: nick });
+    if ($("#friendsAddInput")) $("#friendsAddInput").value = "";
+  });
+  $("#onlineInviteBtn")?.addEventListener("click", () => {
+    inviteByNickname($("#onlineInviteInput")?.value ?? "");
+  });
+  $("#onlineInviteInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); $("#onlineInviteBtn")?.click(); }
+  });
+  $("#inviteAccept")?.addEventListener("click", acceptInvite);
+  $("#inviteDecline")?.addEventListener("click", declineInvite);
+
   /* 관리자 패널 — 닉네임이 blossomIng_0인 사용자에게만 보이는 버튼 */
   $all(".admin-btn").forEach(btn => btn.addEventListener("click", openAdminPanel));
   $("#nickInput")?.addEventListener("keydown", (e) => {
@@ -1512,6 +1708,22 @@ document.addEventListener("DOMContentLoaded", () => {
   /* 닉네임 */
   $("#nickSave")?.addEventListener("click", saveNickname);
   $("#nickInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      saveNickname();
+    }
+  });
+
+  /* 계정 비밀번호 보기/숨기기 토글 (닉네임 바) */
+  $("#pwToggle")?.addEventListener("click", () => {
+    const input = $("#pwInput");
+    if (!input) return;
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    $("#pwToggle").textContent = show ? "숨김" : "보기";
+    input.focus();
+  });
+  $("#pwInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
       saveNickname();

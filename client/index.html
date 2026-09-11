@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=4">
+  <link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
   <main class="wrap">
@@ -15,7 +15,7 @@
 
     <div class="name-bar">
       <label>닉네임<input id="nickInput" maxlength="12" placeholder="이름을 입력하세요"></label>
-      <label>계정 비밀번호<input id="pwInput" type="password" maxlength="64" placeholder="관리자 계정 전용" autocomplete="off"></label>
+      <label>계정 비밀번호<input id="pwInput" type="password" maxlength="64" placeholder="관리자 계정 전용" autocomplete="off"><button type="button" id="pwToggle">보기</button></label>
       <button id="nickSave">저장</button>
       <span id="nickMsg"></span>
     </div>
@@ -94,6 +94,8 @@
         <button id="create">방 만들기</button>
         <label>방 코드<input id="roomCode" maxlength="6" placeholder="X8F2KD"></label>
         <button id="join">방 참가</button>
+        <label>초대할 닉네임<input id="onlineInviteInput" maxlength="12" placeholder="친구 닉네임" autocomplete="off"></label>
+        <button id="onlineInviteBtn">초대</button>
       </div>
 
       <div id="roomInfo" class="room"></div>
@@ -171,6 +173,28 @@
       </div>
       <div id="adminBody"></div>
     </div>
+  </div>
+
+  <div id="friendsWrap" class="friends-wrap">
+    <button id="friendsBtn" class="friends-btn" title="친구 관리">👥 친구<span id="friendsCount" class="friends-count hidden"></span></button>
+    <div id="friendsPanel" class="friends-panel hidden">
+      <div class="friends-head">
+        <span>친구 관리</span>
+        <button id="friendsClose" class="friends-close">✕</button>
+      </div>
+      <div class="friends-add">
+        <input id="friendsAddInput" maxlength="12" placeholder="친구 닉네임 입력" autocomplete="off">
+        <button id="friendsAddBtn">추가</button>
+      </div>
+      <div id="friendsList" class="friends-list"></div>
+      <div id="friendsMsg" class="friends-msg"></div>
+    </div>
+  </div>
+
+  <div id="inviteToast" class="invite-toast hidden">
+    <span id="inviteText">초대받음</span>
+    <button id="inviteAccept">수락</button>
+    <button id="inviteDecline" class="secondary">거절</button>
   </div>
 
   <script src="/socket.io/socket.io.js"></script>

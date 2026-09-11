@@ -138,6 +138,54 @@ function loadJsonDb() {
   } catch (e) { console.warn("JSON DB 로드 실패:", e.message); }
 }
 
+/* =========================================================
+   친구 & 초대 — 닉네임이 곧 계정. 친구 목록/초대 대상 조회에 사용한다
+========================================================= */
+const friendsJsonPath = path.join(DATA_DIR, "friends.json");
+const friendsMap = new Map();            /* 정규화 닉네임 -> Set<정규화 닉네임> */
+const onlineNicks = new Map();           /* 정규화 닉네임 -> socketId(접속 중) */
+const normKey = (nick) => String(nick || "").replace(/\s+/g, "").toLowerCase();
+
+function loadFriends() {
+  try {
+    if (fs.existsSync(friendsJsonPath)) {
+      const data = JSON.parse(fs.readFileSync(friendsJsonPath, "utf8"));
+      for (const [k, arr] of Object.entries(data)) {
+        friendsMap.set(normKey(k), new Set((arr || []).map(f => normKey(f))));
+      }
+      console.log(`친구 데이터 로드: ${friendsMap.size}명`);
+    }
+  } catch (e) { console.warn("친구 데이터 로드 실패:", e.message); }
+}
+
+function saveFriends() {
+  try {
+    const obj = {};
+    for (const [k, set] of friendsMap) obj[k] = [...set];
+    fs.writeFileSync(friendsJsonPath, JSON.stringify(obj, null, 2));
+  } catch (e) { console.warn("친구 데이터 저장 실패:", e.message); }
+}
+
+function registerOnline(socketId, nickname) {
+  const key = normKey(nickname);
+  if (!key) return;
+  unregisterOnline(socketId);
+  onlineNicks.set(key, socketId);
+}
+
+function unregisterOnline(socketId) {
+  for (const [k, v] of onlineNicks) if (v === socketId) onlineNicks.delete(k);
+}
+
+function nicknameKnown(nickname) {
+  const key = normKey(nickname);
+  if (!key) return false;
+  for (const p of playerCache.values()) {
+    if (normKey(p?.nickname) === key) return true;
+  }
+  return false;
+}
+
 function saveJsonDb() {
   try {
     const obj = {};
@@ -885,6 +933,7 @@ io.on("connection", (socket) => {
       socket.data.roomId = room.id;
       socket.data.playerIndex = 0;
       socket.data.playerId = socket.id;
+      registerOnline(socket.id, nickname);
 
       socket.emit("room:created", { ok: true, roomId: room.id, playerIndex: 0, state: getPublicRoomState(room) });
 
@@ -976,6 +1025,7 @@ io.on("connection", (socket) => {
       socket.data.roomId = room.id;
       socket.data.playerIndex = player.playerIndex;
       socket.data.playerId = socket.id;
+      registerOnline(socket.id, nickname);
 
       socket.emit("room:joined", {
         ok: true, roomId: room.id, playerIndex: player.playerIndex,
@@ -1174,6 +1224,7 @@ io.on("connection", (socket) => {
   socket.on("disconnect", (reason) => {
     console.log(`[DISCONNECT] ${socket.id} / ${reason}`);
     adminAuthed.delete(socket.id);
+    unregisterOnline(socket.id);
     const room = findRoomBySocket(socket.id);
     if (!room) return;
     const player = getPlayerBySocket(room, socket.id);
@@ -1620,9 +1671,93 @@ io.on("connection", (socket) => {
       const playerData = await getPlayerData(socket.id);
       playerData.nickname = nickname;
       await savePlayerData(socket.id, playerData);
+      registerOnline(socket.id, nickname);
       socket.emit("player:nameUpdated", { ok: true, nickname });
       if (room) broadcastRoomState(room);
     } catch (err) { console.error("닉네임 설정 오류:", err); }
+  });
+
+  /* =========================================================
+     친구 — 추가/삭제/목록, 온라인 상태 포함 (양방향 친구)
+  ========================================================= */
+  const emitFriendsUpdated = async (socket, ok, reason, extra) => {
+    const pd = await getPlayerData(socket.id);
+    const me = normKey(String(pd.nickname || "").trim());
+    const list = me ? [...(friendsMap.get(me) || new Set())]
+      .map(f => ({ nickname: f, online: onlineNicks.has(f) && io.sockets.sockets.has(onlineNicks.get(f)) })) : [];
+    socket.emit("friends:updated", { ok, reason, friends: list, ...(extra || {}) });
+  };
+
+  socket.on("friends:add", async (data) => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const myNick = String(pd.nickname || "").trim();
+      const me = normKey(myNick);
+      const target = normKey(data?.nickname);
+      if (!me || !myNick) { await emitFriendsUpdated(socket, false, "닉네임을 먼저 설정해주세요."); return; }
+      if (!target) { await emitFriendsUpdated(socket, false, "친구로 추가할 이름을 입력해주세요."); return; }
+      if (target === me) { await emitFriendsUpdated(socket, false, "자기 자신은 친구로 추가할 수 없습니다."); return; }
+      if (!nicknameKnown(target)) { await emitFriendsUpdated(socket, false, `'${String(data?.nickname).trim()}' 닉네임을 찾을 수 없습니다.`); return; }
+      if (!friendsMap.has(me)) friendsMap.set(me, new Set());
+      if (friendsMap.get(me).has(target)) { await emitFriendsUpdated(socket, false, "이미 친구입니다."); return; }
+      friendsMap.get(me).add(target);
+      if (!friendsMap.has(target)) friendsMap.set(target, new Set());
+      friendsMap.get(target).add(me);
+      saveFriends();
+      await emitFriendsUpdated(socket, true, `'${String(data?.nickname).trim()}' 님과 친구가 되었습니다.`);
+      const tId = onlineNicks.get(target);
+      if (tId && tId !== socket.id && io.sockets.sockets.has(tId)) {
+        io.to(tId).emit("friends:updated", { ok: true, reason: `'${myNick}' 님이 친구로 추가했습니다.` });
+      }
+      console.log(`[FRIENDS] '${myNick}'님이 '${String(data?.nickname).trim()}' 친구 추가`);
+    } catch (err) { console.error("친구 추가 오류:", err); }
+  });
+
+  socket.on("friends:remove", async (data) => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const me = normKey(String(pd.nickname || "").trim());
+      const target = normKey(data?.nickname);
+      if (!me || !target) { await emitFriendsUpdated(socket, false, "이름을 확인해주세요."); return; }
+      if (friendsMap.has(me) && friendsMap.get(me).delete(target)) {
+        friendsMap.get(target)?.delete(me);
+        saveFriends();
+        await emitFriendsUpdated(socket, true, `'${String(data?.nickname).trim()}' 친구를 삭제했습니다.`);
+      } else {
+        await emitFriendsUpdated(socket, false, "등록된 친구가 아닙니다.");
+      }
+    } catch (err) { console.error("친구 삭제 오류:", err); }
+  });
+
+  socket.on("friends:list", async () => {
+    try {
+      await emitFriendsUpdated(socket, true);
+    } catch (err) { console.error("친구 목록 오류:", err); }
+  });
+
+  /* =========================================================
+     초대 — 온라인 닉네임으로 초대, 대상에게 초대 알림
+  ========================================================= */
+  socket.on("room:invite", async (data) => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const myNick = String(pd.nickname || "").trim();
+      const target = String(data?.nickname || "").trim();
+      if (!target) { socket.emit("room:inviteSent", { ok: false, reason: "초대할 이름을 입력해주세요." }); return; }
+      const tId = onlineNicks.get(normKey(target));
+      if (!tId || tId === socket.id || !io.sockets.sockets.has(tId)) {
+        socket.emit("room:inviteSent", { ok: false, reason: `'${target}' 님이 현재 온라인이 아닙니다.` });
+        return;
+      }
+      const room = findRoomBySocket(socket.id);
+      if (!room || room.mode === "ai" || room.finished) {
+        socket.emit("room:inviteSent", { ok: false, reason: "초대는 온라인 방에서만 보낼 수 있습니다." });
+        return;
+      }
+      io.to(tId).emit("room:inviteReceived", { from: myNick, roomId: room.id });
+      socket.emit("room:inviteSent", { ok: true, nickname: target, roomId: room.id });
+      console.log(`[INVITE] '${myNick}' → '${target}' (${room.id})`);
+    } catch (err) { console.error("초대 오류:", err); }
   });
 });
 
@@ -1632,6 +1767,7 @@ io.on("connection", (socket) => {
 
 initDatabase().then(() => {
   loadAdminConfig();
+  loadFriends();
   server.listen(PORT, "0.0.0.0", () => {
     console.log("========================================");
     console.log(`끝말잇기 서버 실행 중: http://localhost:${PORT}`);

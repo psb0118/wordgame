@@ -1,3 +1,5 @@
 node_modules/
 .DS_Store
 player-data.json
+data/admin-config.json
+data/friends.json
