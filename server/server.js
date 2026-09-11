@@ -1480,17 +1480,13 @@ io.on("connection", (socket) => {
         socket.emit("admin:panel", { ok: false, reason: "최고 관리자만 관리자를 추가할 수 있습니다." });
         return;
       }
-      if (!checkAdminPw(reg, data?.password)) {
-        socket.emit("admin:panel", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
-        return;
-      }
       const nickname = String(data?.nickname ?? "").trim();
-      const password = String(data?.adminPassword ?? "").trim();
+      let password = String(data?.adminPassword ?? "").trim();
       if (!nickname || nickname.length < 2 || nickname.length > 20) {
         socket.emit("admin:panel", { ok: false, reason: "관리자 닉네임은 2~20자여야 합니다." });
         return;
       }
-      if (password.length < 4) {
+      if (password && password.length < 4) {
         socket.emit("admin:panel", { ok: false, reason: "관리자 비밀번호는 4자 이상이어야 합니다." });
         return;
       }
@@ -1502,14 +1498,26 @@ io.on("connection", (socket) => {
         socket.emit("admin:panel", { ok: false, reason: "이미 등록된 서브 관리자입니다." });
         return;
       }
+      /* 닉네임만 입력하면 관리자로 추가 — 계정 비밀번호가 없으면 자동 발급 */
+      let generatedPassword = null;
+      if (!password) {
+        const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+        password = "";
+        for (let i = 0; i < 8; i++) password += chars[Math.floor(Math.random() * chars.length)];
+        generatedPassword = password;
+      }
       subAdmins.push({ nickname, password });
       saveAdminConfig();
       socket.emit("admin:panel", {
         ok: true, role: reg.role, isSuper: true, hasPassword: !!adminPassword,
         subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
-        startSyllables: STARTING_SYLLABLES, message: `'${nickname}' 관리자가 추가되었습니다.`
+        startSyllables: STARTING_SYLLABLES,
+        generatedPassword,
+        message: generatedPassword
+          ? `'${nickname}' 관리자를 추가했습니다. 계정 비밀번호: ${generatedPassword} (이 비밀번호를 ${nickname}님에게 알려주세요)`
+          : `'${nickname}' 관리자를 추가했습니다.`
       });
-      console.log(`[ADMIN] ${reg.nickname}님이 서브 관리자 '${nickname}' 추가`);
+      console.log(`[ADMIN] ${reg.nickname}님이 서브 관리자 '${nickname}' 추가(비밀번호 ${generatedPassword ? "자동 발급" : "지정"})`);
     } catch (err) { console.error("관리자 추가 오류:", err); }
   });
 

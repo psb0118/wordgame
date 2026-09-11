@@ -1180,14 +1180,15 @@ function renderAdminBody(data) {
   `).join("");
   const subCard = isSuper ? `
     <div class="admin-card">
-      <h4>서브 관리자 관리 (권한: 개인 통계만) — 최고 관리자 전용</h4>
+      <h4>관리자 추가 (최고 관리자 전용)</h4>
       <div class="admin-row">
-        <input type="text" id="adminSubNick" class="admin-text" placeholder="새 관리자 닉네임" autocomplete="off">
-        <input type="password" id="adminSubPw" class="admin-text" placeholder="새 관리자 계정 비밀번호 (4자 이상)" autocomplete="off" data-pw-toggle>
-        <button type="button" class="admin-apply" data-admin-addsub="1">추가</button>
+        <input type="text" id="adminSubNick" class="admin-text" placeholder="관리자로 추가할 닉네임" autocomplete="off" data-admin-enter="[data-admin-addsub]">
+        <button type="button" class="admin-apply" data-admin-addsub="1">관리자로 추가</button>
       </div>
+      <div class="admin-info">※ 닉네임만 입력하면 바로 관리자(개인 통계 관리 권한)로 추가됩니다.
+        계정 비밀번호는 자동으로 발급되어 위에 표시되며, 그 비밀번호를 해당 관리자에게 꼭 알려주세요.</div>
       <ul class="admin-sub-list">${subList || '<li class="admin-info">등록된 서브 관리자가 없습니다.</li>'}</ul>
-      <div class="admin-info">※ 관리자 계정은 '닉네임 + 계정 비밀번호'로 로그인합니다. 비밀번호를 모르는 사람은
+      <div class="admin-info">※ 관리자 계정 로그인은 '닉네임 + 계정 비밀번호'입니다. 비밀번호를 모르는 사람은
         같은 닉네임을 써도 관리자 권한을 받을 수 없습니다.</div>
     </div>
   ` : "";
@@ -1234,6 +1235,7 @@ function renderAdminBody(data) {
     : `<div class="admin-info">서브 관리자 — 개인 통계 관리만 가능하며 게임 전체 설정은 변경할 수 없습니다.</div>`;
 
   body.innerHTML = `
+    ${data.message ? `<div class="admin-msg ok">${escapeHtml(data.message)}</div>` : ""}
     ${statusLine}
     <div class="admin-info">시작 음절: <b>${(data.startSyllables || []).join(" ")}</b> &nbsp;·&nbsp; 현재 연결: <b>${escapeHtml(myNickname || "-")}</b></div>
     ${pwCard}
@@ -1311,12 +1313,8 @@ function bindAdminBody() {
   const addSub = modal.querySelector("[data-admin-addsub]");
   if (addSub) addSub.addEventListener("click", () => {
     const nickname = modal.querySelector("#adminSubNick")?.value.trim() ?? "";
-    const adminPassword = modal.querySelector("#adminSubPw")?.value.trim() ?? "";
-    const password = modal.querySelector("#adminPw")?.value ?? "";
-    if (!nickname || nickname.length < 2) { setAdminStatus("관리자 닉네임을 입력해주세요.", "error"); return; }
-    if (adminPassword.length < 4) { setAdminStatus("관리자 비밀번호는 4자 이상이어야 합니다.", "error"); return; }
-    if (!password) { setAdminStatus("진행하려면 관리자 비밀번호가 필요합니다.", "error"); return; }
-    socket.emit("admin:addSubAdmin", { nickname, adminPassword, password });
+    if (!nickname || nickname.length < 2) { setAdminStatus("관리자로 추가할 닉네임을 입력해주세요.", "error"); return; }
+    socket.emit("admin:addSubAdmin", { nickname });
   });
 
   const removeSub = modal.querySelectorAll("[data-admin-remove]");
