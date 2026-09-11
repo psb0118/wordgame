@@ -13,6 +13,7 @@ let currentMode = "single";
 let roomId = null;
 let playerIndex = null;
 let gameState = null;
+let currentMaxHearts = 2;
 let submitting = false;
 let countdownTimer = null;
 let gameSessionId = 0;
@@ -166,7 +167,7 @@ const DUEUM = {
   "략": ["략", "약"], "량": ["량", "양"], "련": ["련", "연"],
   "렬": ["렬", "열"], "령": ["령", "영"],
   "러": ["러", "너"], "럭": ["럭", "넉"], "런": ["런", "넌"],
-  "럴": ["럴", "널"], "럼": ["럼", "넘"], "럽": ["럽", "넙"],
+  "럴": ["럴", "널"], "럽": ["럽", "넙"],
   "로": ["로", "노"], "록": ["록", "녹"], "론": ["론", "논"],
   "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놑"],
   "롯": ["롯", "놃"], "롱": ["롱", "농"], "뢰": ["뢰", "뇌"],
@@ -680,6 +681,7 @@ function initSocket() {
 --------------------------------------------------------- */
 function renderGameState(state) {
   if (!state) return;
+  if (Number.isInteger(state.maxHearts) && state.maxHearts > 0) currentMaxHearts = state.maxHearts;
   const isSingle = currentMode === "single";
   const prefix = isSingle ? "" : "online";
 
@@ -775,7 +777,7 @@ function renderPlayers(state) {
       if (p.playerIndex === state.turnPlayer) row.dataset.turn = "true";
       if (p.eliminated) row.dataset.eliminated = "true";
 
-      const hearts = "♥".repeat(Math.max(0, p.hearts)) + "♡".repeat(Math.max(0, 2 - p.hearts));
+      const hearts = "♥".repeat(Math.max(0, p.hearts)) + "♡".repeat(Math.max(0, currentMaxHearts - p.hearts));
       const mistakesMax = state.mistakesPerLife || 5;
       const mistakesText = p.mistakes != null && !p.waiting ? ` 실수:${p.mistakes}/${mistakesMax}` : "";
       const status = p.waiting ? "대기 중" : p.eliminated ? "탈락" : p.connected ? (p.isBot ? "AI" : "접속 중") : "연결 끊김";
@@ -806,7 +808,7 @@ function renderHearts(hearts) {
   const v = Math.max(0, Number(hearts) || 0);
   const lost = lastHearts !== null && v < lastHearts;
   lastHearts = v;
-  const text = "♥".repeat(v) + "♡".repeat(Math.max(0, 2 - v));
+  const text = "♥".repeat(v) + "♡".repeat(Math.max(0, currentMaxHearts - v));
   setText(["#hearts", "#heartDisplay", "#heartsOnline"], text);
   if (lost) {
     for (const sel of ["#hearts", "#heartDisplay", "#heartsOnline"]) {
@@ -1103,7 +1105,7 @@ function resetOnlineBoard() {
   ];
   for (const sel of els) {
     const el = $(sel);
-    if (!el) return;
+    if (!el) continue;
     if (sel === "#onlineRestartWrap" || sel === "#onlineRuleNotice" || sel === "#onlineTurnIndicator") {
       el.classList.add("hidden");
     } else {
@@ -1113,7 +1115,7 @@ function resetOnlineBoard() {
   setText(["#onlineLast"], "-");
   setText(["#onlineStartWord"], "-");
   setText(["#onlineTurn", "#onlineDepth", "#onlineTimer"], "-");
-  renderHearts(2);
+  renderHearts(currentMaxHearts);
   renderMistakes(0, 5);
   clearInput();
   const timerBox = $(".online-panel .timer-box");

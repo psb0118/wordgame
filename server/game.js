@@ -21,6 +21,8 @@ const DUEUM = {
   "랏": ["랏", "낫"], "랑": ["랑", "낭"], "래": ["래", "내"], "랭": ["랭", "냉"],
   "략": ["략", "약"], "량": ["량", "양"], "련": ["련", "연"],
   "렬": ["렬", "열"], "령": ["령", "영"],
+  "러": ["러", "너"], "럭": ["럭", "넉"], "런": ["런", "넌"],
+  "럴": ["럴", "널"], "럽": ["럽", "넙"],
   "로": ["로", "노"], "록": ["록", "녹"], "론": ["론", "논"],
   "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놑"],
   "롯": ["롯", "놃"], "롱": ["롱", "농"], "뢰": ["뢰", "뇌"],
@@ -183,6 +185,25 @@ function loadData(dataDir, rootDir) {
       }
     }
     console.log(`루트 단어 로딩 완료: ${ROOT_WORDS.size.toLocaleString()}개`);
+  }
+
+  const rareRootFile = findExistingFile([
+    path.join(dataDir, "끄글_희귀 루트 단어_20260823005524.txt"),
+  ]);
+  if (rareRootFile) {
+    const text = fs.readFileSync(rareRootFile, "utf8");
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const colonIdx = trimmed.indexOf(":");
+      if (colonIdx === -1) continue;
+      const wordsPart = trimmed.slice(colonIdx + 1);
+      for (const w of wordsPart.split(/[,，\s]+/)) {
+        const nw = normalizeWord(w);
+        if (nw) ROOT_WORDS.add(nw);
+      }
+    }
+    console.log(`희귀 루트 단어 로딩 완료: ${ROOT_WORDS.size.toLocaleString()}개 (누적)`);
   }
 
   const defenseFile = findExistingFile([

@@ -436,6 +436,7 @@ function getPublicRoomState(room) {
     })),
     playerCount: room.players.filter(p => !p.isBot && !p.waiting).length,
     maxPlayers: MAX_PLAYERS,
+    maxHearts: MAX_HEARTS,
     turnStartedAt: room.turnStartedAt,
     turnEndsAt: room.turnEndsAt
   };
