@@ -144,6 +144,7 @@ function loadJsonDb() {
 const friendsJsonPath = path.join(DATA_DIR, "friends.json");
 const friendsMap = new Map();            /* 정규화 닉네임 -> Set<정규화 닉네임> */
 const onlineNicks = new Map();           /* 정규화 닉네임 -> socketId(접속 중) */
+const socketNicks = new Map();           /* socketId -> 등록된 닉네임 (닉네임 재적용 전 새 소켓 구분) */
 const normKey = (nick) => String(nick || "").replace(/\s+/g, "").toLowerCase();
 
 function loadFriends() {
@@ -171,9 +172,11 @@ function registerOnline(socketId, nickname) {
   if (!key) return;
   unregisterOnline(socketId);
   onlineNicks.set(key, socketId);
+  socketNicks.set(socketId, nickname);
 }
 
 function unregisterOnline(socketId) {
+  socketNicks.delete(socketId);
   for (const [k, v] of onlineNicks) if (v === socketId) onlineNicks.delete(k);
 }
 
@@ -1689,11 +1692,15 @@ io.on("connection", (socket) => {
      친구 — 추가/삭제/목록, 온라인 상태 포함 (양방향 친구)
   ========================================================= */
   const emitFriendsUpdated = async (socket, ok, reason, extra) => {
-    const pd = await getPlayerData(socket.id);
-    const me = normKey(String(pd.nickname || "").trim());
+    const nm = socketNicks.get(socket.id);
+    if (!nm) {
+      socket.emit("friends:updated", { ok: false, reason: "닉네임을 먼저 설정해주세요.", registered: false, friends: [] });
+      return;
+    }
+    const me = normKey(nm);
     const list = me ? [...(friendsMap.get(me) || new Set())]
       .map(f => ({ nickname: f, online: onlineNicks.has(f) && io.sockets.sockets.has(onlineNicks.get(f)) })) : [];
-    socket.emit("friends:updated", { ok, reason, friends: list, ...(extra || {}) });
+    socket.emit("friends:updated", { ok, reason, registered: true, friends: list, ...(extra || {}) });
   };
 
   socket.on("friends:add", async (data) => {

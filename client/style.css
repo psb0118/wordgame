@@ -331,10 +331,6 @@ button:disabled {
   font-size: 0.9rem;
 }
 
-.name-bar #pwInput {
-  width: 150px;
-}
-
 .name-bar input.missing {
   border-color: var(--gold);
   box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.3);
@@ -1361,6 +1357,163 @@ button:disabled {
 }
 
 /* =========================================================
+   계정 패널 (왼쪽 위)
+========================================================= */
+.account-wrap {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 90;
+}
+
+.account-btn {
+  padding: 9px 14px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #38bdf8, #6366f1);
+  box-shadow: var(--shadow);
+  font-size: 0.9rem;
+}
+
+.account-panel {
+  position: absolute;
+  top: 46px;
+  left: 0;
+  width: 280px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 12px;
+}
+
+.account-panel.hidden {
+  display: none;
+}
+
+.account-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.account-close {
+  background: var(--card-soft);
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+  border-radius: 8px;
+  width: 26px;
+  height: 26px;
+  line-height: 1;
+  padding: 0;
+  font-size: 14px;
+  box-shadow: none;
+}
+
+.account-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.account-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+}
+
+.account-row button {
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  box-shadow: none;
+}
+
+.account-panel input[type="password"] {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+}
+
+.account-panel .pw-wrap {
+  display: flex;
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.account-panel .pw-wrap input {
+  padding: 8px 10px;
+  font-size: 0.85rem;
+}
+
+.account-msg {
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  min-height: 1em;
+}
+
+.account-msg.ok {
+  color: #059669;
+}
+
+.account-msg.error {
+  color: var(--red);
+}
+
+.account-scores {
+  border-top: 1px dashed var(--border);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.acc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  padding: 4px 2px;
+}
+
+.acc-row strong {
+  color: var(--accent);
+  font-size: 1.05rem;
+}
+
+.acc-rank {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--accent-2);
+}
+
+.acc-change {
+  border-top: 1px dashed var(--border);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.acc-change-title {
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.acc-change input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  margin-bottom: 6px;
+}
+
+.acc-change button {
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+/* =========================================================
    초대 토스트 (가운데 위)
 ========================================================= */
 .invite-toast {
@@ -1495,9 +1648,4 @@ button:active:not(:disabled) {
 .pw-toggle:hover {
   background: var(--border);
   color: var(--text);
-}
-
-.name-bar .pw-toggle {
-  position: static;
-  margin-left: 2px;
 }

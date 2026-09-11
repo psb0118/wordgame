@@ -18,7 +18,7 @@ let countdownTimer = null;
 let gameSessionId = 0;
 let startingGame = false;
 let myNickname = localStorage.getItem("kkNickname") || "";
-let myPassword = localStorage.getItem("kkPassword") || "";
+let myPassword = "";
 let friends = [];
 let friendsPanelOpen = false;
 let pendingInvite = null;
@@ -71,8 +71,6 @@ function makeNickname(raw) {
 function initNicknameBar() {
   const input = $("#nickInput");
   if (input) input.value = myNickname;
-  const pw = $("#pwInput");
-  if (pw) pw.value = myPassword;
   updateNicknameUI();
 }
 
@@ -123,7 +121,7 @@ function openAdminPanel() {
 
 function saveNickname() {
   const raw = normalizeWord($("#nickInput")?.value || "");
-  const password = $("#pwInput")?.value ?? "";
+  const password = $("#accPwInput")?.value ?? "";
   const msg = $("#nickMsg");
   if (!raw) {
     if (msg) { msg.textContent = "이름을 입력해주세요."; msg.dataset.type = "error"; }
@@ -139,7 +137,6 @@ function saveNickname() {
     myNickname = raw;
     myPassword = password;
     localStorage.setItem("kkNickname", myNickname);
-    localStorage.setItem("kkPassword", myPassword);
     updateNicknameUI();
   }
 }
@@ -300,10 +297,10 @@ function initSocket() {
   socket.on("connect", () => {
     socketConnected = true;
     console.log("[SOCKET] 연결됨:", socket.id);
-    /* 브라우저 새로고침(새 소켓) 후에도 서버가 닉네임을 알도록 재적용 */
-    if (myNickname) socket.emit("player:setName", { nickname: myNickname, password: myPassword });
+    /* 브라우저 새로고침(새 소켓) 후에도 서버가 닉네임을 알도록 재적용
+       (계정 비밀번호는 자동 전송하지 않음 — 관리자 계정은 계정 탭에서 입력해야 로그인됨) */
+    if (myNickname) socket.emit("player:setName", { nickname: myNickname });
     socket.emit("admin:getRole");
-    socket.emit("friends:list");
   });
 
   socket.on("disconnect", () => {
@@ -327,9 +324,13 @@ function initSocket() {
     const sng = data.single || { rank: null, rating: null, wins: 0, losses: 0 };
     const mul = data.multi || { rank: null, rating: null, wins: 0, losses: 0 };
     setText(["#singleRank"], formatRank(sng.rank || calculateRank(sng.rating)));
-    setText(["#singleRating", "#singleWins", "#singleLosses"], [sng.rating, sng.wins, sng.losses]);
+    setText(["#singleRating"], sng.rating);
     setText(["#onlineRank"], formatRank(mul.rank || calculateRank(mul.rating)));
-    setText(["#onlineRating", "#onlineWins", "#onlineLosses"], [mul.rating, mul.wins, mul.losses]);
+    setText(["#onlineRating"], mul.rating);
+    setText(["#accSingleRating"], sng.rating);
+    setText(["#accSingleRank"], sng.rank ? formatRank(sng.rank) : "");
+    setText(["#accMultiRating"], mul.rating);
+    setText(["#accMultiRank"], mul.rank ? formatRank(mul.rank) : "");
   });
 
   /* -- 닉네임 ----------------------------------------- */
@@ -337,24 +338,34 @@ function initSocket() {
     if (!data) return;
     if (data.ok && data.nickname) {
       myNickname = data.nickname;
-      const currentPw = $("#pwInput")?.value;
-      if (currentPw) myPassword = currentPw;
+      const currentPw = $("#accPwInput")?.value;
+      if (currentPw) {
+        myPassword = currentPw;
+        $("#accPwInput").value = "";
+      }
       localStorage.setItem("kkNickname", myNickname);
-      localStorage.setItem("kkPassword", myPassword);
       updateNicknameUI();
+      renderAccountInfo();
       showMessage("닉네임이 저장되었습니다.", "success");
+      accountMsg("적용되었습니다.", "ok");
       socket.emit("admin:getRole");
       socket.emit("friends:list");
+      socket.emit("player:getRanking");
     } else if (data.adminRequired) {
       const msg = $("#nickMsg");
-      if (msg) { msg.textContent = data.reason || "관리자 계정 비밀번호를 입력해주세요."; msg.dataset.type = "error"; }
-      else showMessage(data.reason || "관리자 계정 비밀번호를 입력해주세요.", "error");
-      const pw = $("#pwInput");
-      if (pw) pw.focus();
+      const hint = data.reason || "관리자 계정입니다. 계정 탭에서 비밀번호를 입력해 로그인해주세요.";
+      if (msg) { msg.textContent = hint; msg.dataset.type = "error"; }
+      else showMessage(hint, "error");
+      const accPw = $("#accPwInput");
+      if (accPw) {
+        openAccountPanel(true);
+        accPw.focus();
+      }
     } else if (data.reason) {
       const msg = $("#nickMsg");
       if (msg) { msg.textContent = data.reason; msg.dataset.type = "error"; }
       else showMessage(data.reason, "error");
+      accountMsg(data.reason, "error");
     }
   });
 
@@ -363,10 +374,13 @@ function initSocket() {
     if (!data) return;
     myAdminRole = data.role === "super" || data.role === "sub" ? data.role : "none";
     updateAdminVisibility();
+    renderAccountInfo();
   });
 
   socket.on("admin:panel", (data) => {
     if (!data) return;
+    if (data.message) accountMsg(data.message, data.ok === false ? "error" : "ok");
+    else if (data.ok === false && data.reason) accountMsg(data.reason, "error");
     renderAdminBody(data);
   });
 
@@ -448,6 +462,7 @@ function initSocket() {
   /* -- 친구 / 초대 ------------------------------------ */
   socket.on("friends:updated", (data) => {
     if (!data) return;
+    if (data.registered === false) return;
     if (Array.isArray(data.friends)) friends = data.friends;
     renderFriends();
     if (data.reason) showMessage(data.reason, data.ok ? "success" : "error");
@@ -1387,6 +1402,79 @@ function setAdminStatus(text, type) {
   el.dataset.type = type || "ok";
 }
 
+/* ---------------------------------------------------------
+   계정 탭 (왼쪽 위) — 정보, 점수, 닉네임·비밀번호 변경
+--------------------------------------------------------- */
+function accountMsg(text, type) {
+  const el = $("#accountMsg");
+  if (!el) { showMessage(text, type === "ok" ? "success" : "error"); return; }
+  el.textContent = text || "";
+  el.className = "account-msg" + (type === "ok" ? " ok" : type === "error" ? " error" : "");
+}
+
+function openAccountPanel(force) {
+  const panel = $("#accountPanel");
+  if (!panel) return;
+  const open = typeof force === "boolean" ? force : panel.classList.contains("hidden");
+  panel.classList.toggle("hidden", !open);
+  if (open) {
+    renderAccountInfo($("#nickInput")?.value.trim() || myNickname || "");
+    setTimeout(() => $("#accPwInput")?.focus(), 60);
+  }
+}
+
+function renderAccountInfo(nick) {
+  const input = $("#accNickInput");
+  if (input && nick !== undefined) input.value = nick || "";
+  const pw = $("#accPwInput");
+  if (pw && myAdminRole !== "none" && !pw.value) {
+    pw.placeholder = myAdminRole === "super" ? "최고 관리자 로그인됨" : "서브 관리자 로그인됨";
+  }
+  const box = $("#accChangeBox");
+  if (box) box.classList.toggle("hidden", myAdminRole === "none");
+}
+
+function renderAccountScores() {
+  if (socket && socketConnected) socket.emit("player:getRanking");
+}
+
+function saveAccount() {
+  const nick = normalizeWord($("#accNickInput")?.value || "");
+  const pw = $("#accPwInput")?.value ?? "";
+  if (!nick) {
+    accountMsg("닉네임을 입력해주세요.", "error");
+    return;
+  }
+  if (nick.length > 12) {
+    accountMsg("닉네임은 12자 이내로 입력해주세요.", "error");
+    return;
+  }
+  if (socket && socketConnected && socket.id) {
+    socket.emit("player:setName", { nickname: nick, password: pw });
+  } else {
+    accountMsg("서버에 연결되지 않았습니다.", "error");
+  }
+}
+
+function changeAccountPassword() {
+  const current = $("#accCurPw")?.value ?? "";
+  const next = $("#accNewPw")?.value ?? "";
+  if (next.length < 4) {
+    accountMsg("새 비밀번호는 4자 이상이어야 합니다.", "error");
+    return;
+  }
+  if (myAdminRole === "super") {
+    socket.emit("admin:setPassword", { current, next });
+  } else if (myAdminRole === "sub") {
+    socket.emit("admin:setSubPassword", { current, next });
+  } else {
+    accountMsg("관리자 계정으로 로그인해야 변경할 수 있습니다.", "error");
+    return;
+  }
+  if ($("#accCurPw")) $("#accCurPw").value = "";
+  if ($("#accNewPw")) $("#accNewPw").value = "";
+}
+
 /* 비밀번호 보기/숨기기 토글 — input을 감싸고 버튼을 붙인다 */
 function setupPwToggleInput(input) {
   if (!input || input.dataset.pwToggled) return;
@@ -1712,20 +1800,19 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  /* 계정 비밀번호 보기/숨기기 토글 (닉네임 바) */
-  $("#pwToggle")?.addEventListener("click", () => {
-    const input = $("#pwInput");
-    if (!input) return;
-    const show = input.type === "password";
-    input.type = show ? "text" : "password";
-    $("#pwToggle").textContent = show ? "숨김" : "보기";
-    input.focus();
+  /* 계정 탭 (왼쪽 위) */
+  $("#accountBtn")?.addEventListener("click", () => openAccountPanel());
+  $("#accountClose")?.addEventListener("click", () => openAccountPanel(false));
+  $("#accApply")?.addEventListener("click", saveAccount);
+  $("#accNickInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); saveAccount(); }
   });
-  $("#pwInput")?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      saveNickname();
-    }
+  $("#accPwInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); saveAccount(); }
   });
+  $("#accPwSave")?.addEventListener("click", changeAccountPassword);
+  $("#accountPanel").querySelectorAll("[data-pw-toggle]").forEach(setupPwToggleInput);
+  renderAccountInfo(myNickname);
+  renderAccountScores();
 
 });

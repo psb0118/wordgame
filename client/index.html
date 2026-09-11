@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
   <main class="wrap">
@@ -15,7 +15,6 @@
 
     <div class="name-bar">
       <label>닉네임<input id="nickInput" maxlength="12" placeholder="이름을 입력하세요"></label>
-      <label>계정 비밀번호<input id="pwInput" type="password" maxlength="64" placeholder="관리자 계정 전용" autocomplete="off"><button type="button" id="pwToggle">보기</button></label>
       <button id="nickSave">저장</button>
       <span id="nickMsg"></span>
     </div>
@@ -80,8 +79,6 @@
         <div class="rank-badge" id="singleRank">-</div>
         <div class="rank-info">
           <span>Rating: <strong id="singleRating">-</strong></span>
-          <span>승: <strong id="singleWins">0</strong></span>
-          <span>패: <strong id="singleLosses">0</strong></span>
         </div>
       </div>
 
@@ -151,8 +148,6 @@
         <div class="rank-badge" id="onlineRank">-</div>
         <div class="rank-info">
           <span>Rating: <strong id="onlineRating">-</strong></span>
-          <span>승: <strong id="onlineWins">0</strong></span>
-          <span>패: <strong id="onlineLosses">0</strong></span>
         </div>
       </div>
 
@@ -197,7 +192,33 @@
     <button id="inviteDecline" class="secondary">거절</button>
   </div>
 
+  <div id="accountWrap" class="account-wrap">
+    <button id="accountBtn" class="account-btn" title="계정">👤 계정</button>
+    <div id="accountPanel" class="account-panel hidden">
+      <div class="account-head">
+        <span>계정</span>
+        <button id="accountClose" class="account-close">✕</button>
+      </div>
+      <div class="account-row">
+        <input id="accNickInput" maxlength="12" placeholder="닉네임" autocomplete="off">
+        <button id="accApply">저장/로그인</button>
+      </div>
+      <input type="password" id="accPwInput" maxlength="64" placeholder="계정 비밀번호 (관리자 전용)" autocomplete="off" data-pw-toggle>
+      <div id="accountMsg"></div>
+      <div class="account-scores">
+        <div class="acc-row"><span>싱글 점수</span><strong id="accSingleRating">-</strong><span id="accSingleRank" class="acc-rank"></span></div>
+        <div class="acc-row"><span>멀티 점수</span><strong id="accMultiRating">-</strong><span id="accMultiRank" class="acc-rank"></span></div>
+      </div>
+      <div id="accChangeBox" class="acc-change hidden">
+        <div class="acc-change-title">비밀번호 변경 (로그인 후)</div>
+        <input type="password" id="accCurPw" placeholder="현재 비밀번호" autocomplete="off" data-pw-toggle>
+        <input type="password" id="accNewPw" placeholder="새 비밀번호 (4자 이상)" autocomplete="off" data-pw-toggle>
+        <button id="accPwSave" class="wide">비밀번호 변경</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/socket.io/socket.io.js"></script>
-  <script src="script.js?v=4"></script>
+  <script src="script.js?v=5"></script>
 </body>
 </html>
