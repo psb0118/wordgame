@@ -9,7 +9,8 @@ const {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
   loadData, hasWord, getAttackDepth, isAttackWord,
   getCandidates, isOneShot, getStartCandidates, chooseStartWord,
-  chooseAIWord, chooseAIStartWord, calculateRank, calculateElo
+  chooseAIWord, chooseAIStartWord, calculateRank, calculateElo,
+  estimateAIVictoryProbability
 } = require("./game.js");
 
 /* =========================================================
@@ -210,6 +211,14 @@ async function initDatabase() {
           rating INTEGER DEFAULT 1000,
           wins INTEGER DEFAULT 0,
           losses INTEGER DEFAULT 0,
+          ranked_rating INTEGER DEFAULT 1000,
+          ranked_wins INTEGER DEFAULT 0,
+          ranked_losses INTEGER DEFAULT 0,
+          money INTEGER DEFAULT 0,
+          money_multiplier INTEGER DEFAULT 1,
+          rating_boost_games INTEGER DEFAULT 0,
+          titles TEXT DEFAULT '[]',
+          current_title TEXT DEFAULT '',
           single_rating INTEGER DEFAULT 1000,
           single_wins INTEGER DEFAULT 0,
           single_losses INTEGER DEFAULT 0,
@@ -221,7 +230,15 @@ async function initDatabase() {
         ALTER TABLE players
           ADD COLUMN IF NOT EXISTS single_rating INTEGER DEFAULT 1000,
           ADD COLUMN IF NOT EXISTS single_wins INTEGER DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS single_losses INTEGER DEFAULT 0
+          ADD COLUMN IF NOT EXISTS single_losses INTEGER DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS ranked_rating INTEGER DEFAULT 1000,
+          ADD COLUMN IF NOT EXISTS ranked_wins INTEGER DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS ranked_losses INTEGER DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS money INTEGER DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS money_multiplier INTEGER DEFAULT 1,
+          ADD COLUMN IF NOT EXISTS rating_boost_games INTEGER DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS titles TEXT DEFAULT '[]',
+          ADD COLUMN IF NOT EXISTS current_title TEXT DEFAULT ''
       `);
       dbMode = "pg";
       console.log("데이터베이스: PostgreSQL 연결 완료");
@@ -238,13 +255,17 @@ async function initDatabase() {
 const MODE_DEFAULT = { rating: 1000, wins: 0, losses: 0 };
 
 function migratePlayerData(p) {
-  /* 이전 단일 rating 스키마 → 싱글/멀티 분리 스키마 변환 */
-  if (p && !p.single && !p.multi && typeof p.rating === "number") {
-    p.single = { rating: p.rating, wins: p.wins || 0, losses: p.losses || 0 };
-    p.multi = { rating: p.rating, wins: p.wins || 0, losses: p.losses || 0 };
-  }
   p.single = Object.assign({ ...MODE_DEFAULT }, p.single || {});
   p.multi = Object.assign({ ...MODE_DEFAULT }, p.multi || {});
+  p.ranked = Object.assign({ ...MODE_DEFAULT }, p.ranked || {});
+  if (typeof p.money !== "number" || !Number.isFinite(p.money)) p.money = typeof p.money === "number" ? Math.max(0, p.money) : 0;
+  p.money = Math.max(0, Math.floor(p.money));
+  if (!Number.isFinite(p.moneyMultiplier) || p.moneyMultiplier < 1) p.moneyMultiplier = 1;
+  p.moneyMultiplier = Math.min(99, Math.floor(p.moneyMultiplier));
+  if (!Number.isFinite(p.ratingBoostGames) || p.ratingBoostGames < 0) p.ratingBoostGames = 0;
+  p.ratingBoostGames = Math.floor(p.ratingBoostGames);
+  if (!Array.isArray(p.titles)) p.titles = [];
+  p.currentTitle = typeof p.currentTitle === "string" ? p.currentTitle : "";
   return p;
 }
 
@@ -259,7 +280,13 @@ async function getPlayerData(playerId) {
           id: row.id,
           nickname: row.nickname,
           multi: { rating: row.rating, wins: row.wins, losses: row.losses },
-          single: { rating: row.single_rating, wins: row.single_wins, losses: row.single_losses }
+          single: { rating: row.single_rating, wins: row.single_wins, losses: row.single_losses },
+          ranked: { rating: row.ranked_rating, wins: row.ranked_wins, losses: row.ranked_losses },
+          money: row.money,
+          moneyMultiplier: row.money_multiplier,
+          ratingBoostGames: row.rating_boost_games,
+          titles: (() => { try { return JSON.parse(row.titles || "[]"); } catch { return []; } })(),
+          currentTitle: row.current_title || ""
         };
         const migrated = migratePlayerData(data);
         playerCache.set(playerId, migrated);
@@ -275,21 +302,41 @@ async function getPlayerData(playerId) {
 async function savePlayerData(playerId, data) {
   const safe = migratePlayerData(data);
   const num = (v, fallback) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };
-  safe.single = { rating: num(safe.single.rating, 1000), wins: num(safe.single.wins, 0), losses: num(safe.single.losses, 0) };
-  safe.multi = { rating: num(safe.multi.rating, 1000), wins: num(safe.multi.wins, 0), losses: num(safe.multi.losses, 0) };
+  const modeCore = (m) => ({
+    rating: num(m.rating, 1000),
+    wins: Math.max(0, num(m.wins, 0)),
+    losses: Math.max(0, num(m.losses, 0))
+  });
+  safe.single = modeCore(safe.single);
+  safe.multi = modeCore(safe.multi);
+  safe.ranked = modeCore(safe.ranked);
+  safe.money = Math.max(0, Math.floor(num(safe.money, 0)));
+  safe.moneyMultiplier = Math.min(99, Math.max(1, Math.floor(num(safe.moneyMultiplier, 1))));
+  safe.ratingBoostGames = Math.max(0, Math.floor(num(safe.ratingBoostGames, 0)));
+  safe.titles = Array.isArray(safe.titles) ? safe.titles.filter(t => t && typeof t === "object") : [];
+  safe.currentTitle = typeof safe.currentTitle === "string" ? safe.currentTitle : "";
   playerCache.set(playerId, safe);
   if (dbMode === "pg") {
     try {
       await dbPool.query(`
-        INSERT INTO players (id, nickname, rating, wins, losses, single_rating, single_wins, single_losses, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+        INSERT INTO players
+          (id, nickname, rating, wins, losses, single_rating, single_wins, single_losses,
+           ranked_rating, ranked_wins, ranked_losses, money, money_multiplier, rating_boost_games,
+           titles, current_title, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
         ON CONFLICT (id) DO UPDATE SET
           nickname=$2, rating=$3, wins=$4, losses=$5,
-          single_rating=$6, single_wins=$7, single_losses=$8, updated_at=NOW()
+          single_rating=$6, single_wins=$7, single_losses=$8,
+          ranked_rating=$9, ranked_wins=$10, ranked_losses=$11,
+          money=$12, money_multiplier=$13, rating_boost_games=$14,
+          titles=$15, current_title=$16, updated_at=NOW()
       `, [
         playerId, safe.nickname || "플레이어",
         safe.multi.rating, safe.multi.wins, safe.multi.losses,
-        safe.single.rating, safe.single.wins, safe.single.losses
+        safe.single.rating, safe.single.wins, safe.single.losses,
+        safe.ranked.rating, safe.ranked.wins, safe.ranked.losses,
+        safe.money, safe.moneyMultiplier, safe.ratingBoostGames,
+        JSON.stringify(safe.titles), safe.currentTitle
       ]);
     } catch (err) { console.error("DB 쓰기 오류:", err.message); }
   } else {
@@ -297,19 +344,203 @@ async function savePlayerData(playerId, data) {
   }
 }
 
-async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mode = "multi") {
-  const key = mode === "single" ? "single" : "multi";
+async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mode = "multi", opts = {}) {
+  const key = mode === "ranked" ? "ranked" : "multi";
   const winner = await getPlayerData(winnerId);
   const loser = await getPlayerData(loserId);
   const { newWinnerRating, newLoserRating } = calculateElo(winner[key].rating, loser[key].rating);
-  winner[key].rating = newWinnerRating; winner[key].wins += 1; winner.nickname = winnerNickname || winner.nickname;
-  loser[key].rating = newLoserRating; loser[key].losses += 1; loser.nickname = loserNickname || loser.nickname;
+  let wGain = newWinnerRating - winner[key].rating;
+  let lChange = newLoserRating - loser[key].rating;
+  const wBoost = opts.winnerBoost || 1;
+  const lBoost = opts.loserBoost || 1;
+  winner[key].rating = Math.round(winner[key].rating + wGain * wBoost);
+  loser[key].rating = Math.round(loser[key].rating + lChange * lBoost);
+  winner[key].wins += 1; winner.nickname = winnerNickname || winner.nickname;
+  loser[key].losses += 1; loser.nickname = loserNickname || loser.nickname;
+  if (!Number.isFinite(winner[key].rating)) winner[key].rating = 1000;
+  if (!Number.isFinite(loser[key].rating)) loser[key].rating = 1000;
+  if (opts.decBoostWinner) winner.ratingBoostGames = Math.max(0, (winner.ratingBoostGames || 0) - 1);
+  if (opts.decBoostLoser) loser.ratingBoostGames = Math.max(0, (loser.ratingBoostGames || 0) - 1);
   await savePlayerData(winnerId, winner);
   await savePlayerData(loserId, loser);
   return {
     winner: { ...winner, rank: calculateRank(winner[key].rating) },
     loser: { ...loser, rank: calculateRank(loser[key].rating) }
   };
+}
+
+/* =========================================================
+   돈(코인) 시스템 & 상점
+========================================================= */
+
+const MONEY_TABLE = [
+  { amount: 5000000, weight: 1 },
+  { amount: 1000000, weight: 2 },
+  { amount: 500000, weight: 4 },
+  { amount: 100000, weight: 8 },
+  { amount: 50000, weight: 13 },
+  { amount: 25000, weight: 19 },
+  { amount: 10000, weight: 24 },
+  { amount: 5000, weight: 29 }
+];
+const MONEY_TOTAL_WEIGHT = MONEY_TABLE.reduce((a, b) => a + b.weight, 0);
+
+function rollMoney() {
+  let r = Math.random() * MONEY_TOTAL_WEIGHT;
+  for (const row of MONEY_TABLE) {
+    if (r < row.weight) return row.amount;
+    r -= row.weight;
+  }
+  return 5000;
+}
+
+const SHOP_TITLES = [
+  { id: "t_rookie", name: "풋내기 도전자", price: 20000 },
+  { id: "t_wordy", name: "단어 수집가", price: 100000 },
+  { id: "t_chain", name: "연쇄 마스터", price: 300000 },
+  { id: "t_oneshot", name: "한방의 달인", price: 1000000 },
+  { id: "t_god", name: "끝말잇기 신", price: 10000000 },
+  { id: "t_legend", name: "전설의 챔피언", price: 30000000 }
+];
+const SHOP_POTION_PRICE = 1000000;
+const SHOP_MULTIPLIER_PRICES = [
+  { multiplier: 2, price: 5000000 },
+  { multiplier: 3, price: 15000000 },
+  { multiplier: 4, price: 30000000 },
+  { multiplier: 5, price: 50000000 }
+];
+
+function computeMoneyReward(base, player) {
+  let m = base;
+  m *= (player.moneyMultiplier || 1);
+  if ((player.ratingBoostGames || 0) > 0) m *= 2;
+  return Math.round(m);
+}
+
+/* =========================================================
+   버그 제보 — 총관리자만 열람 가능
+========================================================= */
+
+const bugReportsPath = path.join(DATA_DIR, "bug-reports.json");
+let bugReports = [];
+
+function loadBugReports() {
+  try {
+    if (fs.existsSync(bugReportsPath)) {
+      bugReports = JSON.parse(fs.readFileSync(bugReportsPath, "utf8"));
+      if (!Array.isArray(bugReports)) bugReports = [];
+    }
+  } catch (e) { console.warn("버그 제보 로드 실패:", e.message); }
+}
+
+function saveBugReports() {
+  try {
+    fs.writeFileSync(bugReportsPath, JSON.stringify(bugReports, null, 2));
+  } catch (e) { console.warn("버그 제보 저장 실패:", e.message); }
+}
+
+/* =========================================================
+   실시간 랭크 게임 — 매칭 큐
+========================================================= */
+
+const RANKED_QUEUE = [];
+const RANKED_QUEUE_MAP = new Map(); /* socketId -> true */
+
+function addToRankedQueue(socketId, nickname, rating) {
+  if (RANKED_QUEUE_MAP.has(socketId)) return false;
+  RANKED_QUEUE.push({ socketId, nickname, rating, joinedAt: Date.now() });
+  RANKED_QUEUE_MAP.set(socketId, true);
+  return true;
+}
+
+function removeFromRankedQueue(socketId) {
+  const idx = RANKED_QUEUE.findIndex(q => q.socketId === socketId);
+  if (idx !== -1) RANKED_QUEUE.splice(idx, 1);
+  RANKED_QUEUE_MAP.delete(socketId);
+}
+
+function broadcastRankedQueue() {
+  io.emit("ranked:queueSize", { size: RANKED_QUEUE.length, inQueue: [...RANKED_QUEUE_MAP.keys()] });
+}
+
+async function getRankingPayload(socketId) {
+  const data = await getPlayerData(socketId);
+  return {
+    nickname: data.nickname,
+    single: { ...data.single, rank: calculateRank(data.single.rating) },
+    multi: { ...data.multi, rank: calculateRank(data.multi.rating) },
+    ranked: { ...data.ranked, rank: calculateRank(data.ranked.rating) },
+    money: data.money,
+    moneyMultiplier: data.moneyMultiplier,
+    ratingBoostGames: data.ratingBoostGames,
+    titles: data.titles,
+    currentTitle: data.currentTitle
+  };
+}
+
+function tryMatchRanked() {
+  while (RANKED_QUEUE.length >= 2) {
+    /* 레이팅이 가까운 상대끼리 매칭되도록 정렬 후 2명 선택 */
+    RANKED_QUEUE.sort((a, b) => a.joinedAt - b.joinedAt);
+    RANKED_QUEUE.sort((a, b) => Math.abs(a.rating - b.rating) - Math.abs(a.rating - b.rating));
+    const a = RANKED_QUEUE.shift();
+    const b = RANKED_QUEUE.shift();
+    RANKED_QUEUE_MAP.delete(a.socketId);
+    RANKED_QUEUE_MAP.delete(b.socketId);
+
+    if (!io.sockets.sockets.has(a.socketId) || !io.sockets.sockets.has(b.socketId)) {
+      continue;
+    }
+
+    const roomId = createRoomId();
+    const room = {
+      id: roomId,
+      hostSocketId: a.socketId,
+      mode: "ranked",
+      players: [],
+      currentWord: null,
+      turnPlayerIndex: 0,
+      turnNumber: 0,
+      history: [],
+      usedWords: new Set(),
+      started: false,
+      finished: false,
+      winner: null,
+      loser: null,
+      timer: null,
+      turnStartedAt: null,
+      turnEndsAt: null,
+      lastSyllable: null,
+      gameSessionId: 0,
+      rankedRatingA: a.rating,
+      rankedRatingB: b.rating
+    };
+    addPlayer(room, a.socketId, a.nickname);
+    addPlayer(room, b.socketId, b.nickname);
+    ROOMS.set(roomId, room);
+
+    io.sockets.sockets.get(a.socketId).join(roomId);
+    io.sockets.sockets.get(b.socketId).join(roomId);
+    io.sockets.sockets.get(a.socketId).data.roomId = roomId;
+    io.sockets.sockets.get(a.socketId).data.playerIndex = 0;
+    io.sockets.sockets.get(b.socketId).data.roomId = roomId;
+    io.sockets.sockets.get(b.socketId).data.playerIndex = 1;
+
+    registerOnline(a.socketId, a.nickname);
+    registerOnline(b.socketId, b.nickname);
+
+    io.sockets.sockets.get(a.socketId).emit("ranked:matched", {
+      ok: true, roomId, opponent: b.nickname, opponentRating: b.rating,
+      state: getPublicRoomState(room)
+    });
+    io.sockets.sockets.get(b.socketId).emit("ranked:matched", {
+      ok: true, roomId, opponent: a.nickname, opponentRating: a.rating,
+      state: getPublicRoomState(room)
+    });
+    startNewGame(room);
+    console.log(`[RANKED MATCH] ${a.nickname}(${a.rating}) vs ${b.nickname}(${b.rating}) → ${roomId}`);
+  }
+  broadcastRankedQueue();
 }
 
 /* =========================================================
@@ -438,7 +669,13 @@ function getPublicRoomState(room) {
     maxPlayers: MAX_PLAYERS,
     maxHearts: MAX_HEARTS,
     turnStartedAt: room.turnStartedAt,
-    turnEndsAt: room.turnEndsAt
+    turnEndsAt: room.turnEndsAt,
+    aiWinRate: room.mode === "ai" && room.currentWord
+      ? estimateAIVictoryProbability(
+          room.currentWord, room.usedWords, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS,
+          room.players[room.turnPlayerIndex]?.isBot === true
+        )
+      : null
   };
 }
 
@@ -530,7 +767,7 @@ function handleTurnTimeout(room, gameSessionId) {
    winnerIndex가 이긴 사람, loserIndex가 진 사람
 ========================================================= */
 
-function finishGame(room, winnerIndex, loserIndex) {
+async function finishGame(room, winnerIndex, loserIndex) {
   if (!room || room.finished) return;
   room.finished = true;
   room.winner = winnerIndex;
@@ -540,23 +777,41 @@ function finishGame(room, winnerIndex, loserIndex) {
   const winnerName = winnerIndex !== null ? room.players[winnerIndex]?.nickname : "무승부";
   console.log(`[GAME END] Room:${room.id} Winner:${winnerName} (${winnerIndex}) Loser:(${loserIndex})`);
 
-  /* 레이팅 반영 — 온라인 2인 또는 싱글(AI) 대전 */
+  /* 레이팅 반영 — 싱글(AI)은 레이팅 미반영, 온라인=멀티 레이팅, 랭크드=랭크드 레이팅+돈 보상 */
   const w = winnerIndex != null ? room.players[winnerIndex] : null;
   const l = loserIndex != null ? room.players[loserIndex] : null;
-  if (w && l && w.id !== l.id && (room.mode === "online" || w.isBot || l.isBot)) {
-    const winnerId = w.isBot ? AI_PLAYER_ID : w.id;
-    const loserId = l.isBot ? AI_PLAYER_ID : l.id;
+  const humanOnly = w && l && !w.isBot && !l.isBot;
+  if (w && l && w.id !== l.id && (room.mode === "online" || room.mode === "ranked") && humanOnly) {
+    const mode = room.mode === "ranked" ? "ranked" : "multi";
+    const updateOpts = {};
+    if (room.mode === "ranked") {
+      const [wData, lData] = await Promise.all([getPlayerData(w.id), getPlayerData(l.id)]);
+      updateOpts.winnerBoost = ((wData.ratingBoostGames || 0) > 0) ? 2 : 1;
+      updateOpts.loserBoost = ((lData.ratingBoostGames || 0) > 0) ? 2 : 1;
+      updateOpts.decBoostWinner = true;
+      updateOpts.decBoostLoser = true;
+    }
     updateRating(
-      winnerId, loserId,
+      w.id, l.id,
       w.nickname || "플레이어", l.nickname || "플레이어",
-      room.mode === "ai" ? "single" : "multi"
+      mode, updateOpts
     )
-      .then((result) => {
+      .then(async (result) => {
         for (const [data, p] of [[result.winner, w], [result.loser, l]]) {
           if (p && !p.isBot && p.socketId) {
             const s = io.sockets.sockets.get(p.socketId);
             if (s) s.emit("player:ranking", { ...data, rank: data.rank });
           }
+        }
+
+        if (room.mode === "ranked") {
+          const winnerData = await getPlayerData(w.id);
+          const base = rollMoney();
+          const earned = computeMoneyReward(base, winnerData);
+          winnerData.money += earned;
+          await savePlayerData(w.id, winnerData);
+          const ws = io.sockets.sockets.get(w.socketId);
+          if (ws) ws.emit("money:received", { amount: earned, base, multiplier: Math.round(earned / base), roomId: room.id });
         }
       })
       .catch((err) => console.error("레이팅 반영 오류:", err.message));
@@ -873,27 +1128,24 @@ app.get("/api/health", (req, res) => {
 
 app.get("/api/leaderboard", async (req, res) => {
   try {
-    const mode = req.query.mode === "single" ? "single" : "multi";
+    const mode = req.query.mode === "ranked" ? "ranked" : req.query.mode === "ai" ? "multi" : "multi";
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit || "10"), 10) || 10));
     let rows = [];
     if (dbMode === "pg") {
-      const col = mode === "single" ? "single_rating" : "rating";
+      const isRanked = mode === "ranked";
+      const col = isRanked ? "ranked_rating" : "rating";
+      const winCol = isRanked ? "ranked_wins" : "wins";
+      const lossCol = isRanked ? "ranked_losses" : "losses";
       rows = (await dbPool.query(
-        `SELECT id, nickname, ${col} AS stat_rating, ${
-          mode === "single" ? "single_wins" : "wins"
-        } AS stat_wins, ${
-          mode === "single" ? "single_losses" : "losses"
-        } AS stat_losses FROM players WHERE id <> $1 ORDER BY ${col} DESC LIMIT $2`,
+        `SELECT id, nickname, ${col} AS stat_rating, ${winCol} AS stat_wins, ${lossCol} AS stat_losses
+         FROM players WHERE id <> $1 ORDER BY ${col} DESC LIMIT $2`,
         [AI_PLAYER_ID, limit]
       )).rows;
     } else {
       rows = [...playerCache.values()]
         .filter(p => p && p.id !== AI_PLAYER_ID)
         .map(p => {
-          const s = (p && (mode === "single" ? p.single : p.multi)) ||
-            (typeof p.rating === "number"
-              ? { rating: p.rating, wins: p.wins, losses: p.losses }
-              : { rating: 1000, wins: 0, losses: 0 });
+          const s = (p && (mode === "ranked" ? p.ranked : p.multi)) || { rating: 1000, wins: 0, losses: 0 };
           return {
             id: p.id, nickname: p.nickname,
             stat_rating: s.rating, stat_wins: s.wins, stat_losses: s.losses
@@ -1228,6 +1480,8 @@ io.on("connection", (socket) => {
   socket.on("disconnect", (reason) => {
     console.log(`[DISCONNECT] ${socket.id} / ${reason}`);
     adminAuthed.delete(socket.id);
+    removeFromRankedQueue(socket.id);
+    broadcastRankedQueue();
     unregisterOnline(socket.id);
     const room = findRoomBySocket(socket.id);
     if (!room) return;
@@ -1248,6 +1502,173 @@ io.on("connection", (socket) => {
   socket.on("room:state", () => {
     const room = findRoomBySocket(socket.id);
     if (room) socket.emit("game:state", getPublicRoomState(room));
+  });
+
+  /* -- 실시간 랭크 게임 매칭 ----------------------------- */
+  socket.on("ranked:queue", async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const nickname = String(pd.nickname || "플레이어").trim();
+      if (!nickname) { socket.emit("ranked:queueStatus", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
+      if (findRoomBySocket(socket.id)) { removeFromRankedQueue(socket.id); }
+      if (!addToRankedQueue(socket.id, nickname, pd.ranked.rating)) {
+        socket.emit("ranked:queueStatus", { ok: true, queued: true, message: "이미 매칭 대기 중입니다." });
+        return;
+      }
+      registerOnline(socket.id, nickname);
+      socket.emit("ranked:queueStatus", { ok: true, queued: true });
+      broadcastRankedQueue();
+      tryMatchRanked();
+    } catch (err) { console.error("랭크 매칭 오류:", err); }
+  });
+
+  socket.on("ranked:cancel", () => {
+    removeFromRankedQueue(socket.id);
+    socket.emit("ranked:queueStatus", { ok: true, queued: false });
+    broadcastRankedQueue();
+  });
+
+  /* -- 상점 --------------------------------------------- */
+  socket.on("shop:list", async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      socket.emit("shop:info", {
+        ok: true,
+        money: pd.money,
+        moneyMultiplier: pd.moneyMultiplier,
+        ratingBoostGames: pd.ratingBoostGames,
+        titles: pd.titles,
+        currentTitle: pd.currentTitle,
+        titleCatalog: SHOP_TITLES,
+        potionPrice: SHOP_POTION_PRICE,
+        multiplierPrices: SHOP_MULTIPLIER_PRICES
+      });
+    } catch (err) { console.error("상점 조회 오류:", err); }
+  });
+
+  socket.on("shop:buyTitle", async (data) => {
+    try {
+      const titleId = String(data?.titleId || "");
+      const title = SHOP_TITLES.find(t => t.id === titleId);
+      if (!title) { socket.emit("shop:result", { ok: false, reason: "존재하지 않는 칭호입니다." }); return; }
+      const pd = await getPlayerData(socket.id);
+      if (pd.titles.some(t => t.id === titleId)) { socket.emit("shop:result", { ok: false, reason: "이미 보유한 칭호입니다." }); return; }
+      if (pd.money < title.price) { socket.emit("shop:result", { ok: false, reason: "돈이 부족합니다." }); return; }
+      pd.money -= title.price;
+      pd.titles.push({ id: title.id, name: title.name });
+      if (!pd.currentTitle) pd.currentTitle = title.name;
+      await savePlayerData(socket.id, pd);
+      socket.emit("shop:result", { ok: true, message: `칭호 '${title.name}'을 구매했습니다.`, money: pd.money, titles: pd.titles, currentTitle: pd.currentTitle });
+      socket.emit("player:ranking", await getRankingPayload(socket.id));
+    } catch (err) { console.error("칭호 구매 오류:", err); }
+  });
+
+  socket.on("shop:setTitle", async (data) => {
+    try {
+      const titleId = String(data?.titleId || "");
+      const pd = await getPlayerData(socket.id);
+      const title = pd.titles.find(t => t.id === titleId);
+      if (!title) { socket.emit("shop:result", { ok: false, reason: "보유하지 않은 칭호입니다." }); return; }
+      pd.currentTitle = title.name;
+      await savePlayerData(socket.id, pd);
+      socket.emit("shop:result", { ok: true, message: `칭호 '${title.name}'(으)로 변경했습니다.`, currentTitle: pd.currentTitle });
+      socket.emit("player:ranking", await getRankingPayload(socket.id));
+      broadcastRoomState(findRoomBySocket(socket.id));
+    } catch (err) { console.error("칭호 변경 오류:", err); }
+  });
+
+  socket.on("shop:buyPotion", async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      if (pd.money < SHOP_POTION_PRICE) { socket.emit("shop:result", { ok: false, reason: "돈이 부족합니다." }); return; }
+      pd.money -= SHOP_POTION_PRICE;
+      pd.ratingBoostGames += 10;
+      await savePlayerData(socket.id, pd);
+      socket.emit("shop:result", { ok: true, message: "다음 10판 동안 레이팅 2배 물약을 구매했습니다.", money: pd.money, ratingBoostGames: pd.ratingBoostGames });
+      socket.emit("player:ranking", await getRankingPayload(socket.id));
+    } catch (err) { console.error("물약 구매 오류:", err); }
+  });
+
+  socket.on("shop:buyMultiplier", async (data) => {
+    try {
+      const target = Number(data?.multiplier);
+      const row = SHOP_MULTIPLIER_PRICES.find(m => m.multiplier === target);
+      if (!row) { socket.emit("shop:result", { ok: false, reason: "구매할 수 없는 배율입니다." }); return; }
+      const pd = await getPlayerData(socket.id);
+      if ((pd.moneyMultiplier || 1) >= target) { socket.emit("shop:result", { ok: false, reason: `이미 ${pd.moneyMultiplier}배 이상 보유 중입니다.` }); return; }
+      if (pd.money < row.price) { socket.emit("shop:result", { ok: false, reason: "돈이 부족합니다." }); return; }
+      pd.money -= row.price;
+      pd.moneyMultiplier = target;
+      await savePlayerData(socket.id, pd);
+      socket.emit("shop:result", { ok: true, message: `영구 돈 ${target}배를 구매했습니다.`, money: pd.money, moneyMultiplier: pd.moneyMultiplier });
+      socket.emit("player:ranking", await getRankingPayload(socket.id));
+    } catch (err) { console.error("배율 구매 오류:", err); }
+  });
+
+  /* -- 버그 제보 ----------------------------------------- */
+  socket.on("bug:submit", async (data) => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const nickname = String(pd.nickname || "익명").trim();
+      const category = String(data?.category || "기타").trim().slice(0, 20);
+      const message = String(data?.message || "").trim().slice(0, 2000);
+      if (!message) { socket.emit("bug:submitted", { ok: false, reason: "내용을 입력해주세요." }); return; }
+      bugReports.unshift({
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        nickname, category, message, createdAt: new Date().toISOString()
+      });
+      saveBugReports();
+      socket.emit("bug:submitted", { ok: true, reason: "버그 제보가 접수되었습니다. 감사합니다!" });
+      console.log(`[BUG REPORT] '${nickname}': ${category} — ${message.slice(0, 60)}`);
+    } catch (err) { console.error("버그 제보 오류:", err); }
+  });
+
+  /* -- 관리자: 돈 조절 (총관리자 전용) ------------------- */
+  socket.on("admin:setMoney", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:moneyResult", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") { socket.emit("admin:moneyResult", { ok: false, reason: "돈 조절은 최고 관리자만 사용할 수 있습니다." }); return; }
+      if (!checkAdminPw(reg, data?.password)) { socket.emit("admin:moneyResult", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." }); return; }
+      const nickname = String(data?.nickname ?? "").trim();
+      const amount = clampNum(data?.amount, -999999999, 999999999, 0);
+      if (!nickname) { socket.emit("admin:moneyResult", { ok: false, reason: "닉네임을 입력해주세요." }); return; }
+      const id = await findPlayerIdByNickname(nickname);
+      if (!id) { socket.emit("admin:moneyResult", { ok: false, reason: `'${nickname}' 닉네임을 찾을 수 없습니다.` }); return; }
+      const pd = await getPlayerData(id);
+      pd.money += amount;
+      if (pd.money < 0) pd.money = 0;
+      await savePlayerData(id, pd);
+      socket.emit("admin:moneyResult", { ok: true, nickname: pd.nickname, money: pd.money, message: `'${nickname}' 님의 돈을 ${amount}원 ${amount >= 0 ? "추가" : "차감"}했습니다. (현재 ${pd.money}원)` });
+      if (onlineNicks.has(normKey(nickname))) {
+        const tId = onlineNicks.get(normKey(nickname));
+        const ts = io.sockets.sockets.get(tId);
+        if (ts) ts.emit("player:ranking", await getRankingPayload(tId));
+      }
+      console.log(`[ADMIN] ${reg.nickname}님이 '${nickname}' 돈 ${amount}원 조절`);
+    } catch (err) { console.error("돈 조절 오류:", err); }
+  });
+
+  /* -- 관리자: 버그 제보 목록 (총관리자만) ---------------- */
+  socket.on("admin:getBugs", async () => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:bugs", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") { socket.emit("admin:bugs", { ok: false, reason: "버그 제보 열람은 최고 관리자만 가능합니다." }); return; }
+      socket.emit("admin:bugs", { ok: true, reports: bugReports });
+    } catch (err) { console.error("버그 목록 오류:", err); }
+  });
+
+  socket.on("admin:deleteBug", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:bugs", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") { socket.emit("admin:bugs", { ok: false, reason: "버그 제보 삭제는 최고 관리자만 가능합니다." }); return; }
+      const id = String(data?.id || "");
+      bugReports = bugReports.filter(b => b.id !== id);
+      saveBugReports();
+      socket.emit("admin:bugs", { ok: true, reports: bugReports });
+    } catch (err) { console.error("버그 삭제 오류:", err); }
   });
 
   /* 추방 — 방장 또는 관리자만 가능 */
@@ -1289,7 +1710,13 @@ io.on("connection", (socket) => {
       socket.emit("player:ranking", {
         nickname: data.nickname,
         single: { ...data.single, rank: calculateRank(data.single.rating) },
-        multi: { ...data.multi, rank: calculateRank(data.multi.rating) }
+        multi: { ...data.multi, rank: calculateRank(data.multi.rating) },
+        ranked: { ...data.ranked, rank: calculateRank(data.ranked.rating) },
+        money: data.money,
+        moneyMultiplier: data.moneyMultiplier,
+        ratingBoostGames: data.ratingBoostGames,
+        titles: data.titles,
+        currentTitle: data.currentTitle
       });
     } catch (err) { console.error("랭킹 조회 오류:", err); }
   });
@@ -1378,7 +1805,14 @@ io.on("connection", (socket) => {
       const pd = await getPlayerData(id);
       socket.emit("admin:findResult", {
         ok: true,
-        player: { id, nickname: pd.nickname, single: { ...pd.single }, multi: { ...pd.multi } }
+        player: {
+          id, nickname: pd.nickname,
+          single: { ...pd.single },
+          multi: { ...pd.multi },
+          ranked: { ...pd.ranked },
+          money: pd.money,
+          moneyMultiplier: pd.moneyMultiplier
+        }
       });
     } catch (err) { console.error("관리자 플레이어 조회 오류:", err); }
   });
@@ -1392,7 +1826,7 @@ io.on("connection", (socket) => {
         return;
       }
       const nickname = String(data?.nickname ?? "").trim();
-      const mode = data?.mode === "multi" ? "multi" : "single";
+      const mode = data?.mode === "ranked" ? "ranked" : data?.mode === "single" ? "multi" : "multi";
       if (!nickname) {
         socket.emit("admin:statsUpdated", { ok: false, reason: "닉네임을 입력해주세요." });
         return;
@@ -1409,7 +1843,14 @@ io.on("connection", (socket) => {
       await savePlayerData(id, pd);
       socket.emit("admin:statsUpdated", {
         ok: true,
-        player: { id, nickname: pd.nickname, single: { ...pd.single }, multi: { ...pd.multi } }
+        player: {
+          id, nickname: pd.nickname,
+          single: { ...pd.single },
+          multi: { ...pd.multi },
+          ranked: { ...pd.ranked },
+          money: pd.money,
+          moneyMultiplier: pd.moneyMultiplier
+        }
       });
       console.log(`[ADMIN] ${reg.nickname}님이 '${nickname}'(${mode}) 통계 수정:`, JSON.stringify(pd[mode]));
     } catch (err) { console.error("관리자 통계 수정 오류:", err); }
@@ -1784,6 +2225,7 @@ io.on("connection", (socket) => {
 initDatabase().then(() => {
   loadAdminConfig();
   loadFriends();
+  loadBugReports();
   server.listen(PORT, "0.0.0.0", () => {
     console.log("========================================");
     console.log(`끝말잇기 서버 실행 중: http://localhost:${PORT}`);

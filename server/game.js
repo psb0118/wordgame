@@ -33,7 +33,9 @@ const DUEUM = {
   "릇": ["릇", "늣"], "룩": ["룩", "눅"], "룅": ["룅", "뇡"], "럿": ["럿", "엇", "넛"],
   "럼": ["럼", "엄", "넘"], "름": ["름", "늠"],
   "륨": ["륨", "늄", "윰"], "늉": ["늉", "융"],
-  "렁": ["렁", "엉"], "렴": ["렴", "염"]
+  "렁": ["렁", "엉"], "렴": ["렴", "염"],
+  "녓": ["녓", "엿"], "엿": ["엿", "녓"],
+  "닢": ["닢", "잎"], "잎": ["잎", "닢"]
 };
 
 /* =========================================================
@@ -390,20 +392,34 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   const newUsed = new Set([...usedWords]);
   const defenseSet = DEFENSE_WORDS || new Set();
 
-  /* 2수 평가 비용 제한용 샘플 크기 */
-  const EVAL_CAP = 60;
-  const OPP_CAP = 10;
+  const EVAL_CAP = 80;
+  const OPP_CAP = 12;
   const OPP_PLY_CAP = 4;
+
+  const lastChar = normalizeWord(currentWord).at(-1);
+
+  const SYLLABLE_RARITY = (() => {
+    const count = new Map();
+    for (const [ch] of WORD_INDEX) {
+      const bucket = WORD_INDEX.get(ch);
+      if (bucket) count.set(ch, bucket.length);
+    }
+    return count;
+  })();
 
   let list = candidates.map(w => {
     const next = getCandidates(w, newUsed, WORD_INDEX);
     const depth = ATTACK_DEPTH[w];
+    const lastSyl = w.at(-1);
+    const rarityCount = SYLLABLE_RARITY.get(lastSyl) ?? 9999;
     return {
       w, nextCount: next.length, depth,
       isAttack: Number.isFinite(depth),
       isRoot: !!(ROOT_WORDS && ROOT_WORDS.has(w)),
       isDefense: !!defenseSet.has(w),
-      isValue: w.endsWith("값")
+      isValue: w.endsWith("값"),
+      lastSyl,
+      rarityCount
     };
   });
 
@@ -419,24 +435,24 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     return pool.slice(0, EVAL_CAP);
   };
 
-  /* 상대 입장 평가: 이 단어를 맞은 뒤 상대가 쓸 수 있는 옵션/역공 점검.
-     상대가 곧바로 한방을 내는지(1수), 그 한방을 받아칠 수 없는지(2수)까지 본다. */
   const oppScore = (info) => {
     let score = 0;
-    if (info.isValue) score += 90;                /* 값 루트 강력 우선 */
-    score -= Math.min(info.nextCount, 15) * 2;    /* 상대 선택지 적을수록 좋음 — 단, 15개 이상이면
-                                                     충분히 안전하다고 보고 동등하게 취급해 단어를 다양화 */
+    if (info.isValue) score += 90;
+    if (info.isRoot) score += 35;
+    if (info.rarityCount <= 5) score += 20;
+    else if (info.rarityCount <= 15) score += 10;
+
+    score -= Math.min(info.nextCount, 15) * 2;
     const opp = getCandidates(info.w, newUsed, WORD_INDEX);
     const sample = opp.slice(0, OPP_CAP);
     for (const ow of sample) {
       const owUsed = new Set(newUsed);
       owUsed.add(info.w);
       const owNext = getCandidates(ow, owUsed, WORD_INDEX);
-      if (owNext.length === 0) { score -= 110; continue; }  /* 상대 즉시 승리 금지 */
+      if (owNext.length === 0) { score -= 110; continue; }
       if (Number.isFinite(ATTACK_DEPTH[ow]) && ATTACK_DEPTH[ow] <= 2) score -= 45;
       if (ROOT_WORDS && ROOT_WORDS.has(ow)) score -= 25;
       if (ow.endsWith("값")) score -= 30;
-      /* 2수: 상대의 답 중 AI가 받아칠 수 없는 한방이 있으면 크게 감점 */
       const ply = owNext.slice(0, OPP_PLY_CAP);
       for (const o2 of ply) {
         const o2Used = new Set(owUsed);
@@ -449,10 +465,10 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   };
 
   const bestFrom = (group) => {
+    if (!group.length) return null;
     const scored = capSample(group).map(i => ({ i, s: oppScore(i) }));
     scored.sort((a, b) => b.s - a.s);
     const topScore = scored[0].s;
-    /* 상위 ±12 이내 후보 중 랜덤 — 루트/일반 단어가 매번 몇 개로 고정되지 않도록 다양화 */
     const top = scored.filter(x => x.s >= topScore - 12);
     return pick(top).i.w;
   };
@@ -468,19 +484,22 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     return bestFrom(attacks.filter(i => i.depth === minDepth));
   }
 
-  /* 3. 값 루트 — ~~값/값표/표준값. 받아치기 어려운 강력한 수 */
+  /* 3. 값 루트 */
   const values = list.filter(i => i.isValue);
   if (values.length) return bestFrom(values);
 
-  /* 4. 루트/희귀 루트 단어 */
+  /* 4. 루트 단어 (방어 회피: 루트가 있으면 무조건 루트만 사용) */
   const roots = list.filter(i => i.isRoot);
-  if (roots.length) return bestFrom(roots);
+  if (roots.length) {
+    const chosen = bestFrom(roots);
+    if (chosen) return chosen;
+  }
 
-  /* 5. 일반(비방어) 단어 — 지지 않는 최선 */
-  const normals = list.filter(i => !i.isDefense);
-  if (normals.length) return bestFrom(normals);
+  /* 4-2. 비방어 단어 중 희귀 끝 음절 우선 (방어 회피 강화) */
+  const nonDefense = list.filter(i => !i.isDefense);
+  if (nonDefense.length) return bestFrom(nonDefense);
 
-  /* 6. 전부 방어 단어일 때만 최후 수단 */
+  /* 5. 전부 방어 단어일 때만 최후 수단 */
   return bestFrom(list);
 }
 
@@ -489,14 +508,23 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
 ========================================================= */
 
 function calculateRank(rating) {
-  if (rating >= 2200) return { tier: "Challenger", sub: "" };
-  if (rating >= 2000) return { tier: "Grandmaster", sub: "" };
-  if (rating >= 1800) return { tier: "Master", sub: "" };
-  if (rating >= 1600) return { tier: "Diamond", sub: rating >= 1734 ? "I" : rating >= 1667 ? "II" : "III" };
-  if (rating >= 1400) return { tier: "Platinum", sub: rating >= 1534 ? "I" : rating >= 1467 ? "II" : "III" };
-  if (rating >= 1200) return { tier: "Gold", sub: rating >= 1334 ? "I" : rating >= 1267 ? "II" : "III" };
-  if (rating >= 1000) return { tier: "Silver", sub: rating >= 1134 ? "I" : rating >= 1067 ? "II" : "III" };
-  return { tier: "Bronze", sub: rating >= 934 ? "I" : rating >= 867 ? "II" : "III" };
+  /* 5단계 등급 체계 — 숫자가 낮을수록 높은 등급 (브론즈5~브론즈1, 실버5~실버1, ...) */
+  const tierTables = [
+    { tier: "Bronze", base: 0, span: 1000 },
+    { tier: "Silver", base: 1000, span: 400 },
+    { tier: "Gold", base: 1400, span: 400 },
+    { tier: "Platinum", base: 1800, span: 400 },
+    { tier: "Diamond", base: 2200, span: 400 },
+    { tier: "Master", base: 2600, span: 400 }
+  ];
+  if (rating >= 3000) return { tier: "Grandmaster", sub: "" };
+  let tier = tierTables[tierTables.length - 1];
+  for (const t of tierTables) {
+    if (rating >= t.base) tier = t;
+  }
+  const step = Math.floor((rating - tier.base) / (tier.span / 5));
+  const sub = 5 - Math.max(0, Math.min(4, step));
+  return { tier: tier.tier, sub: String(sub) };
 }
 
 function calculateElo(winnerRating, loserRating, K = 32) {
@@ -508,9 +536,69 @@ function calculateElo(winnerRating, loserRating, K = 32) {
   };
 }
 
+/* =========================================================
+   AI 현재 승률(이길 확률) 추정 — 현재 보드 상태 기반 대략적 추정
+   - 한방(즉시 승리) 후보가 있는지
+   - 공격/루트 후보 비율
+   - 상대가 필중(즉시 승리)을 가질 위험
+   - 누구 차례인지 반영
+   말도 안 되는 값이 아닌 대략적인 퍼센트를 돌려준다
+========================================================= */
+
+function estimateAIVictoryProbability(currentWord, usedWords, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, isAITurn) {
+  const candidates = getCandidates(currentWord, usedWords, WORD_INDEX);
+  if (!candidates.length) {
+    /* 후보 0 = 차례인 쪽 즉시 패배 */
+    return isAITurn ? 10 : 90;
+  }
+  const used = new Set(usedWords);
+  const SAMPLE = 30;
+  const sample = candidates.slice(0, SAMPLE);
+  const n = Math.max(1, sample.length);
+
+  let aiOneShot = 0;      /* 내 수로 즉시 끝내는 단어 수 */
+  let aiAttack = 0;       /* 내 공격 후보 수 */
+  let aiRoot = 0;         /* 내 루트 후보 수 */
+  let oppThreat = 0;      /* 상대가 즉시 한방을 낼 수 있는 위협 수 */
+  let oppOptions = 0;
+
+  for (const w of sample) {
+    const nextUsed = new Set(used);
+    nextUsed.add(w);
+    const next = getCandidates(w, nextUsed, WORD_INDEX);
+    if (next.length === 0) aiOneShot++;
+    if (Number.isFinite(ATTACK_DEPTH[w])) aiAttack++;
+    if (ROOT_WORDS && ROOT_WORDS.has(w)) aiRoot++;
+    oppOptions += next.length;
+    const oppSample = next.slice(0, 8);
+    for (const ow of oppSample) {
+      const nextUsed2 = new Set(nextUsed);
+      nextUsed2.add(ow);
+      if (getCandidates(ow, nextUsed2, WORD_INDEX).length === 0) oppThreat++;
+    }
+  }
+
+  let p = 50;
+  if (aiOneShot > 0) p += Math.min(15 + aiOneShot * 5, 35);
+  p += Math.min(aiAttack / n, 0.6) * 12;
+  p += Math.min(aiRoot / n, 0.35) * 8;
+  p += Math.min(Math.max(0, 100 - candidates.length) / 100, 1) * 5;
+  p -= Math.min(oppThreat / n, 0.5) * 20;
+  p += Math.min(oppOptions / n / 100, 0.2) * 5;
+
+  /* 내가 아닌 상대 차례면 간단히 대칭 보정 */
+  if (!isAITurn) {
+    const aiStrong = Math.min(1, (aiOneShot / n) + (aiAttack / n) * 0.5);
+    p = p * 0.45 + (1 - aiStrong) * 50;
+  }
+
+  return Math.max(2, Math.min(98, Math.round(p)));
+}
+
 module.exports = {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
   loadData, hasWord, getAttackDepth, isAttackWord,
   getCandidates, isOneShot, getStartCandidates, chooseStartWord,
-  chooseAIWord, chooseAIStartWord, calculateRank, calculateElo
+  chooseAIWord, chooseAIStartWord, calculateRank, calculateElo,
+  estimateAIVictoryProbability
 };

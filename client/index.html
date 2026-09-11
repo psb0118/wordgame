@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=7">
+  <link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
   <main class="wrap">
@@ -22,7 +22,15 @@
     <nav class="tabs">
       <button data-mode="single" class="active">싱글플레이</button>
       <button data-mode="online">온라인 멀티</button>
+      <button data-mode="ranked">랭크 매칭</button>
+      <button data-mode="shop">상점</button>
     </nav>
+
+    <div class="money-bar hidden">
+      <span class="money-chip">💰 <b id="moneyDisplay">0</b></span>
+      <span class="boost-chip hidden" id="boostChip" title="다음 N번 게임 동안 레이팅/승리 보상 2배">물약 <b id="boostCount">0</b>판</span>
+      <span class="title-chip hidden" id="titleChip"></span>
+    </div>
 
     <!-- 싱글플레이 -->
     <section id="single" class="panel">
@@ -52,6 +60,8 @@
       </div>
 
       <div class="rule-notice" id="ruleNotice"></div>
+
+      <div class="ai-winrate hidden" data-active="false"></div>
 
       <div id="message" class="message"></div>
 
@@ -158,7 +168,107 @@
 
       <button id="adminBtnOnline" class="admin-btn wide secondary hidden">⚙ 관리자 패널</button>
     </section>
+
+    <!-- 랭크 매칭 -->
+    <section id="ranked" class="panel hidden">
+      <div class="rule-notice">실시간 랭크 매칭 — 온라인 레이팅과 다른 <b>랭크 점수</b>를 사용합니다. 승리하면 돈(코인)을 받을 수 있어요.</div>
+
+      <div id="rankedLobby">
+        <div class="onlineTop">
+          <button id="rankedQueueBtn">🔍 매칭 시작</button>
+          <button id="rankedCancelBtn" class="secondary hidden">매칭 취소</button>
+        </div>
+        <div id="rankedQueueInfo" class="ranked-queue-info"></div>
+        <div class="ranked-prize">
+          <b>승리 보상:</b>
+          <span>5,000</span><span>10,000</span><span>25,000</span><span>50,000</span><span>100,000</span><span>500,000</span><span>1,000,000</span><span style="color:#fbbf24;font-weight:700;">5,000,000</span>
+        </div>
+      </div>
+
+      <div id="rankedGame" class="hidden">
+        <div id="rankedRoomInfo" class="room"></div>
+        <div id="rankedMessage" class="message"></div>
+
+        <div class="single-header" id="rankedHeader">
+          <div class="stats">
+            <b>시작 <span id="rankedStartWord">-</span></b>
+            <b>턴 <span id="rankedTurn">0</span></b>
+            <b>깊이 <span id="rankedDepth">-</span></b>
+          </div>
+        </div>
+        <div class="game-boxes">
+          <div class="last-char-box">
+            <div class="last-char-label">끝 글자</div>
+            <div class="last-char" id="rankedLast">-</div>
+            <div class="last-hint" id="rankedLastHint"></div>
+          </div>
+          <div class="timer-box">
+            <div class="timer-label">남은 시간</div>
+            <div class="timer-value" id="rankedTimer">-</div>
+          </div>
+          <div class="turn-indicator" id="rankedTurnIndicator"></div>
+        </div>
+
+        <div id="rankedPlayers" class="players"></div>
+        <div id="rankedHistory" class="history"></div>
+
+        <div class="entry">
+          <input id="rankedInput" placeholder="내 차례에 단어 입력" autocomplete="off">
+          <button id="rankedSend">입력</button>
+        </div>
+        <div class="game-status">
+          <span>♥ <span id="heartsRanked">♥♥</span></span>
+          <span>실수 <span id="mistakesDisplayRanked">0/5</span></span>
+        </div>
+
+        <button id="rankedLeave" class="wide secondary">나가기</button>
+      </div>
+
+      <div class="lb">
+        <button id="loadLbRanked" class="wide secondary">랭크 리더보드 보기</button>
+        <div id="leaderboardRanked" class="hidden"><div class="lb-heading"></div></div>
+      </div>
+
+      <button id="adminBtnRanked" class="admin-btn wide secondary hidden">⚙ 관리자 패널</button>
+    </section>
+
+    <!-- 상점 -->
+    <section id="shop" class="panel hidden">
+      <div class="rule-notice">랭크 매칭 승리로 번 <b>돈(코인)</b>으로 칭호·물약·배율을 구매할 수 있습니다.</div>
+      <div class="shop-money">
+        <span>💰 소지금</span>
+        <strong id="shopMoney">0</strong>
+      </div>
+      <div id="shopBody"></div>
+      <div class="shop-bug">
+        <button id="bugBtn" class="wide secondary">🐞 버그 제보</button>
+      </div>
+    </section>
   </main>
+
+  <div id="bugModal" class="modal hidden">
+    <div class="modal-box">
+      <div class="admin-head">
+        <h3>버그 제보</h3>
+        <button class="modal-close" id="bugClose">✕</button>
+      </div>
+      <label>분류
+        <select id="bugCategory">
+          <option>게임 오류</option>
+          <option>AI 문제</option>
+          <option>레이팅/랭크</option>
+          <option>돈/상점</option>
+          <option>UI 표시</option>
+          <option>기타</option>
+        </select>
+      </label>
+      <textarea id="bugMessage" rows="5" maxlength="2000" placeholder="어떤 문제가 발생했나요? (단계를 적어주시면 더 정확해요)"></textarea>
+      <div id="bugMsg" class="message"></div>
+      <div class="admin-head" style="margin-top:6px;">
+        <button id="bugSubmit" class="wide">제보 보내기</button>
+      </div>
+    </div>
+  </div>
 
   <div id="adminModal" class="modal hidden">
     <div class="modal-box admin-box">
@@ -208,6 +318,13 @@
       <div class="account-scores">
         <div class="acc-row"><span>싱글 점수</span><strong id="accSingleRating">-</strong><span id="accSingleRank" class="acc-rank"></span></div>
         <div class="acc-row"><span>멀티 점수</span><strong id="accMultiRating">-</strong><span id="accMultiRank" class="acc-rank"></span></div>
+        <div class="acc-row"><span>랭크 점수</span><strong id="accRankedRating">-</strong><span id="accRankedRank" class="acc-rank"></span></div>
+        <div class="acc-row"><span>소지금</span><strong id="accMoney">0</strong></div>
+        <div class="acc-row"><span>칭호</span><strong id="accTitle">없음</strong></div>
+      </div>
+      <div id="accTitleBox" class="acc-change hidden">
+        <div class="acc-change-title">칭호 선택 (상점에서 구매)</div>
+        <div id="accTitleList" class="acc-title-list"></div>
       </div>
       <div id="accChangeBox" class="acc-change hidden">
         <div class="acc-change-title">비밀번호 변경 (로그인 후)</div>
@@ -219,6 +336,6 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="script.js?v=5"></script>
+  <script src="script.js?v=7"></script>
 </body>
 </html>

@@ -27,6 +27,50 @@ let pendingInvite = null;
 const localStats = JSON.parse(localStorage.getItem("kkStats") || '{"wins":0,"losses":0,"games":0,"totalLength":0}');
 let localUsedWords = new Set();
 
+/* 금액/상점/버그/랭크 상태 */
+let moneyBalance = 0;
+let moneyMultiplier = 1;
+let ratingBoostGames = 0;
+let ownedTitles = [];
+let currentTitle = "";
+let shopInfo = null;
+let rankedQueued = false;
+let rankedMatchInfo = null;
+
+/* ---------------------------------------------------------
+   모드별 DOM 요소 맵 (single / online / ranked)
+--------------------------------------------------------- */
+const MODE_ELEMENTS = {
+  single: {
+    input: "#singleInput", send: "#singleSend", message: "#message",
+    history: "#history", players: null, last: "#last", hint: "#lastHint",
+    turn: "#turn", depth: "#depth", startWord: "#startWord", timer: "#timer",
+    turnIndicator: "#turnIndicator", ruleNotice: "#ruleNotice", hearts: "#hearts",
+    mistakes: "#mistakesDisplay", timerBox: "#single .timer-box"
+  },
+  online: {
+    input: "#onlineInput", send: "#onlineSend", message: "#onlineMessage",
+    history: "#onlineHistory", players: "#onlinePlayers", last: "#onlineLast",
+    hint: "#onlineLastHint", turn: "#onlineTurn", depth: "#onlineDepth",
+    startWord: "#onlineStartWord", timer: "#onlineTimer",
+    turnIndicator: "#onlineTurnIndicator", ruleNotice: "#onlineRuleNotice",
+    hearts: "#heartsOnline", mistakes: "#mistakesDisplayOnline",
+    timerBox: "#online .timer-box", roomInfo: "#roomInfo"
+  },
+  ranked: {
+    input: "#rankedInput", send: "#rankedSend", message: "#rankedMessage",
+    history: "#rankedHistory", players: "#rankedPlayers", last: "#rankedLast",
+    hint: "#rankedLastHint", turn: "#rankedTurn", depth: "#rankedDepth",
+    startWord: "#rankedStartWord", timer: "#rankedTimer",
+    turnIndicator: "#rankedTurnIndicator", ruleNotice: "#onlineRuleNotice",
+    hearts: "#heartsRanked", mistakes: "#mistakesDisplayRanked",
+    timerBox: "#ranked .timer-box", roomInfo: "#rankedRoomInfo"
+  }
+};
+
+function modeEl(name) { return MODE_ELEMENTS[currentMode]?.[name] || null; }
+function modeGet(name) { const q = modeEl(name); return q ? $(q) : null; }
+
 /* ---------------------------------------------------------
    DOM 헬퍼
 --------------------------------------------------------- */
@@ -48,16 +92,11 @@ function setDisabled(selectors, disabled) {
 }
 
 function showMessage(text, type) {
-  const selectors = currentMode === "single"
-    ? ["#message"]
-    : ["#onlineMessage"];
-  for (const sel of selectors) {
-    const el = $(sel);
-    if (el) {
-      el.textContent = text;
-      el.dataset.type = type || "";
-      return;
-    }
+  const el = modeGet("message") || (currentMode === "single" ? $("#message") : $("#onlineMessage"));
+  if (el) {
+    el.textContent = text;
+    el.dataset.type = type || "";
+    return;
   }
 }
 
@@ -178,7 +217,9 @@ const DUEUM = {
   "릇": ["릇", "늣"], "룩": ["룩", "눅"], "룅": ["룅", "뇡"],
   "럼": ["럼", "엄", "넘"], "름": ["름", "늠"],
   "륨": ["륨", "늄", "윰"], "늉": ["늉", "융"],
-  "렁": ["렁", "엉"], "렴": ["렴", "염"]
+  "렁": ["렁", "엉"], "렴": ["렴", "염"],
+  "녓": ["녓", "엿"], "엿": ["엿", "녓"],
+  "닢": ["닢", "잎"], "잎": ["잎", "닢"]
 };
 
 function getJongsung(char) {
@@ -223,14 +264,23 @@ function allowedFirstChars(lastChar) {
    랭크 계산 (클라이언트)
 --------------------------------------------------------- */
 function calculateRank(rating) {
-  if (rating >= 2200) return { tier: "Challenger", sub: "" };
-  if (rating >= 2000) return { tier: "Grandmaster", sub: "" };
-  if (rating >= 1800) return { tier: "Master", sub: "" };
-  if (rating >= 1600) return { tier: "Diamond", sub: rating >= 1734 ? "I" : rating >= 1667 ? "II" : "III" };
-  if (rating >= 1400) return { tier: "Platinum", sub: rating >= 1534 ? "I" : rating >= 1467 ? "II" : "III" };
-  if (rating >= 1200) return { tier: "Gold", sub: rating >= 1334 ? "I" : rating >= 1267 ? "II" : "III" };
-  if (rating >= 1000) return { tier: "Silver", sub: rating >= 1134 ? "I" : rating >= 1067 ? "II" : "III" };
-  return { tier: "Bronze", sub: rating >= 934 ? "I" : rating >= 867 ? "II" : "III" };
+  rating = Math.max(0, Number(rating) || 0);
+  const tierTables = [
+    { tier: "Bronze", base: 0, span: 1000 },
+    { tier: "Silver", base: 1000, span: 400 },
+    { tier: "Gold", base: 1400, span: 400 },
+    { tier: "Platinum", base: 1800, span: 400 },
+    { tier: "Diamond", base: 2200, span: 400 },
+    { tier: "Master", base: 2600, span: 400 }
+  ];
+  if (rating >= 3000) return { tier: "Grandmaster", sub: "" };
+  let tier = tierTables[tierTables.length - 1];
+  for (const t of tierTables) {
+    if (rating >= t.base) tier = t;
+  }
+  const step = Math.floor((rating - tier.base) / (tier.span / 5));
+  const sub = 5 - Math.max(0, Math.min(4, step));
+  return { tier: tier.tier, sub: String(sub) };
 }
 
 function formatRank(rank) {
@@ -271,13 +321,13 @@ function isMyTurn() {
 --------------------------------------------------------- */
 function focusInput() {
   setTimeout(() => {
-    const input = currentMode === "single" ? $("#singleInput") : $("#onlineInput");
+    const input = modeGet("input");
     if (input && !input.disabled) input.focus();
   }, 100);
 }
 
 function clearInput() {
-  const input = currentMode === "single" ? $("#singleInput") : $("#onlineInput");
+  const input = modeGet("input");
   if (input) input.value = "";
 }
 
@@ -324,6 +374,7 @@ function initSocket() {
     if (!data) return;
     const sng = data.single || { rank: null, rating: null, wins: 0, losses: 0 };
     const mul = data.multi || { rank: null, rating: null, wins: 0, losses: 0 };
+    const rkd = data.ranked || { rank: null, rating: null, wins: 0, losses: 0 };
     setText(["#singleRank"], formatRank(sng.rank || calculateRank(sng.rating)));
     setText(["#singleRating"], sng.rating);
     setText(["#onlineRank"], formatRank(mul.rank || calculateRank(mul.rating)));
@@ -332,6 +383,116 @@ function initSocket() {
     setText(["#accSingleRank"], sng.rank ? formatRank(sng.rank) : "");
     setText(["#accMultiRating"], mul.rating);
     setText(["#accMultiRank"], mul.rank ? formatRank(mul.rank) : "");
+    setText(["#accRankedRating"], rkd.rating);
+    setText(["#accRankedRank"], rkd.rank ? formatRank(rkd.rank) : "");
+    if (typeof data.money === "number") moneyBalance = data.money;
+    moneyMultiplier = data.moneyMultiplier || 1;
+    ratingBoostGames = data.ratingBoostGames || 0;
+    if (Array.isArray(data.titles)) ownedTitles = data.titles;
+    currentTitle = data.currentTitle || "";
+    renderMoneyBar();
+    renderAccountScoresStatic();
+    if (shopInfo) renderShop();
+  });
+
+  /* -- 랭크 매칭 -------------------------------------- */
+  socket.on("ranked:matched", (data) => {
+    if (!data || !data.ok || !data.state) return;
+    rankedQueued = false;
+    rankedMatchInfo = { opponent: data.opponent, opponentRating: data.opponentRating };
+    gameState = data.state;
+    roomId = data.roomId;
+    playerIndex = data.state.players?.find(p => p.socketId === socket.id)?.playerIndex ?? 0;
+    gameSessionId++;
+    const tab = $(".tabs button[data-mode='ranked']");
+    if (tab && currentMode !== "ranked") tab.click();
+    $("#rankedLobby")?.classList.add("hidden");
+    $("#rankedGame")?.classList.remove("hidden");
+    renderGameState(gameState);
+    showMessage(`상대를 찾았습니다! ${data.opponent} vs 나 (상대 랭크 ${data.opponentRating})`, "success");
+    updateRankedQueueUI();
+  });
+
+  socket.on("ranked:queueStatus", (data) => {
+    if (!data) return;
+    rankedQueued = !!data.queued;
+    updateRankedQueueUI();
+    if (data.ok && data.reason) showMessage(data.reason, "warning");
+    if (data.ok === false && data.reason) showMessage(data.reason, "error");
+  });
+
+  socket.on("ranked:queueSize", (data) => {
+    const info = $("#rankedQueueInfo");
+    if (info && rankedQueued) {
+      info.textContent = `매칭 대기 중... (대기 인원: ${data?.size ?? 0}명)`;
+      info.dataset.active = "true";
+    }
+  });
+
+  socket.on("money:received", (data) => {
+    if (!data) return;
+    moneyBalance += data.amount;
+    renderMoneyBar();
+    const mult = data.multiplier && data.multiplier > 1 ? ` (배율 ${data.multiplier}배 적용!)` : "";
+    showMessage(`💰 +${data.amount.toLocaleString()}원 획득!${mult}`, "win");
+    applyFx($("#rankedMessage") || $(".money-bar"), "fx-cash");
+    socket.emit("player:getRanking");
+  });
+
+  /* -- 상점 ------------------------------------------- */
+  socket.on("shop:info", (data) => {
+    if (!data) return;
+    shopInfo = data;
+    moneyBalance = data.money;
+    moneyMultiplier = data.moneyMultiplier;
+    ratingBoostGames = data.ratingBoostGames;
+    ownedTitles = data.titles || [];
+    currentTitle = data.currentTitle || "";
+    renderMoneyBar();
+    renderShop();
+  });
+
+  socket.on("shop:result", (data) => {
+    if (!data) return;
+    showMessage(data.reason || data.message || (data.ok ? "성공했습니다." : "실패했습니다."), data.ok ? "success" : "error");
+    if (data.ok) {
+      if (typeof data.money === "number") moneyBalance = data.money;
+      if (Array.isArray(data.titles)) ownedTitles = data.titles;
+      if (typeof data.currentTitle === "string") currentTitle = data.currentTitle;
+      if (typeof data.ratingBoostGames === "number") ratingBoostGames = data.ratingBoostGames;
+      if (typeof data.moneyMultiplier === "number") moneyMultiplier = data.moneyMultiplier;
+      renderMoneyBar();
+      renderShop();
+    }
+  });
+
+  /* -- 버그 제보 --------------------------------------- */
+  socket.on("bug:submitted", (data) => {
+    const msg = $("#bugMsg");
+    if (msg) {
+      msg.textContent = data?.reason || "제보 처리 완료.";
+      msg.dataset.type = data?.ok ? "ok" : "error";
+    }
+    if (data?.ok) {
+      const m = $("#bugMessage");
+      if (m) m.value = "";
+    }
+  });
+
+  /* -- 관리자: 돈 조절 / 버그 제보 목록 ---------------- */
+  socket.on("admin:moneyResult", (data) => {
+    if (!data) return;
+    setAdminStatus(data.message || data.reason || (data.ok ? "완료" : "실패"), data.ok ? "ok" : "error");
+    if (data.ok) socket.emit("player:getRanking");
+  });
+
+  socket.on("admin:bugs", (data) => {
+    if (!data) return;
+    if (data.ok === false) {
+      setAdminStatus(data.reason || "버그 제보를 불러올 수 없습니다.", "error");
+      return;
+    }
+    renderAdminBugs(data.reports || []);
   });
 
   /* -- 닉네임 ----------------------------------------- */
@@ -683,21 +844,20 @@ function renderGameState(state) {
   if (!state) return;
   if (Number.isInteger(state.maxHearts) && state.maxHearts > 0) currentMaxHearts = state.maxHearts;
   const isSingle = currentMode === "single";
-  const prefix = isSingle ? "" : "online";
 
   const syllable = state.startSyllable || state.history?.[0]?.word;
-  setText([isSingle ? "#startWord" : "#onlineStartWord"], syllable ? syllable.at(0) : "-");
+  setText([modeEl("startWord") || "#startWord"], syllable ? syllable.at(0) : "-");
 
   const lastChar = state.currentWord ? state.currentWord.at(-1) : null;
-  setText([isSingle ? "#last" : "#onlineLast"], lastChar || "-");
+  setText([modeEl("last") || "#last"], lastChar || "-");
 
   const allowed = lastChar ? allowedFirstChars(lastChar) : [];
-  const hintEl = $(isSingle ? "#lastHint" : "#onlineLastHint");
+  const hintEl = modeGet("hint") || (isSingle ? $("#lastHint") : $("#onlineLastHint"));
   if (hintEl) {
     if (state.started && !state.finished) {
       if (state.turnNumber === 0) {
-        const syllable = state.startSyllable || "";
-        hintEl.innerHTML = `"${syllable}"(으)로 시작하는 단어`;
+        const s = state.startSyllable || "";
+        hintEl.innerHTML = `"${s}"(으)로 시작하는 단어`;
         hintEl.classList.remove("hidden");
       } else {
         const tags = allowed.map(c => `<span class="dueum-tag">${c}</span>`).join(" ");
@@ -709,17 +869,17 @@ function renderGameState(state) {
     }
   }
 
-  setText([isSingle ? "#turn" : "#onlineTurn"], state.turnNumber);
+  setText([modeEl("turn") || "#turn"], state.turnNumber);
 
   if (state.history && state.history.length > 0) {
     const lastEntry = state.history[state.history.length - 1];
-    setText([isSingle ? "#depth" : "#onlineDepth"], lastEntry.depth != null ? lastEntry.depth : "-");
+    setText([modeEl("depth") || "#depth"], lastEntry.depth != null ? lastEntry.depth : "-");
   } else {
-    setText([isSingle ? "#depth" : "#onlineDepth"], "-");
+    setText([modeEl("depth") || "#depth"], "-");
   }
 
   const myTurn = state.started && !state.finished && state.turnPlayer === playerIndex;
-  const turnIndicator = $(isSingle ? "#turnIndicator" : "#onlineTurnIndicator");
+  const turnIndicator = modeGet("turnIndicator") || (isSingle ? $("#turnIndicator") : $("#onlineTurnIndicator"));
   if (turnIndicator) {
     if (state.started && !state.finished) {
       if (myTurn) {
@@ -741,6 +901,7 @@ function renderGameState(state) {
   renderRoomInfo(state);
   renderCountdown(state);
   updateRuleNotice(state);
+  renderAiWinRate(state);
   updateInputState();
 }
 
@@ -748,8 +909,7 @@ function updateRuleNotice(state) {
   if (!state) return;
   const freeTurns = state.oneShotFreeTurns || 1;
   const turn = state.turnNumber || 0;
-  const selector = currentMode === "single" ? "#ruleNotice" : "#onlineRuleNotice";
-  const el = $(selector);
+  const el = modeGet("ruleNotice");
   if (!el) return;
 
   if (turn < freeTurns) {
@@ -764,13 +924,12 @@ function updateRuleNotice(state) {
 function renderPlayers(state) {
   if (!state || !state.players) return;
 
-  const container = currentMode === "single"
-    ? null
-    : ($("#onlinePlayers"));
+  const container = modeGet("players");
 
   if (container) {
     container.innerHTML = "";
     const canKick = (state.hostSocketId === socket?.id) || myAdminRole !== "none";
+    const showKick = currentMode === "online" || currentMode === "ranked";
     for (const p of state.players) {
       const row = document.createElement("div");
       row.className = "player-item";
@@ -781,9 +940,17 @@ function renderPlayers(state) {
       const mistakesMax = state.mistakesPerLife || 5;
       const mistakesText = p.mistakes != null && !p.waiting ? ` 실수:${p.mistakes}/${mistakesMax}` : "";
       const status = p.waiting ? "대기 중" : p.eliminated ? "탈락" : p.connected ? (p.isBot ? "AI" : "접속 중") : "연결 끊김";
-      row.textContent = `${p.nickname} — ${p.waiting ? "-" : hearts}${mistakesText} — ${status}`;
+      let ratingTag = "";
+      if (currentMode === "ranked") {
+        const r = state.rankedRatings?.[p.playerIndex];
+        if (r != null) {
+          const rr = calculateRank(r);
+          ratingTag = ` <span class="rated-chip">${formatRank(rr)} · ${r}점</span>`;
+        }
+      }
+      row.innerHTML = `${escapeHtml(String(p.nickname || "플레이어"))} — ${p.waiting ? "-" : hearts}${mistakesText} — ${status}${ratingTag}`;
 
-      if (canKick && !p.isBot && p.playerIndex !== playerIndex) {
+      if (canKick && showKick && !p.isBot && p.playerIndex !== playerIndex) {
         const kick = document.createElement("button");
         kick.type = "button";
         kick.className = "kick-btn";
@@ -809,10 +976,16 @@ function renderHearts(hearts) {
   const lost = lastHearts !== null && v < lastHearts;
   lastHearts = v;
   const text = "♥".repeat(v) + "♡".repeat(Math.max(0, currentMaxHearts - v));
-  setText(["#hearts", "#heartDisplay", "#heartsOnline"], text);
+  const targets = [{ s: modeEl("hearts"), fallback: "#hearts" }, { s: "#heartDisplay" }, { s: "#heartsOnline" }];
+  for (const t of targets) {
+    const q = t.s || t.fallback;
+    if (q) setText([q], text);
+  }
   if (lost) {
-    for (const sel of ["#hearts", "#heartDisplay", "#heartsOnline"]) {
-      const node = $(sel);
+    for (const t of targets) {
+      const q = t.s || t.fallback;
+      if (!q) continue;
+      const node = $(q);
       if (!node) continue;
       node.classList.remove("shake");
       void node.offsetWidth;
@@ -824,15 +997,19 @@ function renderHearts(hearts) {
 function renderMistakes(mistakes, maxMistakes) {
   const remaining = maxMistakes - mistakes;
   const text = `${mistakes}/${maxMistakes}`;
-  setText(["#mistakesDisplay", "#mistakesDisplayOnline"], text);
-  const els = document.querySelectorAll("#mistakesDisplay, #mistakesDisplayOnline");
+  setText([modeEl("mistakes") || "#mistakesDisplay"], text);
+  const els = [...document.querySelectorAll("#mistakesDisplay, #mistakesDisplayOnline")];
+  const modeM = modeEl("mistakes");
+  if (modeM && currentMode === "ranked") {
+    const node = $(modeM);
+    if (node && !els.includes(node)) els.push(node);
+  }
   els.forEach(el => { el.dataset.danger = remaining <= 1 ? "true" : "false"; });
 }
 
 function renderHistory(state) {
   const history = state?.history || [];
-  const selector = currentMode === "single" ? "#history" : "#onlineHistory";
-  const container = $(selector);
+  const container = modeGet("history") || (currentMode === "single" ? $("#history") : $("#onlineHistory"));
   if (!container) return;
 
   container.innerHTML = "";
@@ -854,23 +1031,26 @@ function renderHistory(state) {
 }
 
 function renderRoomInfo(state) {
-  if (currentMode !== "online") return;
-  const el = $("#roomInfo");
+  if (currentMode !== "online" && currentMode !== "ranked") return;
+  const el = modeGet("roomInfo");
   if (!el) return;
   if (!state) { el.innerHTML = ""; return; }
 
   const isHost = state.hostSocketId === socket?.id;
   const statusText = state.finished ? "게임 종료" : state.started ? "게임 진행 중" : "대기 중";
+  const isRanked = currentMode === "ranked";
+  const modeLabel = isRanked ? "랭크 매칭" : "온라인 멀티";
 
   el.innerHTML = `
     <div class="room-header">
-      <div>방 코드: <strong class="room-code" title="클릭하면 복사됩니다">${state.roomId}</strong></div>
+      <div>${isRanked ? "🎮" : "방 코드: "}<strong>${isRanked ? escapeHtml(modeLabel) : `<span class="room-code" title="클릭하면 복사됩니다">${state.roomId}</span>`}</strong></div>
       <div class="room-status">${statusText}</div>
     </div>
-    <div>인원: ${state.playerCount}/${state.maxPlayers}${isHost ? " (방장)" : ""}</div>
+    <div>인원: ${state.playerCount}/${state.maxPlayers}${isHost && !isRanked ? " (방장)" : ""}</div>
   `;
 
-  el.querySelector(".room-code")?.addEventListener("click", () => {
+  const codeEl = el.querySelector(".room-code");
+  if (codeEl) codeEl.addEventListener("click", () => {
     navigator.clipboard.writeText(state.roomId).then(() => {
       showMessage("방 코드가 복사되었습니다!", "success");
     }).catch(() => {});
@@ -878,12 +1058,10 @@ function renderRoomInfo(state) {
 
   const hostControls = $("#hostControls");
   if (hostControls) {
-    if (isHost && !state.started && !state.finished) {
+    if (!isRanked && isHost && !state.started && !state.finished) {
       hostControls.classList.remove("hidden");
       const startBtn = $("#startOnline");
-      if (startBtn) {
-        startBtn.textContent = "게임 시작";
-      }
+      if (startBtn) startBtn.textContent = "게임 시작";
     } else {
       hostControls.classList.add("hidden");
     }
@@ -897,10 +1075,10 @@ function hideRoomInfo() {
 
 function renderCountdown(state) {
   stopCountdown();
-  const timerSelector = currentMode === "single" ? "#timer" : "#onlineTimer";
+  const timerSelector = modeEl("timer") || "#timer";
   if (!state || !state.turnEndsAt || state.finished || !state.started) {
     setText([timerSelector], "-");
-    const timerBox = $(currentMode === "single" ? ".single-panel .timer-box" : ".online-panel .timer-box") || $(".timer-box");
+    const timerBox = modeGet("timerBox") || $(".timer-box");
     if (timerBox) timerBox.dataset.urgent = "false";
     return;
   }
@@ -909,7 +1087,7 @@ function renderCountdown(state) {
     const remaining = Math.max(0, gameState.turnEndsAt - Date.now());
     const secs = Math.ceil(remaining / 1000);
     setText([timerSelector], secs + "s");
-    const timerBox = $(currentMode === "single" ? ".single-panel .timer-box" : ".online-panel .timer-box") || $(".timer-box");
+    const timerBox = modeGet("timerBox") || $(".timer-box");
     if (timerBox) timerBox.dataset.urgent = secs <= 5 ? "true" : "false";
     if (remaining <= 0) stopCountdown();
   };
@@ -922,8 +1100,8 @@ function stopCountdown() {
 }
 
 function updateInputState() {
-  const input = currentMode === "single" ? $("#singleInput") : $("#onlineInput");
-  const btn = currentMode === "single" ? $("#singleSend") : $("#onlineSend");
+  const input = modeGet("input");
+  const btn = modeGet("send");
   const hintBtn = $("#hintBtn");
 
   const myTurn = gameState && gameState.started && !gameState.finished
@@ -938,7 +1116,7 @@ function updateInputState() {
   if (btn) btn.disabled = disabled;
   if (hintBtn) hintBtn.disabled = disabled || currentMode !== "single";
 
-  const inputArea = currentMode === "single" ? $(".single-input-area") : $(".online-input-area");
+  const inputArea = currentMode === "single" ? $(".single-input-area") : (currentMode === "ranked" ? $("#ranked .entry") : $(".online-input-area"));
   if (inputArea) {
     inputArea.dataset.myTurn = myTurn ? "true" : "false";
   }
@@ -1012,68 +1190,38 @@ function submitSingleWord() {
 }
 
 /* ---------------------------------------------------------
-   온라인
+   온라인 방 관리
 --------------------------------------------------------- */
 function createOnlineRoom() {
-  if (!socket || !socketConnected) {
-    showMessage("서버에 연결 중입니다...", "waiting");
-    return;
-  }
+  if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
   if (!requireNickname()) return;
-
-  const nickname = makeNickname();
-
-  socket.emit("room:create", {
-    nickname,
-    mode: "online"
-  });
-
+  socket.emit("room:create", { nickname: makeNickname(), mode: "online" });
   showMessage("방을 만드는 중...", "waiting");
 }
 
 function joinOnlineRoom() {
-  if (!socket || !socketConnected) {
-    showMessage("서버에 연결 중입니다...", "waiting");
-    return;
-  }
+  if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
   if (!requireNickname()) return;
-
   const code = normalizeWord($("#roomCode")?.value);
-  if (!code) {
-    showMessage("방 코드를 입력해주세요.", "error");
-    return;
-  }
-
-  const nickname = makeNickname();
-
-  socket.emit("room:join", {
-    roomId: code,
-    nickname
-  });
-
+  if (!code) { showMessage("방 코드를 입력해주세요.", "error"); return; }
+  socket.emit("room:join", { roomId: code, nickname: makeNickname() });
   showMessage("방에 입장하는 중...", "waiting");
 }
 
-function submitOnlineWord() {
+/* ---------------------------------------------------------
+   온라인 / 랭크 — 단어 입력
+--------------------------------------------------------- */
+function submitWord(targetMode) {
+  const mode = targetMode || currentMode;
+  if (mode === "single") return submitSingleWord();
+  if (mode !== "online" && mode !== "ranked") return;
   if (submitting) return;
-  if (!socket || !socketConnected) {
-    showMessage("서버에 연결 중입니다...", "waiting");
-    return;
-  }
-  if (!roomId || !gameState) {
-    showMessage("게임 준비 중입니다...", "waiting");
-    return;
-  }
-  if (!gameState.started || gameState.finished) {
-    showMessage("게임이 아직 시작되지 않았습니다.", "info");
-    return;
-  }
-  if (gameState.turnPlayer !== playerIndex) {
-    showMessage("아직 내 차례가 아닙니다.", "info");
-    return;
-  }
+  if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+  if (!roomId || !gameState) { showMessage("게임 준비 중입니다...", "waiting"); return; }
+  if (!gameState.started || gameState.finished) { showMessage("게임이 아직 시작되지 않았습니다.", "info"); return; }
+  if (gameState.turnPlayer !== playerIndex) { showMessage("아직 내 차례가 아닙니다.", "info"); return; }
 
-  const input = $("#onlineInput");
+  const input = modeGet("input");
   if (!input) return;
 
   const word = normalizeWord(input.value);
@@ -1084,20 +1232,48 @@ function submitOnlineWord() {
   updateInputState();
 }
 
+/* 하위 호환 — 기존 온라인 핸들러 호출 참조를 제거하지 않고 유지 */
+function submitOnlineWord() { return submitWord("online"); }
+function submitRankedWord() { return submitWord("ranked"); }
+
 function leaveRoom() {
   if (!socket || !socketConnected) return;
   socket.emit("room:leave");
   roomId = null;
   playerIndex = null;
   gameState = null;
+  rankedMatchInfo = null;
   localUsedWords.clear();
   startingGame = false;
   stopCountdown();
-  resetOnlineBoard();
+  if (currentMode === "online") resetOnlineBoard();
+  else if (currentMode === "ranked") resetRankedBoard();
   updateInputState();
 }
 
-/* 온라인 보드/UI를 초기 상태로 정리 — 방 나가기가 바로 반영되도록 */
+function resetRankedBoard() {
+  const els = [
+    "#rankedHistory", "#rankedPlayers", "#rankedLastHint", "#rankedTurnIndicator",
+    "#onlineRuleNotice"
+  ];
+  for (const sel of els) {
+    const el = $(sel);
+    if (!el) continue;
+    if (sel === "#onlineRuleNotice" || sel === "#rankedTurnIndicator") el.classList.add("hidden");
+    else el.innerHTML = "";
+  }
+  setText(["#rankedLast"], "-");
+  setText(["#rankedStartWord"], "-");
+  setText(["#rankedTurn", "#rankedDepth", "#rankedTimer"], "-");
+  renderHearts(currentMaxHearts);
+  renderMistakes(0, 5);
+  clearInput();
+  $("#rankedGame")?.classList.add("hidden");
+  $("#rankedLobby")?.classList.remove("hidden");
+  updateRankedQueueUI();
+}
+
+/* 온라인 보드/UI를 초기 상태로 정리 */
 function resetOnlineBoard() {
   const els = [
     "#onlineHistory", "#onlinePlayers", "#onlineLastHint", "#onlineTurnIndicator",
@@ -1118,8 +1294,20 @@ function resetOnlineBoard() {
   renderHearts(currentMaxHearts);
   renderMistakes(0, 5);
   clearInput();
-  const timerBox = $(".online-panel .timer-box");
+  const timerBox = $("#online .timer-box");
   if (timerBox) timerBox.dataset.urgent = "false";
+}
+
+function updateRankedQueueUI() {
+  const queueBtn = $("#rankedQueueBtn");
+  const cancelBtn = $("#rankedCancelBtn");
+  const info = $("#rankedQueueInfo");
+  if (queueBtn) queueBtn.classList.toggle("hidden", rankedQueued);
+  if (cancelBtn) cancelBtn.classList.toggle("hidden", !rankedQueued);
+  if (info) {
+    info.dataset.active = rankedQueued ? "true" : "false";
+    if (!rankedQueued) info.textContent = "";
+  }
 }
 
 /* 짧은 애니메이션 클래스 토글 (VFX) */
@@ -1130,6 +1318,110 @@ function applyFx(el, cls, ms = 700) {
   el.classList.add(cls);
   clearTimeout(el._fxTimer);
   el._fxTimer = setTimeout(() => el.classList.remove(cls), ms);
+}
+
+/* ---------------------------------------------------------
+   AI 승률 표시
+--------------------------------------------------------- */
+function renderAiWinRate(state) {
+  const el = $(".ai-winrate"); /* single panel 내 AI 승률 표시 영역 */
+  if (currentMode !== "single" || !state?.started || state?.finished || el == null) {
+    if (el) el.classList.add("hidden");
+    return;
+  }
+  const rate = state.aiWinRate;
+  if (rate == null) { el.classList.add("hidden"); return; }
+  const p = Math.round(rate * 100);
+  el.innerHTML = `AI 현재 승리 확률: <b>${p}%</b>`;
+  el.dataset.level = p >= 60 ? "bad" : p <= 30 ? "good" : "mid";
+  el.classList.remove("hidden");
+}
+
+/* ---------------------------------------------------------
+   돈 바 (상단 바 + 계정 패널)
+--------------------------------------------------------- */
+function renderMoneyBar() {
+  const chip = $("#moneyDisplay");
+  if (chip) chip.textContent = moneyBalance.toLocaleString();
+  const bar = $(".money-bar");
+  if (bar) bar.classList.toggle("hidden", false);
+  const boostChip = $("#boostChip");
+  if (boostChip) {
+    boostChip.classList.toggle("hidden", ratingBoostGames <= 0);
+    setText(["#boostCount"], ratingBoostGames);
+  }
+  const titleChip = $("#titleChip");
+  if (titleChip) {
+    if (currentTitle) { titleChip.textContent = currentTitle; titleChip.classList.remove("hidden"); }
+    else titleChip.classList.add("hidden");
+  }
+}
+
+function renderAccountScoresStatic() {
+  setText(["#accMoney"], moneyBalance.toLocaleString());
+  setText(["#accTitle"], currentTitle || "없음");
+}
+
+/* ---------------------------------------------------------
+   상점 렌더링
+--------------------------------------------------------- */
+function renderShop() {
+  const body = $("#shopBody");
+  if (!body || !shopInfo) return;
+  const mkRow = (label, desc, btnId, btnLabel, btnStyle, price) => {
+    const disabled = typeof price === "number" && moneyBalance < price ? " disabled" : "";
+    return `<div class="shop-item">
+      <div><strong>${escapeHtml(label)}</strong><div class="shop-item-desc">${escapeHtml(desc)}</div></div>
+      <button class="shop-buy${btnStyle ? " " + btnStyle : ""}" id="${btnId}"${disabled}>${btnLabel}</button>
+    </div>`;
+  };
+
+  let html = `<div class="shop-sub">칭호</div>`;
+  html += shopInfo.titleCatalog.map(t => {
+    const owned = ownedTitles.some(o => o.id === t.id);
+    if (owned) return mkRow(t.name, `보유 중 · ${t.price.toLocaleString()}원`, "", "보유 중", "owned", t.price);
+    return mkRow(t.name, `${t.price.toLocaleString()}원`, "buyTitle:" + t.id, "구매", "", t.price);
+  }).join("");
+  html += `<div class="shop-sub">물약</div>`;
+  html += mkRow("레이팅 2배 물약", "다음 10판 동안 레이팅 + 보상 2배", "buyPotion", "구매 · 1,000,000원", "", shopInfo.potionPrice);
+
+  html += `<div class="shop-sub">영구 배율</div>`;
+  for (const m of shopInfo.multiplierPrices) {
+    const owned = moneyMultiplier >= m.multiplier;
+    const label = `${m.multiplier}배 돈`;
+    const desc = owned ? `보유 중 (현재 ${moneyMultiplier}배)` : `${m.price.toLocaleString()}원`;
+    if (owned) html += mkRow(label, desc, "", "보유 중", "owned", m.price);
+    else html += mkRow(label, desc, "buyMultiplier:" + m.multiplier, `구매 · ${m.price.toLocaleString()}원`, "", m.price);
+  }
+  body.innerHTML = html;
+
+  body.querySelectorAll("[id^='buyTitle:'],[id^='buyPotion'],[id^='buyMultiplier']").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const [kind, val] = btn.id.split(":");
+      if (kind === "buyTitle") socket.emit("shop:buyTitle", { titleId: val });
+      else if (kind === "buyPotion") socket.emit("shop:buyPotion");
+      else if (kind === "buyMultiplier") socket.emit("shop:buyMultiplier", { multiplier: Number(val) });
+    });
+  });
+}
+
+/* ---------------------------------------------------------
+   버그 제보 / 관리자: 버그 목록
+--------------------------------------------------------- */
+function renderAdminBugs(reports) {
+  const body = $("#adminBody");
+  if (!body) return;
+  const rows = reports.length === 0
+    ? `<div class="admin-info">접수된 버그가 없습니다.</div>`
+    : reports.map(r => `<div class="admin-card" style="font-size:13px;">
+        <div><b>${escapeHtml(r.nickname)}</b> · ${escapeHtml(r.category)} · ${escapeHtml(r.createdAt?.slice(0,16) || "")}</div>
+        <div style="margin:4px 0;">${escapeHtml(r.message)}</div>
+        <button class="admin-apply" data-admin-bug-del="${escapeHtml(r.id)}">삭제</button>
+      </div>`).join("");
+  body.innerHTML = `<div class="admin-card"><h4>버그 제보 (총관리자만 열람)</h4>${rows}</div><div class="admin-status" id="adminStatus"></div>`;
+  body.querySelectorAll("[data-admin-bug-del]").forEach(btn => {
+    btn.addEventListener("click", () => socket.emit("admin:deleteBug", { id: btn.dataset.adminBugDel }));
+  });
 }
 
 /* ---------------------------------------------------------
@@ -1251,6 +1543,28 @@ function renderAdminBody(data) {
         : `<div class="admin-msg warn">첫 실행입니다. 닉네임 저장 시 계정 비밀번호(4자 이상)를 입력하면 관리자 계정이 만들어집니다.</div>`)
     : `<div class="admin-info">서브 관리자 — 개인 통계 관리만 가능하며 게임 전체 설정은 변경할 수 없습니다.</div>`;
 
+  /* 관리자: 돈 조절 (최고 관리자 전용) */
+  const moneyCard = isSuper ? `
+    <div class="admin-card">
+      <h4>돈(코인) 조절 (최고 관리자 전용)</h4>
+      <div class="admin-row">
+        <input type="text" id="adminMoneyNick" class="admin-text" placeholder="닉네임" autocomplete="off">
+        <input type="number" id="adminMoneyAmount" class="admin-num" placeholder="변동액 (+/- 숫자)" autocomplete="off">
+        <button type="button" class="admin-apply" id="adminMoneyApply">적용</button>
+      </div>
+      <div class="admin-info">※ 양수는 추가, 음수는 차감입니다.</div>
+    </div>
+  ` : "";
+
+  /* 관리자: 버그 제보 (최고 관리자 전용) */
+  const bugCard = isSuper ? `
+    <div class="admin-card">
+      <h4>버그 제보 목록 (최고 관리자만 열람)</h4>
+      <button type="button" class="admin-apply" id="adminBugLoad">버그 제보 불러오기</button>
+      <div id="adminBugList"></div>
+    </div>
+  ` : "";
+
   body.innerHTML = `
     ${data.message ? `<div class="admin-msg ok">${escapeHtml(data.message)}</div>` : ""}
     ${statusLine}
@@ -1260,9 +1574,24 @@ function renderAdminBody(data) {
     ${resetCard}
     ${configCard}
     ${statsCard}
+    ${moneyCard}
+    ${bugCard}
     <div class="admin-status" id="adminStatus"></div>
   `;
   bindAdminBody();
+
+  const moneyApply = $("#adminMoneyApply");
+  if (moneyApply) moneyApply.addEventListener("click", () => {
+    const nick = $("#adminMoneyNick")?.value.trim() || "";
+    const amount = Number($("#adminMoneyAmount")?.value ?? 0);
+    const pw = $("#adminPw")?.value || "";
+    if (!nick) { setAdminStatus("닉네임을 입력해주세요.", "error"); return; }
+    if (!pw) { setAdminStatus("관리자 비밀번호가 필요합니다.", "error"); return; }
+    socket.emit("admin:setMoney", { nickname: nick, amount, password: pw });
+  });
+
+  const bugLoad = $("#adminBugLoad");
+  if (bugLoad) bugLoad.addEventListener("click", () => socket.emit("admin:getBugs"));
 }
 
 function renderAdminFound(data) {
@@ -1594,14 +1923,13 @@ function escapeHtml(str) {
   }[c]));
 }
 
-let lbMode = "single";
+let lbMode = "multi";
 
-function lbMarkup(rows) {
-  const modeLabel = lbMode === "single" ? "싱글플레이" : "온라인 멀티";
-  const toggle = `<div class="lb-toggle">
-        <button data-mode="single">싱글플레이</button>
-        <button data-mode="multi">온라인 멀티</button>
-      </div>`;
+function lbMarkup(rows, mode, showToggle = true) {
+  const modeLabel = mode === "multi" ? "온라인 멀티" : mode === "ranked" ? "랭크 매칭" : "싱글플레이";
+  const toggle = showToggle ? `<div class="lb-toggle">
+        <button data-mode="multi" class="active">온라인 멀티</button>
+      </div>` : "";
   let body;
   if (rows.length === 0) {
     body = `<div class="lb-empty">아직 기록이 없습니다.</div>`;
@@ -1621,13 +1949,10 @@ function lbMarkup(rows) {
   return `<div class="lb-heading">리더보드 · ${modeLabel}</div>${toggle}${body}`;
 }
 
-function bindLbToggles(box, btn) {
+function bindLbToggles(box, btn, fetchFn) {
   box.querySelectorAll(".lb-toggle button").forEach(b => {
-    b.classList.toggle("active", b.dataset.mode === lbMode);
-    b.addEventListener("click", () => {
-      lbMode = b.dataset.mode === "multi" ? "multi" : "single";
-      loadLeaderboardRows(box, btn);
-    });
+    b.classList.toggle("active", true);
+    /* no-op — only multi available */
   });
 }
 
@@ -1642,11 +1967,10 @@ async function toggleLeaderboard() {
   }
   if (btn) btn.textContent = "불러오는 중...";
   try {
-    const res = await fetch(`/api/leaderboard?limit=10&mode=${lbMode}`);
+    const res = await fetch(`/api/leaderboard?limit=10&mode=multi`);
     const rows = await res.json();
     if (!Array.isArray(rows)) throw new Error("bad payload");
-    box.innerHTML = lbMarkup(rows);
-    bindLbToggles(box, btn);
+    box.innerHTML = lbMarkup(rows, "multi", false);
     box.classList.remove("hidden");
     if (btn) btn.textContent = "리더보드 접기";
   } catch (err) {
@@ -1656,16 +1980,27 @@ async function toggleLeaderboard() {
   }
 }
 
-async function loadLeaderboardRows(box, btn) {
+async function toggleLeaderboardRanked() {
+  const box = $("#leaderboardRanked");
+  const btn = $("#loadLbRanked");
   if (!box) return;
+  if (!box.classList.contains("hidden")) {
+    box.classList.add("hidden");
+    if (btn) btn.textContent = "랭크 리더보드 보기";
+    return;
+  }
+  if (btn) btn.textContent = "불러오는 중...";
   try {
-    const res = await fetch(`/api/leaderboard?limit=10&mode=${lbMode}`);
+    const res = await fetch(`/api/leaderboard?limit=10&mode=ranked`);
     const rows = await res.json();
     if (!Array.isArray(rows)) throw new Error("bad payload");
-    box.innerHTML = lbMarkup(rows);
-    bindLbToggles(box, btn);
+    box.innerHTML = lbMarkup(rows, "ranked", false);
+    box.classList.remove("hidden");
+    if (btn) btn.textContent = "랭크 리더보드 접기";
   } catch (err) {
     box.innerHTML = `<div class="lb-empty" style="color:#f87171">리더보드를 불러오지 못했습니다.</div>`;
+    box.classList.remove("hidden");
+    if (btn) btn.textContent = "랭크 리더보드 보기";
   }
 }
 
@@ -1694,9 +2029,13 @@ document.addEventListener("DOMContentLoaded", () => {
       if (target) target.classList.remove("hidden");
 
       if (currentMode === "single") {
-        if (!gameState || !roomId) {
-          setTimeout(startSingleGame, 100);
-        }
+        if (!gameState || !roomId) setTimeout(startSingleGame, 100);
+      } else if (currentMode === "ranked") {
+        if (gameState && roomId && currentMode === "ranked") { /* in game */ }
+        else { $("#rankedLobby")?.classList.remove("hidden"); $("#rankedGame")?.classList.add("hidden"); }
+        updateRankedQueueUI();
+      } else if (currentMode === "shop") {
+        if (socket && socketConnected) socket.emit("shop:list");
       }
     });
   });
@@ -1739,12 +2078,9 @@ document.addEventListener("DOMContentLoaded", () => {
     $("#hostControls")?.classList.add("hidden");
     renderRoomInfo(null);
   });
-  $("#onlineSend")?.addEventListener("click", submitOnlineWord);
+  $("#onlineSend")?.addEventListener("click", () => submitWord("online"));
   $("#onlineInput")?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      submitOnlineWord();
-    }
+    if (e.key === "Enter") { e.preventDefault(); submitWord("online"); }
   });
   $("#onlineRestart")?.addEventListener("click", () => {
     if (!socket || !socketConnected) return;
@@ -1754,6 +2090,40 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   $("#loadLb")?.addEventListener("click", toggleLeaderboard);
+
+  /* 랭크 매칭 */
+  $("#rankedQueueBtn")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+    if (!requireNickname()) return;
+    rankedQueued = true;
+    updateRankedQueueUI();
+    socket.emit("ranked:queue");
+  });
+  $("#rankedCancelBtn")?.addEventListener("click", () => {
+    rankedQueued = false;
+    updateRankedQueueUI();
+    socket.emit("ranked:cancel");
+  });
+  $("#rankedSend")?.addEventListener("click", () => submitWord("ranked"));
+  $("#rankedInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); submitWord("ranked"); }
+  });
+  $("#rankedLeave")?.addEventListener("click", () => {
+    leaveRoom();
+    renderRoomInfo(null);
+  });
+  $("#loadLbRanked")?.addEventListener("click", toggleLeaderboardRanked);
+
+  /* 상점/버그 */
+  $("#bugBtn")?.addEventListener("click", () => { $("#bugModal")?.classList.remove("hidden"); });
+  $("#bugClose")?.addEventListener("click", () => { $("#bugModal")?.classList.add("hidden"); });
+  $("#bugModal")?.addEventListener("click", (e) => { if (e.target === $("#bugModal")) $("#bugModal")?.classList.add("hidden"); });
+  $("#bugSubmit")?.addEventListener("click", () => {
+    const category = $("#bugCategory")?.value || "기타";
+    const message = $("#bugMessage")?.value?.trim() || "";
+    if (!message) { const m = $("#bugMsg"); if (m) { m.textContent = "내용을 입력해주세요."; m.dataset.type = "error"; } return; }
+    if (socket && socketConnected) socket.emit("bug:submit", { category, message });
+  });
 
   /* 친구 패널 & 초대 */
   $("#friendsBtn")?.addEventListener("click", () => toggleFriendsPanel());
