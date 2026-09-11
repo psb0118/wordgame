@@ -1379,6 +1379,8 @@ button:disabled {
   top: 46px;
   left: 0;
   width: 280px;
+  max-height: calc(100vh - 58px);
+  overflow-y: auto;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -1434,6 +1436,31 @@ button:disabled {
   width: 100%;
   padding: 8px 10px;
   font-size: 0.85rem;
+}
+
+.acc-save-creds {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.acc-save-creds input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.acc-change-help {
+  margin-top: 6px;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  line-height: 1.45;
 }
 
 .account-panel .pw-wrap {

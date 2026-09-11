@@ -61,7 +61,7 @@
 
       <div class="rule-notice" id="ruleNotice"></div>
 
-      <div class="ai-winrate hidden" data-active="false"></div>
+      <div class="hidden" data-active="false"></div>
 
       <div id="message" class="message"></div>
 
@@ -313,7 +313,11 @@
         <input id="accNickInput" maxlength="12" placeholder="닉네임" autocomplete="off">
         <button id="accApply">저장/로그인</button>
       </div>
-      <input type="password" id="accPwInput" maxlength="64" placeholder="계정 비밀번호 (관리자 전용)" autocomplete="off" data-pw-toggle>
+      <input type="password" id="accPwInput" maxlength="64" placeholder="비밀번호 (관리자 인증)" autocomplete="off" data-pw-toggle>
+      <label class="acc-save-creds">
+        <input type="checkbox" id="accSaveCreds">
+        <span id="accSaveCredsLabel">비밀번호 저장 (관리자용)</span>
+      </label>
       <div id="accountMsg"></div>
       <div class="account-scores">
         <div class="acc-row"><span>싱글 점수</span><strong id="accSingleRating">-</strong><span id="accSingleRank" class="acc-rank"></span></div>
@@ -327,10 +331,11 @@
         <div id="accTitleList" class="acc-title-list"></div>
       </div>
       <div id="accChangeBox" class="acc-change hidden">
-        <div class="acc-change-title">비밀번호 변경 (로그인 후)</div>
+        <div class="acc-change-title">비밀번호 변경 (관리자 로그인 후)</div>
         <input type="password" id="accCurPw" placeholder="현재 비밀번호" autocomplete="off" data-pw-toggle>
         <input type="password" id="accNewPw" placeholder="새 비밀번호 (4자 이상)" autocomplete="off" data-pw-toggle>
         <button id="accPwSave" class="wide">비밀번호 변경</button>
+        <div class="acc-change-help">현재 비밀번호와 새 비밀번호를 입력한 뒤 [비밀번호 변경]을 누르면 바로 변경됩니다.</div>
       </div>
     </div>
   </div>

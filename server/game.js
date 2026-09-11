@@ -351,12 +351,16 @@ function chooseStartWord(usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
    - 반드시 주어진 시작 음절로 시작
    - 공격 단어/한방 단어/이미 사용한 단어 배제
    - 방어 단어는 지지 않기 위한 수이므로 첫 수로 쓰지 않는다
-   - 남은 후보 중에서 랜덤 선택 (패턴 고정 방지)
+   - 우선순위:
+     1. 루트/희귀 루트 단어 (상대가 받아치기 어려운 시작)
+     2. 값 루트 단어 (~~값)
+     3. 일반 단어 (희귀한 끝 음절 우선)
 ========================================================= */
 
-function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS) {
+function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS) {
   const used = usedWords instanceof Set ? usedWords : new Set();
   const defenseSet = DEFENSE_WORDS || new Set();
+  const rootSet = ROOT_WORDS || new Set();
   const syllableF = normalizeWord(syllable);
   if (!syllableF) return null;
   const legal = [];
@@ -368,7 +372,35 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
     legal.push(w);
   }
   if (legal.length === 0) return null;
-  return legal[Math.floor(Math.random() * legal.length)];
+
+  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
+  /* 루트 단어가 있다면 무조건 루트 먼저 — 희귀 루트일수록 좋다.
+     희귀도 = 그 끝 음절로 이어지는 후보 수가 적을수록 상대가 응수하기 어렵다 */
+  const roots = legal.filter(w => rootSet.has(normalizeWord(w)));
+  if (roots.length > 0) {
+    const countLast = w => {
+      const bucket = WORD_INDEX.get(normalizeWord(w).at(-1));
+      return bucket ? bucket.length : 9999;
+    };
+    roots.sort((a, b) => countLast(a) - countLast(b));
+    return pick(roots.slice(0, Math.min(3, roots.length)));
+  }
+
+  /* 값 루트 (~~값) */
+  const values = legal.filter(w => normalizeWord(w).endsWith("값"));
+  if (values.length > 0) return pick(values);
+
+  /* 일반 단어 — 끝 음절이 희귀할수록 상대 선택지가 좁아진다 */
+  const byLast = new Map();
+  for (const w of legal) {
+    const last = normalizeWord(w).at(-1);
+    if (!byLast.has(last)) byLast.set(last, []);
+    byLast.get(last).push(w);
+  }
+  const rareLast = [...byLast.entries()].sort((a, b) => a[1].length - b[1].length)[0];
+  if (rareLast) return pick(rareLast[1].slice(0, Math.min(3, rareLast[1].length)));
+  return pick(legal);
 }
 
 /* =========================================================
@@ -599,6 +631,5 @@ module.exports = {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
   loadData, hasWord, getAttackDepth, isAttackWord,
   getCandidates, isOneShot, getStartCandidates, chooseStartWord,
-  chooseAIWord, chooseAIStartWord, calculateRank, calculateElo,
-  estimateAIVictoryProbability
+  chooseAIWord, chooseAIStartWord, calculateRank, calculateElo
 };

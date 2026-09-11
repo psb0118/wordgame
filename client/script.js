@@ -19,7 +19,7 @@ let countdownTimer = null;
 let gameSessionId = 0;
 let startingGame = false;
 let myNickname = localStorage.getItem("kkNickname") || "";
-let myPassword = "";
+let myPassword = localStorage.getItem("kkPassword") || "";
 let friends = [];
 let friendsPanelOpen = false;
 let pendingInvite = null;
@@ -177,7 +177,39 @@ function saveNickname() {
     myNickname = raw;
     myPassword = password;
     localStorage.setItem("kkNickname", myNickname);
+    persistPassword(password);
     updateNicknameUI();
+  }
+}
+
+/* 비밀번호 localStorage 저장 규칙
+   - 일반 사용자: 입력한 비밀번호 무조건 저장 (다시 물어보지 않게)
+   - 관리자: '비밀번호 저장' 체크박스가 켜져 있을 때만 저장, 꺼져 있으면 삭제 */
+
+/* 비밀번호 localStorage 저장 규칙
+   - 일반 사용자: 입력한 비밀번호 무조건 저장 (다시 물어보지 않게)
+   - 관리자: '비밀번호 저장' 체크박스가 켜져 있을 때만 저장, 꺼져 있으면 삭제 */
+function persistPassword(pw) {
+  const saveAdmin = localStorage.getItem("kkSaveAdmin") === "1";
+  const isAdmin = myAdminRole !== "none";
+  if (isAdmin && !saveAdmin) {
+    localStorage.removeItem("kkPassword");
+    return;
+  }
+  if (pw) {
+    localStorage.setItem("kkPassword", pw);
+    myPassword = pw;
+  } else if (localStorage.getItem("kkPassword")) {
+    localStorage.setItem("kkPassword", myPassword || "");
+  }
+}
+
+/* 관리자로 로그인됐는데 저장 옵션이 꺼져 있으면 저장된 비밀번호 제거 */
+function syncSavedCredentials() {
+  const saveAdmin = localStorage.getItem("kkSaveAdmin") === "1";
+  const isAdmin = myAdminRole !== "none";
+  if (isAdmin && !saveAdmin) {
+    localStorage.removeItem("kkPassword");
   }
 }
 
@@ -348,9 +380,9 @@ function initSocket() {
   socket.on("connect", () => {
     socketConnected = true;
     console.log("[SOCKET] 연결됨:", socket.id);
-    /* 브라우저 새로고침(새 소켓) 후에도 서버가 닉네임을 알도록 재적용
-       (계정 비밀번호는 자동 전송하지 않음 — 관리자 계정은 계정 탭에서 입력해야 로그인됨) */
-    if (myNickname) socket.emit("player:setName", { nickname: myNickname });
+    /* 브라우저 새로고침 후에도 자동 로그인되도록 저장된 비밀번호를 함께 전송
+       (일반 사용자는 입력한 비밀번호 자동 저장 / 관리자는 체크박스 선택 시에만 저장) */
+    if (myNickname) socket.emit("player:setName", { nickname: myNickname, password: myPassword });
     socket.emit("admin:getRole");
   });
 
@@ -504,6 +536,7 @@ function initSocket() {
       if (currentPw) {
         myPassword = currentPw;
         $("#accPwInput").value = "";
+        persistPassword(currentPw);
       }
       localStorage.setItem("kkNickname", myNickname);
       updateNicknameUI();
@@ -537,6 +570,7 @@ function initSocket() {
     myAdminRole = data.role === "super" || data.role === "sub" ? data.role : "none";
     updateAdminVisibility();
     renderAccountInfo();
+    syncSavedCredentials();
   });
 
   socket.on("admin:panel", (data) => {
@@ -901,7 +935,6 @@ function renderGameState(state) {
   renderRoomInfo(state);
   renderCountdown(state);
   updateRuleNotice(state);
-  renderAiWinRate(state);
   updateInputState();
 }
 
@@ -1318,23 +1351,6 @@ function applyFx(el, cls, ms = 700) {
   el.classList.add(cls);
   clearTimeout(el._fxTimer);
   el._fxTimer = setTimeout(() => el.classList.remove(cls), ms);
-}
-
-/* ---------------------------------------------------------
-   AI 승률 표시
---------------------------------------------------------- */
-function renderAiWinRate(state) {
-  const el = $(".ai-winrate"); /* single panel 내 AI 승률 표시 영역 */
-  if (currentMode !== "single" || !state?.started || state?.finished || el == null) {
-    if (el) el.classList.add("hidden");
-    return;
-  }
-  const rate = state.aiWinRate;
-  if (rate == null) { el.classList.add("hidden"); return; }
-  const p = Math.round(rate * 100);
-  el.innerHTML = `AI 현재 승리 확률: <b>${p}%</b>`;
-  el.dataset.level = p >= 60 ? "bad" : p <= 30 ? "good" : "mid";
-  el.classList.remove("hidden");
 }
 
 /* ---------------------------------------------------------
@@ -1763,6 +1779,23 @@ function renderAccountInfo(nick) {
   }
   const box = $("#accChangeBox");
   if (box) box.classList.toggle("hidden", myAdminRole === "none");
+
+  /* 비밀번호 저장 체크박스 — 일반 사용자는 자동 저장, 관리자는 켜야만 저장 */
+  const cre = $("#accSaveCreds");
+  if (cre) {
+    const stored = localStorage.getItem("kkSaveAdmin");
+    const isAdmin = myAdminRole !== "none";
+    const def = !isAdmin;
+    cre.checked = stored === null ? def : stored === "1";
+  }
+  const lbl = $("#accSaveCredsLabel");
+  if (lbl) {
+    if (myAdminRole !== "none") {
+      lbl.textContent = myNickname ? `'${myNickname}' 로그인 정보 저장 (체크 시 자동 로그인)` : "비밀번호 저장 (체크 시 자동 로그인)";
+    } else {
+      lbl.textContent = "비밀번호 자동 저장 (입력 시 다시 물어보지 않음)";
+    }
+  }
 }
 
 function renderAccountScores() {
@@ -2183,6 +2216,11 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.key === "Enter") { e.preventDefault(); saveAccount(); }
   });
   $("#accPwSave")?.addEventListener("click", changeAccountPassword);
+  $("#accSaveCreds")?.addEventListener("change", (e) => {
+    localStorage.setItem("kkSaveAdmin", e.target.checked ? "1" : "0");
+    if (!e.target.checked && myAdminRole !== "none") localStorage.removeItem("kkPassword");
+    syncSavedCredentials();
+  });
   $("#accountPanel").querySelectorAll("[data-pw-toggle]").forEach(setupPwToggleInput);
   renderAccountInfo(myNickname);
   renderAccountScores();
