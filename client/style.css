@@ -286,6 +286,10 @@ button:disabled {
   font-size: 0.9rem;
 }
 
+.name-bar #pwInput {
+  width: 150px;
+}
+
 .name-bar input.missing {
   border-color: #fbbf24;
   box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.3);

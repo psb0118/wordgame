@@ -44,6 +44,8 @@ const STARTING_SYLLABLES = [
 let adminPassword = null;
 let subAdmins = [];
 const ADMIN_NICKNAME = "blossomIng_0";
+/* 접속 중인 소켓이 관리자 계정(닉네임+비밀번호) 인증을 통과했는지 — 닉네임만으로 관리자가 되지 못하게 함 */
+const adminAuthed = new Map();
 const adminConfigPath = path.join(DATA_DIR, "admin-config.json");
 
 function getConfig() {
@@ -1171,6 +1173,7 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", (reason) => {
     console.log(`[DISCONNECT] ${socket.id} / ${reason}`);
+    adminAuthed.delete(socket.id);
     const room = findRoomBySocket(socket.id);
     if (!room) return;
     const player = getPlayerBySocket(room, socket.id);
@@ -1245,14 +1248,22 @@ io.on("connection", (socket) => {
   const requireNickname = async (socket) => {
     const pd = await getPlayerData(socket.id);
     const nickname = String(pd.nickname || "").trim();
+    let role = null;
+    let subAdmin = null;
     if (isAdminNick(nickname)) {
-      return { ok: true, nickname, role: "super" };
+      role = "super";
+    } else {
+      const sub = findSubAdmin(nickname);
+      if (sub) { role = "sub"; subAdmin = sub; }
     }
-    const sub = findSubAdmin(nickname);
-    if (sub) {
-      return { ok: true, nickname, role: "sub", subAdmin: sub };
+    if (!role) {
+      return { ok: false, reason: "관리자 권한이 없습니다." };
     }
-    return { ok: false, reason: "관리자 권한이 없습니다." };
+    const authed = adminAuthed.get(socket.id);
+    if (!authed || authed.role !== role) {
+      return { ok: false, reason: "관리자 계정 비밀번호로 인증되지 않았습니다. 닉네임과 계정 비밀번호를 다시 입력해주세요." };
+    }
+    return { ok: true, nickname, role, subAdmin };
   };
 
   /* 역할별 비밀번호 검증 — 최고관리자는 관리자 비밀번호, 서브관리자는 본인 비밀번호 */
@@ -1509,6 +1520,41 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("서브 관리자 비밀번호 오류:", err); }
   });
 
+  /* 최고 관리자가 서브 관리자 계정의 비밀번호를 재설정 — 계정별 비밀번호를 직접 관리 */
+  socket.on("admin:resetSubPassword", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") {
+        socket.emit("admin:panel", { ok: false, reason: "최고 관리자만 계정 비밀번호를 재설정할 수 있습니다." });
+        return;
+      }
+      if (!checkAdminPw(reg, data?.password)) {
+        socket.emit("admin:panel", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
+        return;
+      }
+      const nickname = String(data?.nickname ?? "").trim();
+      const newPassword = String(data?.newPassword ?? "");
+      const sub = findSubAdmin(nickname);
+      if (!sub) {
+        socket.emit("admin:panel", { ok: false, reason: "등록된 서브 관리자를 찾을 수 없습니다." });
+        return;
+      }
+      if (newPassword.length < 4) {
+        socket.emit("admin:panel", { ok: false, reason: "비밀번호는 4자 이상이어야 합니다." });
+        return;
+      }
+      sub.password = newPassword;
+      saveAdminConfig();
+      socket.emit("admin:panel", {
+        ok: true, role: reg.role, isSuper: true, hasPassword: !!adminPassword,
+        subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
+        startSyllables: STARTING_SYLLABLES, message: `'${nickname}' 관리자 계정 비밀번호가 재설정되었습니다.`
+      });
+      console.log(`[ADMIN] ${reg.nickname}님이 서브 관리자 '${nickname}' 비밀번호 재설정`);
+    } catch (err) { console.error("관리자 계정 비밀번호 재설정 오류:", err); }
+  });
+
   socket.on("player:setName", async (data) => {
     try {
       const nickname = normalizeWord(data?.nickname);
@@ -1520,6 +1566,47 @@ io.on("connection", (socket) => {
         socket.emit("player:nameUpdated", { ok: false, reason: "이름은 12자 이내로 입력해주세요." });
         return;
       }
+
+      /* 관리자 계정(최고/서브)은 닉네임만으로 등록되지 않고, 계정 비밀번호 인증이 필요하다 —
+         그래야 닉네임 도용으로 관리자 권한을 뺏기지 않는다 */
+      const asSuper = isAdminNick(nickname);
+      const asSub = asSuper ? null : findSubAdmin(nickname);
+      if (asSuper || asSub) {
+        const pw = String(data?.password ?? "");
+        if (asSuper) {
+          if (!adminPassword) {
+            /* 최초 로그인 = 관리자 계정(비밀번호) 생성 */
+            if (pw.length < 4) {
+              socket.emit("player:nameUpdated", {
+                ok: false, adminRequired: true,
+                reason: "최초 관리자 계정입니다. 계정 비밀번호(4자 이상)를 설정해주세요."
+              });
+              return;
+            }
+            adminPassword = pw;
+            saveAdminConfig();
+          } else if (pw !== adminPassword) {
+            socket.emit("player:nameUpdated", {
+              ok: false, adminRequired: true,
+              reason: "관리자 계정 비밀번호가 올바르지 않습니다."
+            });
+            return;
+          }
+          adminAuthed.set(socket.id, { role: "super", nickname });
+        } else {
+          if (pw !== asSub.password) {
+            socket.emit("player:nameUpdated", {
+              ok: false, adminRequired: true,
+              reason: "관리자 계정 비밀번호가 올바르지 않습니다."
+            });
+            return;
+          }
+          adminAuthed.set(socket.id, { role: "sub", nickname });
+        }
+      } else {
+        adminAuthed.delete(socket.id);
+      }
+
       const room = findRoomBySocket(socket.id);
       if (room) {
         const dup = room.players.find(p => !p.isBot && p.socketId !== socket.id && p.nickname === nickname);

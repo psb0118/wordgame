@@ -18,6 +18,7 @@ let countdownTimer = null;
 let gameSessionId = 0;
 let startingGame = false;
 let myNickname = localStorage.getItem("kkNickname") || "";
+let myPassword = localStorage.getItem("kkPassword") || "";
 
 const localStats = JSON.parse(localStorage.getItem("kkStats") || '{"wins":0,"losses":0,"games":0,"totalLength":0}');
 let localUsedWords = new Set();
@@ -67,6 +68,8 @@ function makeNickname(raw) {
 function initNicknameBar() {
   const input = $("#nickInput");
   if (input) input.value = myNickname;
+  const pw = $("#pwInput");
+  if (pw) pw.value = myPassword;
   updateNicknameUI();
 }
 
@@ -117,6 +120,7 @@ function openAdminPanel() {
 
 function saveNickname() {
   const raw = normalizeWord($("#nickInput")?.value || "");
+  const password = $("#pwInput")?.value ?? "";
   const msg = $("#nickMsg");
   if (!raw) {
     if (msg) { msg.textContent = "이름을 입력해주세요."; msg.dataset.type = "error"; }
@@ -127,10 +131,12 @@ function saveNickname() {
     return;
   }
   if (socket && socketConnected && socket.id) {
-    socket.emit("player:setName", { nickname: raw });
+    socket.emit("player:setName", { nickname: raw, password });
   } else {
     myNickname = raw;
+    myPassword = password;
     localStorage.setItem("kkNickname", myNickname);
+    localStorage.setItem("kkPassword", myPassword);
     updateNicknameUI();
   }
 }
@@ -292,7 +298,7 @@ function initSocket() {
     socketConnected = true;
     console.log("[SOCKET] 연결됨:", socket.id);
     /* 브라우저 새로고침(새 소켓) 후에도 서버가 닉네임을 알도록 재적용 */
-    if (myNickname) socket.emit("player:setName", { nickname: myNickname });
+    if (myNickname) socket.emit("player:setName", { nickname: myNickname, password: myPassword });
     socket.emit("admin:getRole");
   });
 
@@ -327,10 +333,19 @@ function initSocket() {
     if (!data) return;
     if (data.ok && data.nickname) {
       myNickname = data.nickname;
+      const currentPw = $("#pwInput")?.value;
+      if (currentPw) myPassword = currentPw;
       localStorage.setItem("kkNickname", myNickname);
+      localStorage.setItem("kkPassword", myPassword);
       updateNicknameUI();
       showMessage("닉네임이 저장되었습니다.", "success");
       socket.emit("admin:getRole");
+    } else if (data.adminRequired) {
+      const msg = $("#nickMsg");
+      if (msg) { msg.textContent = data.reason || "관리자 계정 비밀번호를 입력해주세요."; msg.dataset.type = "error"; }
+      else showMessage(data.reason || "관리자 계정 비밀번호를 입력해주세요.", "error");
+      const pw = $("#pwInput");
+      if (pw) pw.focus();
     } else if (data.reason) {
       const msg = $("#nickMsg");
       if (msg) { msg.textContent = data.reason; msg.dataset.type = "error"; }
@@ -1127,10 +1142,11 @@ function renderAdminBody(data) {
     </div>
   ` : "";
 
-  /* 서브 관리자 목록/추가/제거 — 최고 관리자 전용 */
+  /* 서브 관리자 목록/추가/제거/비밀번호 재설정 — 최고 관리자 전용 */
   const subList = (data.subAdmins || []).map(n => `
     <li class="admin-sub-row">
       <span>${escapeHtml(n)}</span>
+      <button type="button" class="admin-apply" data-admin-resetsub="${escapeHtml(n)}">비밀번호 변경</button>
       <button type="button" class="admin-apply" data-admin-remove="${escapeHtml(n)}">제거</button>
     </li>
   `).join("");
@@ -1139,11 +1155,12 @@ function renderAdminBody(data) {
       <h4>서브 관리자 관리 (권한: 개인 통계만) — 최고 관리자 전용</h4>
       <div class="admin-row">
         <input type="text" id="adminSubNick" class="admin-text" placeholder="새 관리자 닉네임" autocomplete="off">
-        <input type="password" id="adminSubPw" class="admin-text" placeholder="새 관리자 비밀번호 (4자 이상)" autocomplete="off">
+        <input type="password" id="adminSubPw" class="admin-text" placeholder="새 관리자 계정 비밀번호 (4자 이상)" autocomplete="off">
         <button type="button" class="admin-apply" data-admin-addsub="1">추가</button>
       </div>
       <ul class="admin-sub-list">${subList || '<li class="admin-info">등록된 서브 관리자가 없습니다.</li>'}</ul>
-      <div class="admin-info">※ 서브 관리자도 본인 비밀번호를 알아야 패널에 입장·사용할 수 있습니다.</div>
+      <div class="admin-info">※ 관리자 계정은 '닉네임 + 계정 비밀번호'로 로그인합니다. 비밀번호를 모르는 사람은
+        같은 닉네임을 써도 관리자 권한을 받을 수 없습니다.</div>
     </div>
   ` : "";
 
@@ -1171,8 +1188,8 @@ function renderAdminBody(data) {
 
   const statusLine = isSuper
     ? (data.hasPassword
-        ? `<div class="admin-msg ok">관리자 비밀번호가 설정되어 있습니다.</div>`
-        : `<div class="admin-msg warn">첫 실행입니다. 비밀번호를 설정해주세요.</div>`)
+        ? `<div class="admin-msg ok">관리자 계정 비밀번호가 설정되어 있습니다. 로그인 시 닉네임과 함께 입력하세요.</div>`
+        : `<div class="admin-msg warn">첫 실행입니다. 닉네임 저장 시 계정 비밀번호(4자 이상)를 입력하면 관리자 계정이 만들어집니다.</div>`)
     : `<div class="admin-info">서브 관리자 — 개인 통계 관리만 가능하며 게임 전체 설정은 변경할 수 없습니다.</div>`;
 
   body.innerHTML = `
@@ -1265,6 +1282,17 @@ function bindAdminBody() {
     const password = modal.querySelector("#adminPw")?.value ?? "";
     if (!password) { setAdminStatus("진행하려면 관리자 비밀번호가 필요합니다.", "error"); return; }
     socket.emit("admin:removeSubAdmin", { nickname: btn.dataset.adminRemove, password });
+  }));
+
+  const resetSub = modal.querySelectorAll("[data-admin-resetsub]");
+  resetSub.forEach(btn => btn.addEventListener("click", () => {
+    const password = modal.querySelector("#adminPw")?.value ?? "";
+    if (!password) { setAdminStatus("재설정하려면 관리자 비밀번호가 필요합니다.", "error"); return; }
+    const nickname = btn.dataset.adminResetsub;
+    const newPassword = prompt(`'${nickname}' 관리자 계정의 새 비밀번호를 입력하세요 (4자 이상)`);
+    if (!newPassword) return;
+    if (newPassword.length < 4) { setAdminStatus("비밀번호는 4자 이상이어야 합니다.", "error"); return; }
+    socket.emit("admin:resetSubPassword", { nickname, password, newPassword });
   }));
 
   const foundBtn = modal.querySelector("[data-admin-find]");
