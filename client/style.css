@@ -929,6 +929,20 @@ button:disabled {
   width: 30px;
   height: 30px;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-size: 15px;
+  padding: 0;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.modal-close:hover {
+  background: #374151;
+  border-color: #6b7a93;
+  color: #fff;
 }
 
 .admin-card {
@@ -1057,4 +1071,133 @@ button:disabled {
   color: #93c5fd;
   font-size: 0.85rem;
   margin-bottom: 4px;
+}
+
+/* 서브 관리자 관리 */
+.admin-sub-list {
+  list-style: none;
+  margin: 8px 0 4px;
+  padding: 0;
+}
+
+.admin-sub-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #0f1830;
+  border: 1px solid #26334d;
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin: 4px 0;
+  color: #cbd5e1;
+  font-size: 0.85rem;
+}
+
+/* 추방 버튼 */
+.player-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kick-btn {
+  margin-left: auto;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.kick-btn:hover {
+  background: rgba(239, 68, 68, 0.35);
+  color: #fff;
+}
+
+/* =========================================================
+   애니메이션 / VFX
+========================================================= */
+
+/* 관리자 패널 팝 */
+#adminModal:not(.hidden) .modal-box {
+  animation: modalPop 0.24s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+
+@keyframes modalPop {
+  0% { opacity: 0; transform: scale(0.92) translateY(10px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* 내 차례 표시 — 펄스 */
+.turn-indicator[data-turn="mine"] {
+  animation: turnPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes turnPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* 단어가 연결됐을 때 끝 글자 박스 반짝임 */
+.last-char-box.fx-flash-ok {
+  animation: flashOk 0.6s ease;
+}
+
+@keyframes flashOk {
+  0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); }
+  50% { box-shadow: 0 0 18px 6px rgba(34, 197, 94, 0.45); border-color: #22c55e; }
+  100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+}
+
+/* 잘못된 단어 — 입력 영역 흔들림 */
+.input-area.fx-shake,
+.single-input-area.fx-shake,
+.online-input-area.fx-shake {
+  animation: shakeX 0.4s ease;
+}
+
+@keyframes shakeX {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-7px); }
+  40% { transform: translateX(7px); }
+  60% { transform: translateX(-5px); }
+  80% { transform: translateX(5px); }
+}
+
+/* 하트 손실 — 빨간 섬광 */
+.game-status.fx-heartlost {
+  animation: heartLostFx 0.7s ease;
+}
+
+@keyframes heartLostFx {
+  0% { color: #fca5a5; text-shadow: 0 0 12px rgba(239, 68, 68, 0.9); }
+  100% { color: inherit; text-shadow: none; }
+}
+
+/* 타이머 위급 — 미세 진동 */
+.timer-box[data-urgent="true"] .timer-value {
+  animation: urgentPulse 0.9s ease-in-out infinite;
+  color: #f87171;
+}
+
+@keyframes urgentPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.08); opacity: 0.7; }
+}
+
+/* 일반 버튼 부드러운 전환 */
+button {
+  transition: background-color 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+}
+
+button:hover {
+  filter: brightness(1.08);
+}
+
+button:active {
+  transform: scale(0.97);
 }

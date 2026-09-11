@@ -42,6 +42,7 @@ const STARTING_SYLLABLES = [
 ========================================================= */
 
 let adminPassword = null;
+let subAdmins = [];
 const ADMIN_NICKNAME = "blossomIng_0";
 const adminConfigPath = path.join(DATA_DIR, "admin-config.json");
 
@@ -87,7 +88,7 @@ function applyConfigValue(key, raw) {
 
 function saveAdminConfig() {
   try {
-    fs.writeFileSync(adminConfigPath, JSON.stringify({ adminPassword, config: getConfig() }, null, 2));
+    fs.writeFileSync(adminConfigPath, JSON.stringify({ adminPassword, subAdmins, config: getConfig() }, null, 2));
   } catch (e) { console.warn("관리자 설정 저장 실패:", e.message); }
 }
 
@@ -96,6 +97,11 @@ function loadAdminConfig() {
     if (fs.existsSync(adminConfigPath)) {
       const data = JSON.parse(fs.readFileSync(adminConfigPath, "utf8"));
       if (typeof data.adminPassword === "string" && data.adminPassword) adminPassword = data.adminPassword;
+      if (Array.isArray(data.subAdmins)) {
+        subAdmins = data.subAdmins
+          .filter(s => s && String(s.nickname || "").trim() && String(s.password || "").length >= 4)
+          .map(s => ({ nickname: String(s.nickname).trim(), password: String(s.password) }));
+      }
       const c = data.config || {};
       for (const key of Object.keys(CONFIG_RANGES)) {
         if (typeof c[key] === "number") applyConfigValue(key, c[key]);
@@ -659,10 +665,35 @@ function playWord(room, player, rawWord, gameSessionId) {
   });
   broadcastRoomState(room);
 
-  /* 다음 사람이 대응할 단어가 없으면 지금 단어 낸 사람이 승리 */
+  /* 다음 사람이 대응할 단어가 없으면 한방 — 게임 종료 대신 상대 하트 1개 차감
+     (하트가 모두 깎이면 탈락, 한 명만 남으면 그때 게임 종료) */
   if (nextCandidates.length === 0) {
     const loser = findNextAlivePlayer(room, player.playerIndex);
-    finishGame(room, player.playerIndex, loser);
+    if (loser === null) { finishGame(room, player.playerIndex, null); return { ok: true, finished: true }; }
+    const loserPlayer = getPlayerByIndex(room, loser);
+    loserPlayer.hearts--;
+    loserPlayer.mistakes = 0;
+    loserPlayer.eliminated = loserPlayer.hearts <= 0;
+    if (loserPlayer.eliminated) loserPlayer.hearts = 0;
+    loserPlayer.alive = !loserPlayer.eliminated;
+
+    io.to(room.id).emit("game:oneshot", {
+      word, killer: player.playerIndex, killerNickname: player.nickname,
+      target: loser, targetNickname: loserPlayer.nickname,
+      hearts: loserPlayer.hearts, eliminated: loserPlayer.eliminated
+    });
+
+    const alive = getAlivePlayers(room);
+    if (alive.length <= 1) {
+      finishGame(room, alive.length === 1 ? alive[0].playerIndex : null, loser);
+      return { ok: true, finished: true };
+    }
+
+    /* 다음 라운드로 자연스럽게 이어짐 — 게임(목숨)은 유지 */
+    io.to(room.id).emit("game:roundReset", {
+      reason: `한방 단어 '${word}'! ${loserPlayer.nickname}님이 하트 1개를 잃었습니다.`
+    });
+    startNewGame(room, { preserveHearts: true });
     return { ok: true, finished: true };
   }
 
@@ -751,7 +782,9 @@ function removePlayer(room, socketId, reason) {
   if (room.started && !room.finished) {
     player.eliminated = true;
     player.connected = false;
-    io.to(room.id).emit("room:playerLeft", { playerIndex: player.playerIndex, nickname: player.nickname, reason });
+    if (reason !== "kick") {
+      io.to(room.id).emit("room:playerLeft", { playerIndex: player.playerIndex, nickname: player.nickname, reason });
+    }
 
     const alive = getAlivePlayers(room);
     if (alive.length <= 1) {
@@ -1173,6 +1206,39 @@ io.on("connection", (socket) => {
     if (room) socket.emit("game:state", getPublicRoomState(room));
   });
 
+  /* 추방 — 방장 또는 관리자만 가능 */
+  socket.on("room:kick", async (data) => {
+    try {
+      const room = findRoomBySocket(socket.id);
+      if (!room) { socket.emit("room:error", { ok: false, reason: "방에 참여하지 않았습니다." }); return; }
+      const isHost = room.hostSocketId === socket.id;
+      const reg = await requireNickname(socket);
+      if (!isHost && !reg.ok) {
+        socket.emit("room:error", { ok: false, reason: "방장 또는 관리자만 추방할 수 있습니다." });
+        return;
+      }
+      const idx = Number(data?.playerIndex);
+      const target = room.players[idx];
+      if (!target || target.isBot || target.socketId === socket.id) {
+        socket.emit("room:error", { ok: false, reason: "추방할 수 없는 대상입니다." });
+        return;
+      }
+      const targetSocket = io.sockets.sockets.get(target.socketId);
+      if (targetSocket) {
+        targetSocket.emit("room:kicked", { ok: true, reason: "방장/관리자에 의해 추방되었습니다." });
+        targetSocket.leave(room.id);
+      }
+      removePlayer(room, target.socketId, "kick");
+      io.to(room.id).emit("room:playerLeft", {
+        playerIndex: target.playerIndex, nickname: target.nickname, reason: "kick"
+      });
+      broadcastRoomState(room);
+      console.log(`[KICK] ${room.id} / 방장·관리자가 '${target.nickname}' 추방`);
+      const realPlayers = room.players.filter(p => !p.isBot);
+      if (realPlayers.length === 0) { stopTurnTimer(room); ROOMS.delete(room.id); }
+    } catch (err) { console.error("추방 오류:", err); }
+  });
+
   socket.on("player:getRanking", async () => {
     try {
       const data = await getPlayerData(socket.id);
@@ -1187,13 +1253,28 @@ io.on("connection", (socket) => {
   /* -- 관리자 패널 ------------------------------------- */
   /* name 정규화(공백 제거) 후 대소문자 무시 비교 */
   const isAdminNick = (nick) => String(nick || "").replace(/\s+/g, "").toLowerCase() === ADMIN_NICKNAME.replace(/\s+/g, "").toLowerCase();
+  const normNick = (nick) => String(nick || "").replace(/\s+/g, "").toLowerCase();
+  const findSubAdmin = (nick) => subAdmins.find(s => normNick(s.nickname) === normNick(nick)) || null;
+
   const requireNickname = async (socket) => {
     const pd = await getPlayerData(socket.id);
     const nickname = String(pd.nickname || "").trim();
-    if (!isAdminNick(nickname)) {
-      return { ok: false, reason: "관리자 권한이 없습니다." };
+    if (isAdminNick(nickname)) {
+      return { ok: true, nickname, role: "super" };
     }
-    return { ok: true, nickname };
+    const sub = findSubAdmin(nickname);
+    if (sub) {
+      return { ok: true, nickname, role: "sub", subAdmin: sub };
+    }
+    return { ok: false, reason: "관리자 권한이 없습니다." };
+  };
+
+  /* 역할별 비밀번호 검증 — 최고관리자는 관리자 비밀번호, 서브관리자는 본인 비밀번호 */
+  const checkAdminPw = (reg, pw) => {
+    if (!pw || typeof pw !== "string") return false;
+    if (reg.role === "super") return !!adminPassword && pw === adminPassword;
+    if (reg.role === "sub" && reg.subAdmin) return pw === reg.subAdmin.password;
+    return false;
   };
 
   /* 닉네임으로 플레이어 조회 (JSON DB / PostgreSQL 공통) */
@@ -1214,7 +1295,10 @@ io.on("connection", (socket) => {
       if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
       socket.emit("admin:panel", {
         ok: true,
+        role: reg.role,
+        isSuper: reg.role === "super",
         hasPassword: !!adminPassword,
+        subAdmins: subAdmins.map(s => s.nickname),
         config: getConfig(),
         startSyllables: STARTING_SYLLABLES
       });
@@ -1225,7 +1309,7 @@ io.on("connection", (socket) => {
     try {
       const reg = await requireNickname(socket);
       if (!reg.ok) { socket.emit("admin:findResult", { ok: false, reason: reg.reason }); return; }
-      if (!adminPassword || String(data?.password ?? "") !== adminPassword) {
+      if (!checkAdminPw(reg, data?.password)) {
         socket.emit("admin:findResult", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
         return;
       }
@@ -1251,7 +1335,7 @@ io.on("connection", (socket) => {
     try {
       const reg = await requireNickname(socket);
       if (!reg.ok) { socket.emit("admin:statsUpdated", { ok: false, reason: reg.reason }); return; }
-      if (!adminPassword || String(data?.password ?? "") !== adminPassword) {
+      if (!checkAdminPw(reg, data?.password)) {
         socket.emit("admin:statsUpdated", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
         return;
       }
@@ -1283,6 +1367,10 @@ io.on("connection", (socket) => {
     try {
       const reg = await requireNickname(socket);
       if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") {
+        socket.emit("admin:panel", { ok: false, reason: "전체 설정은 최고 관리자만 변경할 수 있습니다." });
+        return;
+      }
       const current = String(data?.current ?? "");
       const next = String(data?.next ?? "");
       if (next.length < 4) {
@@ -1307,7 +1395,11 @@ io.on("connection", (socket) => {
     try {
       const reg = await requireNickname(socket);
       if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
-      if (!adminPassword || String(data?.password ?? "") !== adminPassword) {
+      if (reg.role !== "super") {
+        socket.emit("admin:panel", { ok: false, reason: "수치 조정은 최고 관리자만 할 수 있습니다." });
+        return;
+      }
+      if (!checkAdminPw(reg, data?.password)) {
         socket.emit("admin:panel", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
         return;
       }
@@ -1323,6 +1415,112 @@ io.on("connection", (socket) => {
       socket.emit("admin:panel", { ok: true, message: "설정이 적용되었습니다.", config: getConfig() });
       console.log(`[ADMIN] ${reg.nickname}님이 ${key} → ${val} 변경`);
     } catch (err) { console.error("관리자 설정 오류:", err); }
+  });
+
+  socket.on("admin:getRole", async () => {
+    try {
+      const reg = await requireNickname(socket);
+      socket.emit("admin:role", { ok: true, role: reg.ok ? reg.role : "none" });
+    } catch (err) { console.error("관리자 역할 조회 오류:", err); }
+  });
+
+  socket.on("admin:addSubAdmin", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") {
+        socket.emit("admin:panel", { ok: false, reason: "최고 관리자만 관리자를 추가할 수 있습니다." });
+        return;
+      }
+      if (!checkAdminPw(reg, data?.password)) {
+        socket.emit("admin:panel", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
+        return;
+      }
+      const nickname = String(data?.nickname ?? "").trim();
+      const password = String(data?.adminPassword ?? "").trim();
+      if (!nickname || nickname.length < 2 || nickname.length > 20) {
+        socket.emit("admin:panel", { ok: false, reason: "관리자 닉네임은 2~20자여야 합니다." });
+        return;
+      }
+      if (password.length < 4) {
+        socket.emit("admin:panel", { ok: false, reason: "관리자 비밀번호는 4자 이상이어야 합니다." });
+        return;
+      }
+      if (isAdminNick(nickname)) {
+        socket.emit("admin:panel", { ok: false, reason: "최고 관리자 닉네임은 추가할 수 없습니다." });
+        return;
+      }
+      if (findSubAdmin(nickname)) {
+        socket.emit("admin:panel", { ok: false, reason: "이미 등록된 서브 관리자입니다." });
+        return;
+      }
+      subAdmins.push({ nickname, password });
+      saveAdminConfig();
+      socket.emit("admin:panel", {
+        ok: true, role: reg.role, isSuper: true, hasPassword: !!adminPassword,
+        subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
+        startSyllables: STARTING_SYLLABLES, message: `'${nickname}' 관리자가 추가되었습니다.`
+      });
+      console.log(`[ADMIN] ${reg.nickname}님이 서브 관리자 '${nickname}' 추가`);
+    } catch (err) { console.error("관리자 추가 오류:", err); }
+  });
+
+  socket.on("admin:removeSubAdmin", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") {
+        socket.emit("admin:panel", { ok: false, reason: "최고 관리자만 관리자를 제거할 수 있습니다." });
+        return;
+      }
+      if (!checkAdminPw(reg, data?.password)) {
+        socket.emit("admin:panel", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
+        return;
+      }
+      const nickname = String(data?.nickname ?? "").trim();
+      const idx = subAdmins.findIndex(s => normNick(s.nickname) === normNick(nickname));
+      if (idx === -1) {
+        socket.emit("admin:panel", { ok: false, reason: "등록된 서브 관리자를 찾을 수 없습니다." });
+        return;
+      }
+      subAdmins.splice(idx, 1);
+      saveAdminConfig();
+      socket.emit("admin:panel", {
+        ok: true, role: reg.role, isSuper: true, hasPassword: !!adminPassword,
+        subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
+        startSyllables: STARTING_SYLLABLES, message: `'${nickname}' 관리자가 제거되었습니다.`
+      });
+      console.log(`[ADMIN] ${reg.nickname}님이 서브 관리자 '${nickname}' 제거`);
+    } catch (err) { console.error("관리자 제거 오류:", err); }
+  });
+
+  socket.on("admin:setSubPassword", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "sub" || !reg.subAdmin) {
+        socket.emit("admin:panel", { ok: false, reason: "서브 관리자만 자신의 비밀번호를 바꿀 수 있습니다." });
+        return;
+      }
+      const current = String(data?.current ?? "");
+      const next = String(data?.next ?? "");
+      if (next.length < 4) {
+        socket.emit("admin:panel", { ok: false, reason: "비밀번호는 4자 이상이어야 합니다." });
+        return;
+      }
+      if (current !== reg.subAdmin.password) {
+        socket.emit("admin:panel", { ok: false, reason: "현재 비밀번호가 올바르지 않습니다." });
+        return;
+      }
+      reg.subAdmin.password = next;
+      saveAdminConfig();
+      socket.emit("admin:panel", {
+        ok: true, role: "sub", isSuper: false, hasPassword: !!adminPassword,
+        subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
+        startSyllables: STARTING_SYLLABLES, message: "서브 관리자 비밀번호가 변경되었습니다."
+      });
+      console.log(`[ADMIN] 서브 관리자 '${reg.nickname}' 비밀번호 변경`);
+    } catch (err) { console.error("서브 관리자 비밀번호 오류:", err); }
   });
 
   socket.on("player:setName", async (data) => {
