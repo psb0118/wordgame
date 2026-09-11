@@ -98,11 +98,21 @@ function isAdminNick(nick) {
 }
 
 function updateAdminVisibility() {
-  const spot = $("#adminHotspot");
-  if (!spot) return;
   const isAdmin = isAdminNick(myNickname);
-  spot.hidden = !isAdmin;
+  $all(".admin-btn").forEach(b => b.classList.toggle("hidden", !isAdmin));
   if (!isAdmin && adminModalOpen) closeAdminPanel();
+}
+
+function openAdminPanel() {
+  const modal = $("#adminModal");
+  if (!modal) return;
+  if (!isAdminNick(myNickname)) { showMessage("관리자 권한이 없습니다.", "error"); return; }
+  adminModalOpen = true;
+  modal.classList.remove("hidden");
+  const body = $("#adminBody");
+  if (body) body.innerHTML = `<div class="admin-loading">불러오는 중...</div>`;
+  if (socket && socketConnected) socket.emit("admin:getPanel");
+  else if (body) body.innerHTML = `<div class="admin-msg error">서버에 연결되어 있지 않습니다.</div>`;
 }
 
 function saveNickname() {
@@ -977,13 +987,9 @@ function leaveRoom() {
 }
 
 /* ---------------------------------------------------------
-   관리자 패널 (숨겨진 설정) — 온라인 오른쪽 아래를 여러 번 연타
+   관리자 패널 (닉네임이 blossomIng_0인 사람에게만 보이는 버튼)
 --------------------------------------------------------- */
-const ADMIN_CLICK_NEEDED = 7;
-const ADMIN_CLICK_GAP_MS = 1200;
 const ADMIN_NICKNAME = "blossomIng_0";
-let adminClicks = 0;
-let adminClickLast = 0;
 let adminModalOpen = false;
 let adminFoundNick = null;
 
@@ -994,28 +1000,6 @@ const ADMIN_CONFIG_LABELS = {
   oneShotFreeTurns: "공격 단어 금지 턴",
   mistakesPerLife: "목숨당 실수 횟수"
 };
-
-function onAdminHotspotClick() {
-  const now = Date.now();
-  if (adminClickLast && now - adminClickLast > ADMIN_CLICK_GAP_MS) adminClicks = 0;
-  adminClickLast = now;
-  adminClicks++;
-  if (adminClicks >= ADMIN_CLICK_NEEDED) {
-    adminClicks = 0;
-    openAdminPanel();
-  }
-}
-
-function openAdminPanel() {
-  const modal = $("#adminModal");
-  if (!modal) return;
-  adminModalOpen = true;
-  modal.classList.remove("hidden");
-  const body = $("#adminBody");
-  if (body) body.innerHTML = `<div class="admin-loading">불러오는 중...</div>`;
-  if (socket && socketConnected) socket.emit("admin:getPanel");
-  else if (body) body.innerHTML = `<div class="admin-msg error">서버에 연결되어 있지 않습니다.</div>`;
-}
 
 function closeAdminPanel() {
   const modal = $("#adminModal");
@@ -1192,7 +1176,8 @@ function lbMarkup(rows) {
     body = rows.map(r => {
       const tier = r.tier ? (r.tier.sub ? `${r.tier.tier} ${r.tier.sub}` : r.tier.tier) : "-";
       const cls = r.rank === 1 ? " top1" : r.rank <= 3 ? " top3" : "";
-      return `<div class="lb-row${cls}">
+      const me = String(r.nickname || "플레이어").replace(/\s+/g, "").toLowerCase() === String(myNickname || "").replace(/\s+/g, "").toLowerCase() && myNickname ? " lb-me" : "";
+      return `<div class="lb-row${cls}${me}">
             <span class="lb-rank">${r.rank}</span>
             <span class="lb-name">${escapeHtml(r.nickname || "플레이어")}</span>
             <span class="lb-tier">${escapeHtml(tier)}</span>
@@ -1337,8 +1322,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   $("#loadLb")?.addEventListener("click", toggleLeaderboard);
 
-  /* 관리자 패널 (숨김 진입점 — 온라인 오른쪽 아래 여러 번 클릭) */
-  $("#adminHotspot")?.addEventListener("click", onAdminHotspotClick);
+  /* 관리자 패널 — 닉네임이 blossomIng_0인 사용자에게만 보이는 버튼 */
+  $all(".admin-btn").forEach(btn => btn.addEventListener("click", openAdminPanel));
+  $("#nickInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); saveNickname(); }
+  });
   const adminModal = $("#adminModal");
   if (adminModal) {
     adminModal.addEventListener("click", (e) => {

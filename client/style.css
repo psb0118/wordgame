@@ -820,6 +820,12 @@ button:disabled {
   font-weight: bold;
 }
 
+.lb-row.lb-me {
+  background: rgba(37, 99, 235, 0.16);
+  outline: 1px solid rgba(59, 130, 246, 0.55);
+  border-left: 4px solid #3b82f6;
+}
+
 .lb-rank {
   width: 26px;
   height: 26px;
@@ -868,19 +874,13 @@ button:disabled {
   position: relative;
 }
 
-#adminHotspot {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
-  width: 44px;
-  height: 40px;
-  z-index: 6;
-  cursor: pointer;
-  background: transparent;
+.admin-btn {
+  margin: 12px 0 4px;
+  opacity: 0.95;
 }
 
-#adminHotspot[hidden] {
-  display: none;
+.admin-btn:hover {
+  opacity: 1;
 }
 
 .modal {
