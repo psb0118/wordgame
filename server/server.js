@@ -9,7 +9,7 @@ const {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
   loadData, hasWord, getAttackDepth, isAttackWord,
   getCandidates, isOneShot, getStartCandidates, chooseStartWord,
-  chooseAIWord, calculateRank, calculateElo
+  chooseAIWord, chooseAIStartWord, calculateRank, calculateElo
 } = require("./game.js");
 
 /* =========================================================
@@ -719,21 +719,7 @@ function runAI(room, gameSessionId) {
 
   let word;
   if (room.turnNumber === 0) {
-    const syllable = room.startSyllable || "";
-    const legal = (w) => {
-      if (room.usedWords.has(w)) return false;
-      if (isAttackWord(w, ATTACK_DEPTH)) return false;
-      if (isOneShot(w, room.usedWords, WORD_INDEX)) return false;
-      return true;
-    };
-    const candidates = [];
-    for (const [firstChar, bucket] of WORD_INDEX) {
-      if (firstChar !== syllable) continue;
-      for (const w of bucket) {
-        if (w.startsWith(syllable) && legal(w)) candidates.push(w);
-      }
-    }
-    word = candidates.length > 0 ? candidates[Math.floor(Math.random() * candidates.length)] : null;
+    word = chooseAIStartWord(room.startSyllable || "", room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS);
   } else {
     word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS);
   }
@@ -750,20 +736,19 @@ function runAI(room, gameSessionId) {
   }
   const result = playWord(room, player, word, gameSessionId);
   if (!result.ok && result.penalty) {
-    let fallbackPool;
     if (room.turnNumber === 0) {
-      const syllable = room.startSyllable || "";
-      fallbackPool = getCandidates(syllable, room.usedWords, WORD_INDEX)
-        .filter(w => w.startsWith(syllable)
-          && !isAttackWord(w, ATTACK_DEPTH)
-          && !isOneShot(w, room.usedWords, WORD_INDEX));
+      /* 이미 시도한 단어를 피해 다른 시작 단어로 재시도 */
+      const blocked = new Set(room.usedWords);
+      blocked.add(word);
+      const retry = chooseAIStartWord(room.startSyllable || "", blocked, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS);
+      if (retry) playWord(room, player, retry, gameSessionId);
     } else {
-      fallbackPool = getCandidates(room.currentWord || "", room.usedWords, WORD_INDEX)
+      const fallbackPool = getCandidates(room.currentWord || "", room.usedWords, WORD_INDEX)
         .filter(w => canConnect(room.currentWord || "", w));
-    }
-    if (fallbackPool.length > 0) {
-      const retry = fallbackPool[Math.floor(Math.random() * fallbackPool.length)];
-      playWord(room, player, retry, gameSessionId);
+      if (fallbackPool.length > 0) {
+        const retry = fallbackPool[Math.floor(Math.random() * fallbackPool.length)];
+        playWord(room, player, retry, gameSessionId);
+      }
     }
   }
 }
@@ -1081,7 +1066,8 @@ io.on("connection", (socket) => {
         candidates = getCandidates(syllable, room.usedWords, WORD_INDEX)
           .filter(w => w.startsWith(syllable)
             && !isAttackWord(w, ATTACK_DEPTH)
-            && !isOneShot(w, room.usedWords, WORD_INDEX));
+            && !isOneShot(w, room.usedWords, WORD_INDEX)
+            && !DEFENSE_WORDS.has(w));
       } else {
         const aiPick = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS);
         candidates = aiPick ? [aiPick] : [];

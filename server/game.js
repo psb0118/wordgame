@@ -324,6 +324,31 @@ function chooseStartWord(usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
 }
 
 /* =========================================================
+   AI — 첫 턴(턴 0) 시작 단어 선택
+   - 반드시 주어진 시작 음절로 시작
+   - 공격 단어/한방 단어/이미 사용한 단어 배제
+   - 방어 단어는 지지 않기 위한 수이므로 첫 수로 쓰지 않는다
+   - 남은 후보 중에서 랜덤 선택 (패턴 고정 방지)
+========================================================= */
+
+function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS) {
+  const used = usedWords instanceof Set ? usedWords : new Set();
+  const defenseSet = DEFENSE_WORDS || new Set();
+  const syllableF = normalizeWord(syllable);
+  if (!syllableF) return null;
+  const legal = [];
+  for (const w of getCandidates(syllableF, used, WORD_INDEX)) {
+    if (!w.startsWith(syllableF)) continue;
+    if (isAttackWord(w, ATTACK_DEPTH)) continue;
+    if (isOneShot(w, used, WORD_INDEX)) continue;
+    if (defenseSet.has(w)) continue;
+    legal.push(w);
+  }
+  if (legal.length === 0) return null;
+  return legal[Math.floor(Math.random() * legal.length)];
+}
+
+/* =========================================================
    AI — 최강 전략적 단어 선택
    절대 원칙 (우선순위):
    1. 즉시 승리(한방) → 무조건 사용
@@ -378,7 +403,8 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   const oppScore = (info) => {
     let score = 0;
     if (info.isValue) score += 90;                /* 값 루트 강력 우선 */
-    score -= info.nextCount * 2;                  /* 상대 선택지 적을수록 좋음 */
+    score -= Math.min(info.nextCount, 15) * 2;    /* 상대 선택지 적을수록 좋음 — 단, 15개 이상이면
+                                                     충분히 안전하다고 보고 동등하게 취급해 단어를 다양화 */
     const opp = getCandidates(info.w, newUsed, WORD_INDEX);
     const sample = opp.slice(0, OPP_CAP);
     for (const ow of sample) {
@@ -397,7 +423,7 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
         if (getCandidates(o2, o2Used, WORD_INDEX).length === 0) { score -= 120; break; }
       }
     }
-    score += Math.random() * 5;
+    score += Math.random() * 8;
     return score;
   };
 
@@ -405,7 +431,8 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     const scored = capSample(group).map(i => ({ i, s: oppScore(i) }));
     scored.sort((a, b) => b.s - a.s);
     const topScore = scored[0].s;
-    const top = scored.filter(x => x.s >= topScore - 5);
+    /* 상위 ±12 이내 후보 중 랜덤 — 루트/일반 단어가 매번 몇 개로 고정되지 않도록 다양화 */
+    const top = scored.filter(x => x.s >= topScore - 12);
     return pick(top).i.w;
   };
 
@@ -464,5 +491,5 @@ module.exports = {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
   loadData, hasWord, getAttackDepth, isAttackWord,
   getCandidates, isOneShot, getStartCandidates, chooseStartWord,
-  chooseAIWord, calculateRank, calculateElo
+  chooseAIWord, chooseAIStartWord, calculateRank, calculateElo
 };
