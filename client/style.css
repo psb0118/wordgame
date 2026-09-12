@@ -2099,3 +2099,175 @@ button:active:not(:disabled) {
 .how-body b {
   color: var(--text);
 }
+
+/* ---------------------------------------------------------
+   실시간 랭킹 패널 (우측 상단, 항상 표시)
+--------------------------------------------------------- */
+.side-rank {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 264px;
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(6px);
+  z-index: 60;
+  overflow: hidden;
+}
+
+.side-rank-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  background: linear-gradient(120deg, #4f46e5, #7c3aed);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.92rem;
+}
+
+.side-rank-close {
+  background: transparent;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.side-rank-close:hover { background: rgba(255, 255, 255, 0.18); }
+
+.side-rank-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--card-soft);
+}
+
+.side-rank-tabs button {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 7px 2px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.side-rank-tabs button.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.side-rank-body {
+  overflow-y: auto;
+  padding: 6px 8px 8px;
+}
+
+.side-rank-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+
+.side-rank-row:nth-child(2n) { background: rgba(248, 250, 252, 0.7); }
+
+.side-rank-row.top1 { background: var(--gold-soft); }
+.side-rank-row.lb-me { box-shadow: inset 0 0 0 1px var(--accent); }
+
+.side-rank-num {
+  width: 22px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--text-faint);
+}
+
+.side-rank-row.top1 .side-rank-num { color: var(--gold); }
+.side-rank-row.top3 .side-rank-num { color: var(--orange); }
+
+.side-rank-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.side-rank-val {
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.side-rank-sub {
+  color: var(--text-faint);
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.side-rank-empty {
+  color: var(--text-faint);
+  text-align: center;
+  padding: 16px 0;
+  font-size: 0.82rem;
+}
+
+.side-rank-foot {
+  padding: 5px 10px;
+  font-size: 0.7rem;
+  color: var(--text-faint);
+  text-align: center;
+  border-top: 1px solid var(--border);
+  background: var(--card-soft);
+}
+
+.side-rank-open {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 60;
+  border: 1px solid var(--border);
+  background: linear-gradient(120deg, #4f46e5, #7c3aed);
+  color: #fff;
+  font-weight: 700;
+  padding: 8px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 1080px) {
+  .side-rank-open { display: block; }
+}
+
+.side-rank.closed { display: none; }
+.side-rank-open.hidden { display: none; }
+
+/* 랭크 대기실 연승 칩 */
+.ranked-streak-chip {
+  margin-top: 10px;
+  text-align: center;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--orange-soft);
+  border: 1px solid rgba(249, 115, 22, 0.35);
+  color: var(--orange);
+  font-size: 0.9rem;
+}
+
+.ranked-streak-chip b {
+  color: var(--text);
+  font-size: 1.05rem;
+}

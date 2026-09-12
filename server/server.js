@@ -213,6 +213,8 @@ async function initDatabase() {
           ranked_rating INTEGER DEFAULT 1000,
           ranked_wins INTEGER DEFAULT 0,
           ranked_losses INTEGER DEFAULT 0,
+          ranked_streak INTEGER DEFAULT 0,
+          ranked_best_streak INTEGER DEFAULT 0,
           money INTEGER DEFAULT 0,
           money_multiplier INTEGER DEFAULT 1,
           rating_boost_games INTEGER DEFAULT 0,
@@ -233,6 +235,8 @@ async function initDatabase() {
           ADD COLUMN IF NOT EXISTS ranked_rating INTEGER DEFAULT 1000,
           ADD COLUMN IF NOT EXISTS ranked_wins INTEGER DEFAULT 0,
           ADD COLUMN IF NOT EXISTS ranked_losses INTEGER DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS ranked_streak INTEGER DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS ranked_best_streak INTEGER DEFAULT 0,
           ADD COLUMN IF NOT EXISTS money INTEGER DEFAULT 0,
           ADD COLUMN IF NOT EXISTS money_multiplier INTEGER DEFAULT 1,
           ADD COLUMN IF NOT EXISTS rating_boost_games INTEGER DEFAULT 0,
@@ -257,6 +261,8 @@ function migratePlayerData(p) {
   p.single = Object.assign({ ...MODE_DEFAULT }, p.single || {});
   p.multi = Object.assign({ ...MODE_DEFAULT }, p.multi || {});
   p.ranked = Object.assign({ ...MODE_DEFAULT }, p.ranked || {});
+  p.ranked.streak = Number.isFinite(p.ranked.streak) ? Math.max(0, Math.floor(p.ranked.streak)) : 0;
+  p.ranked.bestStreak = Number.isFinite(p.ranked.bestStreak) ? Math.max(0, Math.floor(p.ranked.bestStreak)) : 0;
   if (typeof p.money !== "number" || !Number.isFinite(p.money)) p.money = typeof p.money === "number" ? Math.max(0, p.money) : 0;
   p.money = Math.max(0, Math.floor(p.money));
   if (!Number.isFinite(p.moneyMultiplier) || p.moneyMultiplier < 1) p.moneyMultiplier = 1;
@@ -280,7 +286,7 @@ async function getPlayerData(playerId) {
           nickname: row.nickname,
           multi: { rating: row.rating, wins: row.wins, losses: row.losses },
           single: { rating: row.single_rating, wins: row.single_wins, losses: row.single_losses },
-          ranked: { rating: row.ranked_rating, wins: row.ranked_wins, losses: row.ranked_losses },
+          ranked: { rating: row.ranked_rating, wins: row.ranked_wins, losses: row.ranked_losses, streak: row.ranked_streak, bestStreak: row.ranked_best_streak },
           money: row.money,
           moneyMultiplier: row.money_multiplier,
           ratingBoostGames: row.rating_boost_games,
@@ -301,6 +307,8 @@ async function getPlayerData(playerId) {
 async function savePlayerData(playerId, data) {
   const safe = migratePlayerData(data);
   const num = (v, fallback) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };
+  const rankedStreak = Math.max(0, Math.floor(num(data.ranked && data.ranked.streak, 0)));
+  const rankedBestStreak = Math.max(0, Math.floor(num(data.ranked && data.ranked.bestStreak, 0)));
   const modeCore = (m) => ({
     rating: num(m.rating, 1000),
     wins: Math.max(0, num(m.wins, 0)),
@@ -309,6 +317,8 @@ async function savePlayerData(playerId, data) {
   safe.single = modeCore(safe.single);
   safe.multi = modeCore(safe.multi);
   safe.ranked = modeCore(safe.ranked);
+  safe.ranked.streak = rankedStreak;
+  safe.ranked.bestStreak = rankedBestStreak;
   safe.money = Math.max(0, Math.floor(num(safe.money, 0)));
   safe.moneyMultiplier = Math.min(99, Math.max(1, Math.floor(num(safe.moneyMultiplier, 1))));
   safe.ratingBoostGames = Math.max(0, Math.floor(num(safe.ratingBoostGames, 0)));
@@ -320,20 +330,23 @@ async function savePlayerData(playerId, data) {
       await dbPool.query(`
         INSERT INTO players
           (id, nickname, rating, wins, losses, single_rating, single_wins, single_losses,
-           ranked_rating, ranked_wins, ranked_losses, money, money_multiplier, rating_boost_games,
+           ranked_rating, ranked_wins, ranked_losses, ranked_streak, ranked_best_streak,
+           money, money_multiplier, rating_boost_games,
            titles, current_title, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
         ON CONFLICT (id) DO UPDATE SET
           nickname=$2, rating=$3, wins=$4, losses=$5,
           single_rating=$6, single_wins=$7, single_losses=$8,
           ranked_rating=$9, ranked_wins=$10, ranked_losses=$11,
-          money=$12, money_multiplier=$13, rating_boost_games=$14,
-          titles=$15, current_title=$16, updated_at=NOW()
+          ranked_streak=$12, ranked_best_streak=$13,
+          money=$14, money_multiplier=$15, rating_boost_games=$16,
+          titles=$17, current_title=$18, updated_at=NOW()
       `, [
         playerId, safe.nickname || "플레이어",
         safe.multi.rating, safe.multi.wins, safe.multi.losses,
         safe.single.rating, safe.single.wins, safe.single.losses,
         safe.ranked.rating, safe.ranked.wins, safe.ranked.losses,
+        safe.ranked.streak, safe.ranked.bestStreak,
         safe.money, safe.moneyMultiplier, safe.ratingBoostGames,
         JSON.stringify(safe.titles), safe.currentTitle
       ]);
@@ -356,6 +369,11 @@ async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mo
   loser[key].rating = Math.round(loser[key].rating + lChange * lBoost);
   winner[key].wins += 1; winner.nickname = winnerNickname || winner.nickname;
   loser[key].losses += 1; loser.nickname = loserNickname || loser.nickname;
+  if (key === "ranked") {
+    winner[key].streak = Math.max(0, (winner[key].streak || 0)) + 1;
+    winner[key].bestStreak = Math.max((winner[key].bestStreak || 0), winner[key].streak);
+    loser[key].streak = 0;
+  }
   if (!Number.isFinite(winner[key].rating)) winner[key].rating = 1000;
   if (!Number.isFinite(loser[key].rating)) loser[key].rating = 1000;
   if (opts.decBoostWinner) winner.ratingBoostGames = Math.max(0, (winner.ratingBoostGames || 0) - 1);
@@ -1084,7 +1102,7 @@ function runAI(room, gameSessionId) {
 
   let word;
   if (room.turnNumber === 0) {
-    word = chooseAIStartWord(room.startSyllable || "", room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS);
+    word = chooseAIStartWord(room.startSyllable || "", room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS);
   } else {
     word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS);
   }
@@ -1105,7 +1123,7 @@ function runAI(room, gameSessionId) {
       /* 이미 시도한 단어를 피해 다른 시작 단어로 재시도 */
       const blocked = new Set(room.usedWords);
       blocked.add(word);
-      const retry = chooseAIStartWord(room.startSyllable || "", blocked, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS);
+      const retry = chooseAIStartWord(room.startSyllable || "", blocked, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS);
       if (retry) playWord(room, player, retry, gameSessionId);
     } else {
       const fallbackPool = getCandidates(room.currentWord || "", room.usedWords, WORD_INDEX)
@@ -1184,39 +1202,74 @@ app.get("/api/health", (req, res) => {
 
 app.get("/api/leaderboard", async (req, res) => {
   try {
-    const mode = req.query.mode === "ranked" ? "ranked"
-      : (req.query.mode === "single" || req.query.mode === "ai") ? "single"
-      : "multi";
+    const rawMode = String(req.query.mode || "multi");
+    const mode = ["multi", "single", "ranked", "money", "streak"].includes(rawMode)
+      ? rawMode : (rawMode === "ai" ? "single" : "multi");
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit || "10"), 10) || 10));
     let rows = [];
     if (dbMode === "pg") {
-      const isRanked = mode === "ranked";
-      const isSingle = mode === "single";
-      const col = isRanked ? "ranked_rating" : isSingle ? "single_rating" : "rating";
-      const winCol = isRanked ? "ranked_wins" : isSingle ? "single_wins" : "wins";
-      const lossCol = isRanked ? "ranked_losses" : isSingle ? "single_losses" : "losses";
-      rows = (await dbPool.query(
-        `SELECT id, nickname, ${col} AS stat_rating, ${winCol} AS stat_wins, ${lossCol} AS stat_losses
-         FROM players WHERE id <> $1 ORDER BY ${col} DESC LIMIT $2`,
-        [AI_PLAYER_ID, limit]
-      )).rows;
+      let sql;
+      let params = [AI_PLAYER_ID, limit];
+      if (mode === "money") {
+        sql = `SELECT id, nickname, money AS stat_rating, 0 AS stat_wins, 0 AS stat_losses,
+                      money AS stat_money, 0 AS stat_streak, 0 AS stat_best_streak
+               FROM players WHERE id <> $1 ORDER BY money DESC LIMIT $2`;
+      } else if (mode === "streak") {
+        sql = `SELECT id, nickname, ranked_rating AS stat_rating, ranked_wins AS stat_wins,
+                      ranked_losses AS stat_losses, 0 AS stat_money,
+                      ranked_streak AS stat_streak, ranked_best_streak AS stat_best_streak
+               FROM players WHERE id <> $1
+               ORDER BY ranked_best_streak DESC, ranked_rating DESC LIMIT $2`;
+      } else {
+        const isRanked = mode === "ranked";
+        const isSingle = mode === "single";
+        const col = isRanked ? "ranked_rating" : isSingle ? "single_rating" : "rating";
+        const winCol = isRanked ? "ranked_wins" : isSingle ? "single_wins" : "wins";
+        const lossCol = isRanked ? "ranked_losses" : isSingle ? "single_losses" : "losses";
+        sql = `SELECT id, nickname, ${col} AS stat_rating, ${winCol} AS stat_wins, ${lossCol} AS stat_losses,
+                      0 AS stat_money, ${isRanked ? "ranked_streak" : "0"} AS stat_streak,
+                      ${isRanked ? "ranked_best_streak" : "0"} AS stat_best_streak
+               FROM players WHERE id <> $1 ORDER BY ${col} DESC LIMIT $2`;
+      }
+      rows = (await dbPool.query(sql, params)).rows;
     } else {
       rows = [...playerCache.values()]
         .filter(p => p && p.id !== AI_PLAYER_ID)
         .map(p => {
-          const s = (p && (mode === "ranked" ? p.ranked : mode === "single" ? p.single : p.multi)) || { rating: 1000, wins: 0, losses: 0 };
-          return {
-            id: p.id, nickname: p.nickname,
-            stat_rating: s.rating, stat_wins: s.wins, stat_losses: s.losses
-          };
+          let s;
+          if (mode === "money") {
+            s = { rating: p.money, wins: 0, losses: 0, streak: 0, bestStreak: 0, money: p.money };
+          } else {
+            const rk = (mode === "ranked" || mode === "streak") ? p.ranked : mode === "single" ? p.single : p.multi;
+            const m = rk || { rating: 1000, wins: 0, losses: 0 };
+            s = {
+              rating: m.rating, wins: m.wins, losses: m.losses,
+              streak: mode === "ranked" || mode === "streak" ? (m.streak || 0) : 0,
+              bestStreak: mode === "ranked" || mode === "streak" ? (m.bestStreak || 0) : 0,
+              money: p.money
+            };
+          }
+          return { id: p.id, nickname: p.nickname, ...s };
         })
-        .sort((a, b) => (b.stat_rating || 1000) - (a.stat_rating || 1000))
-        .slice(0, limit);
+        .sort((a, b) => {
+          if (mode === "streak") return (b.bestStreak - a.bestStreak) || ((b.rating || 1000) - (a.rating || 1000));
+          const da = (mode === "money" ? a.money : a.rating) || 0;
+          const db = (mode === "money" ? b.money : b.rating) || 0;
+          return db - da;
+        })
+        .slice(0, limit)
+        .map(r => ({
+          id: r.id, nickname: r.nickname, stat_rating: r.rating, stat_wins: r.wins, stat_losses: r.losses,
+          stat_money: r.money, stat_streak: r.streak, stat_best_streak: r.bestStreak
+        }));
     }
     res.json(rows.map((r, i) => ({
       id: r.id, nickname: r.nickname, mode,
       ranking: r.stat_rating, wins: r.stat_wins, losses: r.stat_losses,
-      rank: i + 1, tier: calculateRank(r.stat_rating)
+      money: r.stat_money || 0,
+      streak: r.stat_streak || 0, bestStreak: r.stat_best_streak || 0,
+      rank: i + 1,
+      tier: (mode === "money" || mode === "streak") ? null : calculateRank(r.stat_rating)
     })));
   } catch (err) {
     console.error("리더보드 조회 오류:", err.message);
@@ -1460,8 +1513,11 @@ io.on("connection", (socket) => {
             && !DEFENSE_WORDS.has(w));
       } else {
         /* 사람에게 가장 유리한 수를 권한다 — AI가 가장 받아치기 어려운 수
-           (기존: AI의 최선의 수 = 사람에게 가장 불리한 수를 주던 문제 수정) */
-        candidates = getCandidates(room.currentWord, room.usedWords, WORD_INDEX);
+           (기존: AI의 최선의 수 = 사람에게 가장 불리한 수를 주던 문제 수정)
+           방어 단어는 따돌리기용 난해한 단어라 추천하지 않는다 */
+        const all = getCandidates(room.currentWord, room.usedWords, WORD_INDEX);
+        candidates = all.filter(w => !DEFENSE_WORDS.has(w));
+        if (candidates.length === 0) candidates = all;
       }
 
       if (candidates.length === 0) { socket.emit("game:hint", { ok: false, reason: "힌트를 찾을 수 없습니다." }); return; }

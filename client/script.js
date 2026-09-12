@@ -38,6 +38,13 @@ let shopInfo = null;
 let rankedQueued = false;
 let rankedMatchInfo = null;
 let rankedAutoLeave = null;
+let rankedStreak = 0;
+let rankedBestStreak = 0;
+let lastRankedStreak = 0;
+
+/* 실시간 랭킹 패널 상태 */
+let sideRankMode = "multi";
+const SIDE_RANK_LIMIT = 10;
 
 /* ---------------------------------------------------------
    모드별 DOM 요소 맵 (single / online / ranked)
@@ -456,6 +463,15 @@ function initSocket() {
     setText(["#accMultiRank"], mul.rank ? formatRank(mul.rank) : "");
     setText(["#accRankedRating"], rkd.rating);
     setText(["#accRankedRank"], rkd.rank ? formatRank(rkd.rank) : "");
+    rankedStreak = rkd.streak || 0;
+    rankedBestStreak = rkd.bestStreak || 0;
+    setText(["#accRankedStreak"], rankedStreak || 0);
+    setText(["#accRankedBestStreak"], rankedBestStreak > 0 ? `최대 ${rankedBestStreak}연승` : "최대 -");
+    if (currentMode === "ranked" && rankedStreak > lastRankedStreak && rankedStreak >= 2) {
+      showMessage(`🔥 ${rankedStreak}연승 달성!`, "win");
+    }
+    lastRankedStreak = rankedStreak;
+    renderRankedStreakChip();
     if (typeof data.money === "number") moneyBalance = data.money;
     moneyMultiplier = data.moneyMultiplier || 1;
     ratingBoostGames = data.ratingBoostGames || 0;
@@ -1441,6 +1457,7 @@ function resetRankedBoard() {
   $("#rankedGame")?.classList.add("hidden");
   $("#rankedLobby")?.classList.remove("hidden");
   updateRankedQueueUI();
+  renderRankedStreakChip();
 }
 
 /* 온라인 보드/UI를 초기 상태로 정리 */
@@ -1513,6 +1530,18 @@ function renderMoneyBar() {
 function renderAccountScoresStatic() {
   setText(["#accMoney"], moneyBalance.toLocaleString());
   setText(["#accTitle"], currentTitle || "없음");
+}
+
+/* 랭크 대기실 연승 칩 — 현재/최대 연승 표시 */
+function renderRankedStreakChip() {
+  const chip = $("#rankedStreakChip");
+  if (!chip) return;
+  const show = currentMode === "ranked" && rankedBestStreak > 0;
+  chip.classList.toggle("hidden", !show);
+  if (show) {
+    setText(["#rankedStreakNum"], rankedStreak);
+    setText(["#rankedBestStreakNum"], rankedBestStreak);
+  }
 }
 
 /* ---------------------------------------------------------
@@ -2152,6 +2181,70 @@ function bindLbToggles(box, btn, fetchFn) {
   });
 }
 
+/* ---------------------------------------------------------
+   실시간 랭킹 패널 — 멀티/랭크/돈/연승 탭, 상시 렌더
+--------------------------------------------------------- */
+function sideRankMarkup(rows, mode) {
+  if (!Array.isArray(rows) || rows.length === 0) return `<div class="side-rank-empty">기록이 없습니다.</div>`;
+  return rows.map(r => {
+    const me = String(r.nickname || "플레이어").replace(/\s+/g, "").toLowerCase() === String(myNickname || "").replace(/\s+/g, "").toLowerCase() && myNickname;
+    let val = (r.ranking || 0) + "점";
+    let sub = `${r.wins || 0}승 ${r.losses || 0}패`;
+    if (mode === "money") { val = Number(r.money || 0).toLocaleString() + "원"; sub = ""; }
+    else if (mode === "streak") { val = (r.bestStreak || 0) + "연승"; sub = `현재 ${r.streak || 0}`; }
+    const cls = (r.rank === 1 ? " top1" : r.rank <= 3 ? " top3" : "") + (me ? " lb-me" : "");
+    return `<div class="side-rank-row${cls}">
+      <span class="side-rank-num">${r.rank}</span>
+      <span class="side-rank-name" title="${escapeHtml(r.nickname || "플레이어")}">${escapeHtml(r.nickname || "플레이어")}</span>
+      <span class="side-rank-val">${escapeHtml(val)}</span>
+      ${sub ? `<span class="side-rank-sub">${escapeHtml(sub)}</span>` : ""}
+    </div>`;
+  }).join("");
+}
+
+async function loadSideRanking(mode = sideRankMode, silent = false) {
+  if (mode === "money") sideRankMode = "money";
+  else if (mode === "streak") sideRankMode = "streak";
+  else if (mode === "ranked") sideRankMode = "ranked";
+  else sideRankMode = "multi";
+  const body = $("#sideRankBody");
+  if (!body) return;
+  if (!silent) {
+    $all(".side-rank-tabs button").forEach(b => b.classList.toggle("active", b.dataset.sideMode === sideRankMode));
+    body.innerHTML = `<div class="side-rank-empty">불러오는 중...</div>`;
+  }
+  try {
+    const res = await fetch(`/api/leaderboard?limit=${SIDE_RANK_LIMIT}&mode=${sideRankMode}`);
+    const rows = await res.json();
+    if (!Array.isArray(rows)) throw new Error("bad payload");
+    body.innerHTML = sideRankMarkup(rows, sideRankMode);
+  } catch (err) {
+    body.innerHTML = `<div class="side-rank-empty">랭킹을 불러오지 못했습니다.</div>`;
+  }
+}
+
+function initSideRanking() {
+  $all(".side-rank-tabs button").forEach(btn => {
+    btn.addEventListener("click", () => loadSideRanking(btn.dataset.sideMode));
+  });
+  $("#sideRankClose")?.addEventListener("click", () => {
+    $("#sideRank").classList.add("closed");
+    $("#sideRankOpen").classList.remove("hidden");
+  });
+  $("#sideRankOpen")?.addEventListener("click", () => {
+    $("#sideRank").classList.remove("closed");
+    $("#sideRank").style.display = "flex";
+    $("#sideRankOpen").classList.add("hidden");
+    loadSideRanking(sideRankMode, true);
+  });
+  if (window.innerWidth < 1080) {
+    $("#sideRank").classList.add("closed");
+    $("#sideRankOpen").classList.remove("hidden");
+  }
+  loadSideRanking("multi");
+  setInterval(() => { if (!$("#sideRank").classList.contains("closed")) loadSideRanking(sideRankMode, true); }, 180000);
+}
+
 async function toggleLeaderboard() {
   const box = $("#leaderboard");
   const btn = $("#loadLb");
@@ -2207,6 +2300,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initSocket();
   initNicknameBar();
   updateStatsUI();
+  initSideRanking();
 
   /* 탭 전환 */
   $all(".tabs button").forEach(btn => {
@@ -2230,9 +2324,11 @@ document.addEventListener("DOMContentLoaded", () => {
         if (gameState && roomId && currentMode === "ranked") { /* in game */ }
         else { $("#rankedLobby")?.classList.remove("hidden"); $("#rankedGame")?.classList.add("hidden"); }
         updateRankedQueueUI();
+        renderRankedStreakChip();
       } else if (currentMode === "shop") {
         if (socket && socketConnected) socket.emit("shop:list");
       }
+      loadSideRanking(sideRankMode, true);
     });
   });
 

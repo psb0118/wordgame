@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=11">
+  <link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
   <main class="wrap">
@@ -183,6 +183,7 @@
           <b>승리 보상:</b>
           <span>5,000</span><span>10,000</span><span>25,000</span><span>50,000</span><span>100,000</span><span>500,000</span><span>1,000,000</span><span style="color:#fbbf24;font-weight:700;">5,000,000</span>
         </div>
+        <div id="rankedStreakChip" class="ranked-streak-chip hidden">🔥 연승 <b id="rankedStreakNum">0</b>연승 · 최대 <b id="rankedBestStreakNum">0</b></div>
       </div>
 
       <div id="rankedGame" class="hidden">
@@ -245,6 +246,24 @@
       </div>
     </section>
   </main>
+
+  <!-- 항상 표시되는 실시간 랭킹 패널 (우측 상단) -->
+  <aside id="sideRank" class="side-rank">
+    <div class="side-rank-head">
+      <span class="side-rank-title">🏆 실시간 랭킹</span>
+      <button id="sideRankClose" class="side-rank-close" title="랭킹 패널 접기">✕</button>
+    </div>
+    <div class="side-rank-tabs">
+      <button data-side-mode="multi" class="active">멀티</button>
+      <button data-side-mode="ranked">랭크</button>
+      <button data-side-mode="money">돈</button>
+      <button data-side-mode="streak">연승</button>
+    </div>
+    <div id="sideRankBody" class="side-rank-body"></div>
+    <div class="side-rank-foot">3분마다 자동 갱신</div>
+  </aside>
+
+  <button id="sideRankOpen" class="side-rank-open hidden">🏆 랭킹</button>
 
   <div id="bugModal" class="modal hidden">
     <div class="modal-box">
@@ -324,6 +343,7 @@
         <div class="acc-row"><span>싱글 점수</span><strong id="accSingleRating">-</strong><span id="accSingleRank" class="acc-rank"></span></div>
         <div class="acc-row"><span>멀티 점수</span><strong id="accMultiRating">-</strong><span id="accMultiRank" class="acc-rank"></span></div>
         <div class="acc-row"><span>랭크 점수</span><strong id="accRankedRating">-</strong><span id="accRankedRank" class="acc-rank"></span></div>
+        <div class="acc-row"><span>랭크 연승</span><strong id="accRankedStreak">-</strong><span id="accRankedBestStreak" class="acc-rank">최대 -</span></div>
         <div class="acc-row"><span>소지금</span><strong id="accMoney">0</strong></div>
         <div class="acc-row"><span>칭호</span><strong id="accTitle">없음</strong></div>
       </div>
@@ -384,6 +404,6 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="script.js?v=11"></script>
+  <script src="script.js?v=12"></script>
 </body>
 </html>
