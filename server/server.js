@@ -33,7 +33,7 @@ let MAX_PLAYERS = 10;
 let ONESHOT_FREE_TURNS = 1;
 let MISTAKES_PER_LIFE = 5;
 const AI_PLAYER_ID = "ai";
-const STARTING_SYLLABLES = ["가", "기", "나", "다", "마", "자", "시"];
+const STARTING_SYLLABLES = ["가", "기", "나", "다", "사", "마", "자", "시"];
 /* 싱글플레이 힌트 한 판(게임)당 사용 횟수 제한 */
 const HINTS_PER_GAME = 5;
 
@@ -800,13 +800,14 @@ function handleTurnTimeout(room, gameSessionId) {
   }
 
   if (heartLost && !player.eliminated) {
-    if (room.mode === "ai") {
-      io.to(room.id).emit("game:roundReset", { reason: "하트 1개를 잃었습니다. 새 라운드를 시작합니다.", mode: room.mode, roomId: room.id });
-      startNewGame(room, { preserveHearts: true });
-    } else {
-      const next = findNextAlivePlayer(room, player.playerIndex);
-      if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, gameSessionId); }
-    }
+    /* 미답 시 하트 1개 차감 후, 기존 단어(이전 음절)를 유지하지 않고
+       새 시작 음절로 라운드를 다시 시작한다 — 같은 음절에서 한방을 노리는 흐름 차단.
+       선공은 하트를 잃은 플레이어에게 돌아간다 */
+    io.to(room.id).emit("game:roundReset", {
+      reason: `응답하지 않아 하트 1개를 잃었습니다. 새 라운드를 시작합니다.`,
+      mode: room.mode, roomId: room.id
+    });
+    startNewGame(room, { preserveHearts: true, firstPlayer: player.playerIndex });
     return;
   }
 
@@ -963,11 +964,15 @@ function startNewGame(room, opts = {}) {
     depth: null, turn: room.history.length
   });
 
-  /* 첫 선공 랜덤 — AI 모드에서는 AI가 먼저 시작할 수도 있다 */
+  /* 첫 선공 랜덤 — AI 모드에서는 AI가 먼저 시작할 수도 있다.
+     opts.firstPlayer가 지정되면(하트 차감 후 복귀) 그 플레이어가 선공 */
   const eligibleFirst = room.players.filter(p => !p.eliminated && !p.waiting &&
     (room.mode === "ai" ? true : !p.isBot));
   if (eligibleFirst.length === 0) { room.started = false; return false; }
-  room.turnPlayerIndex = eligibleFirst[Math.floor(Math.random() * eligibleFirst.length)].playerIndex;
+  const forced = opts.firstPlayer != null
+    ? eligibleFirst.find(p => p.playerIndex === opts.firstPlayer)
+    : null;
+  room.turnPlayerIndex = (forced || eligibleFirst[Math.floor(Math.random() * eligibleFirst.length)]).playerIndex;
 
   io.to(room.id).emit("game:started", {
     ok: true, startWord: syllable,
@@ -1465,13 +1470,10 @@ io.on("connection", (socket) => {
             const next = findNextAlivePlayer(room, player.playerIndex);
             if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
           } else if (heartLost) {
-            if (room.mode === "ai") {
-              io.to(room.id).emit("game:roundReset", { reason: "하트 1개를 잃었습니다. 새 라운드를 시작합니다.", mode: room.mode, roomId: room.id });
-              startNewGame(room, { preserveHearts: true });
-            } else {
-              const next = findNextAlivePlayer(room, player.playerIndex);
-              if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
-            }
+            /* 실수 누적으로 하트를 잃어도 새 시작 음절로 라운드를 다시 시작한다
+               (기존 단어 유지로 같은 음절 한방을 노리는 흐름 차단) */
+            io.to(room.id).emit("game:roundReset", { reason: "하트 1개를 잃었습니다. 새 라운드를 시작합니다.", mode: room.mode, roomId: room.id });
+            startNewGame(room, { preserveHearts: true, firstPlayer: player.playerIndex });
           }
           /* 일반 실수(하트 손실 아님): 터닝 시간을 초기화하지 않고 이번 턴의 20초를 유지 */
         } else {
