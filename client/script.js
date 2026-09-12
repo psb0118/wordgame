@@ -434,7 +434,7 @@ function initSocket() {
     rankedMatchInfo = { opponent: data.opponent, opponentRating: data.opponentRating };
     gameState = data.state;
     roomId = data.roomId;
-    playerIndex = data.state.players?.find(p => p.socketId === socket.id)?.playerIndex ?? 0;
+    playerIndex = data.playerIndex ?? data.state.players?.find(p => p.socketId === socket.id || p.id === socket.id)?.playerIndex ?? 0;
     gameSessionId++;
     const tab = $(".tabs button[data-mode='ranked']");
     if (tab && currentMode !== "ranked") tab.click();
@@ -723,8 +723,10 @@ function initSocket() {
     gameState = data;
     renderGameState(gameState);
     const isMyTurn = data.turnPlayer === playerIndex;
-    if (isMyTurn && !wasMyTurn) {
-      focusInput();
+    if (isMyTurn) {
+      submitting = false;
+      updateInputState();
+      if (!wasMyTurn) focusInput();
     }
   });
 
@@ -760,9 +762,13 @@ function initSocket() {
         submitting = false;
         clearInput();
         updateInputState();
-      }
-      if (!isMyTurn()) {
-        focusInput();
+      } else {
+        /* 상대가 낸 단어 이후에 'game:state'가 늦게 오는 경우에도 내 턴이면 바로 입력 가능하도록 */
+        if (isMyTurn()) {
+          submitting = false;
+          updateInputState();
+          focusInput();
+        }
       }
     }
   });

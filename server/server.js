@@ -33,9 +33,7 @@ let MAX_PLAYERS = 10;
 let ONESHOT_FREE_TURNS = 1;
 let MISTAKES_PER_LIFE = 5;
 const AI_PLAYER_ID = "ai";
-const STARTING_SYLLABLES = [
-  "가", "나", "다", "마", "자", "기", "지", "아", "이"
-];
+const STARTING_SYLLABLES = ["가", "기", "나", "다", "마", "자", "시"];
 
 /* =========================================================
    관리자 설정 — 수치로 조정 가능한 모든 값
@@ -117,16 +115,7 @@ function loadAdminConfig() {
    데이터 로드
 ========================================================= */
 
-const { WORD_SET, ATTACK_DEPTH, WORD_INDEX, ROOT_WORDS, DEFENSE_WORDS } = loadData(DATA_DIR, ROOT_DIR);
-
-/* 루트 단어가 시작할 수 있는 음절 — 첫 수로 루트/희귀 루트 단어를 낼 수 있게
-   시작 음절 후보에 포함시킨다 (AI가 먼저 시작해도 루트 단어로 열 수 있음) */
-const ROOT_SYLLABLES = new Set();
-for (const w of ROOT_WORDS) {
-  const first = w.at(0);
-  if (first) ROOT_SYLLABLES.add(first);
-}
-console.log(`시작 음절 풀 확장: 루트 ${ROOT_SYLLABLES.size}음절 추가`);
+const { WORD_SET, ATTACK_DEPTH, WORD_INDEX, ROOT_WORDS, RARE_ROOT_WORDS, DEFENSE_WORDS } = loadData(DATA_DIR, ROOT_DIR);
 
 /* =========================================================
    데이터베이스 — PostgreSQL 또는 JSON 파일 폴백
@@ -538,11 +527,11 @@ function tryMatchRanked() {
     registerOnline(b.socketId, b.nickname);
 
     io.sockets.sockets.get(a.socketId).emit("ranked:matched", {
-      ok: true, roomId, opponent: b.nickname, opponentRating: b.rating,
+      ok: true, roomId, playerIndex: 0, opponent: b.nickname, opponentRating: b.rating,
       state: getPublicRoomState(room)
     });
     io.sockets.sockets.get(b.socketId).emit("ranked:matched", {
-      ok: true, roomId, opponent: a.nickname, opponentRating: a.rating,
+      ok: true, roomId, playerIndex: 1, opponent: a.nickname, opponentRating: a.rating,
       state: getPublicRoomState(room)
     });
     startNewGame(room);
@@ -887,12 +876,8 @@ function startNewGame(room, opts = {}) {
   room.winner = null;
   room.loser = null;
 
-  /* 시작 음절 — 이전 라운드와 같은 음절이 반복되지 않도록 회피
-     일반 시작 음절 + 루트 단어 시작 음절 (첫 수부터 루트/희귀 루트 사용 가능) */
-  let pool = [
-    ...STARTING_SYLLABLES,
-    ...ROOT_SYLLABLES
-  ];
+  /* 시작 음절 — 이전 라운드와 같은 음절이 반복되지 않도록 회피 */
+  let pool = STARTING_SYLLABLES;
   if (room.lastSyllable && pool.length > 1) {
     pool = pool.filter(s => s !== room.lastSyllable);
   }
@@ -1036,7 +1021,7 @@ function runAI(room, gameSessionId) {
   if (room.turnNumber === 0) {
     word = chooseAIStartWord(room.startSyllable || "", room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS);
   } else {
-    word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS);
+    word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS);
   }
 
   if (!word) {
@@ -1383,7 +1368,7 @@ io.on("connection", (socket) => {
             && !isOneShot(w, room.usedWords, WORD_INDEX)
             && !DEFENSE_WORDS.has(w));
       } else {
-        const aiPick = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS);
+        const aiPick = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS);
         candidates = aiPick ? [aiPick] : [];
       }
 

@@ -119,6 +119,7 @@ function loadData(dataDir, rootDir) {
   const ATTACK_DEPTH = Object.create(null);
   const WORD_INDEX = new Map();
   const ROOT_WORDS = new Set();
+  const RARE_ROOT_WORDS = new Set();
   const DEFENSE_WORDS = new Set();
 
   const wordFile = findExistingFile([
@@ -202,10 +203,10 @@ function loadData(dataDir, rootDir) {
       const wordsPart = trimmed.slice(colonIdx + 1);
       for (const w of wordsPart.split(/[,，\s]+/)) {
         const nw = normalizeWord(w);
-        if (nw) ROOT_WORDS.add(nw);
+        if (nw) RARE_ROOT_WORDS.add(nw);
       }
     }
-    console.log(`희귀 루트 단어 로딩 완료: ${ROOT_WORDS.size.toLocaleString()}개 (누적)`);
+    console.log(`희귀 루트 단어 로딩 완료: ${RARE_ROOT_WORDS.size.toLocaleString()}개`);
   }
 
   const defenseFile = findExistingFile([
@@ -253,7 +254,7 @@ function loadData(dataDir, rootDir) {
 
   console.log(`단어 인덱스 생성 완료: ${WORD_INDEX.size}개 시작 글자`);
 
-  return { WORD_SET, ATTACK_DEPTH, WORD_INDEX, ROOT_WORDS, DEFENSE_WORDS };
+  return { WORD_SET, ATTACK_DEPTH, WORD_INDEX, ROOT_WORDS, RARE_ROOT_WORDS, DEFENSE_WORDS };
 }
 
 /* =========================================================
@@ -407,22 +408,25 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
    AI — 최강 전략적 단어 선택
    절대 원칙 (우선순위):
    1. 즉시 승리(한방) → 무조건 사용
-   2. 공격 단어로 받아칠 수 있으면 무조건 공격 단어 (깊이 낮을수록 강함)
-   3. 값으로 끝나는 루트 단어(값표, 표준값, ~~값) → 상대가 받아치기 힘든 승리 루트
-   4. 공격 단어가 없으면 루트/희귀 루트 단어 사용
-   5. 그마저 없으면 일반(비방어) 단어 중 상대 선택지를 최소화
-   6. 모든 후보가 방어 단어일 때만 마지막 수단으로 사용
+   2. 값으로 끝나는 루트 단어(값표, 표준값, ~~값) → 상대가 받아치기 힘든 승리 루트
+   3. 희귀 루트 단어 → 상대가 대응하기 가장 어려운 승리 루트
+   4. 주요 루트 단어 → 받아치기 힘든 승리 루트
+   5. 공격 단어 (깊이 낮을수록 강함)
+   6. 일반(비방어) 단어 중 상대 선택지를 최소화
+   7. 모든 후보가 방어 단어일 때만 마지막 수단으로 사용
+   - 루트/희귀 루트 단어를 우선 사용하되 공격 단어는 그 다음 수단으로 쓴다
    - 방어 단어는 지지 않기 위해 평소엔 절대 쓰지 않는다
    - 상대에게 즉시 승리(한방)를 주는 단어는 회피
    - 상대가 이 단어를 받아친 뒤에도 AI가 이길 수 있는지 2수 먼저 내다본다
 ========================================================= */
 
-function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, turnNumber, DEFENSE_WORDS) {
+function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS) {
   const candidates = getCandidates(currentWord, usedWords, WORD_INDEX);
   if (!candidates.length) return null;
 
   const newUsed = new Set([...usedWords]);
   const defenseSet = DEFENSE_WORDS || new Set();
+  const rareRootSet = RARE_ROOT_WORDS || new Set();
 
   const EVAL_CAP = 80;
   const OPP_CAP = 12;
@@ -448,6 +452,7 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
       w, nextCount: next.length, depth,
       isAttack: Number.isFinite(depth),
       isRoot: !!(ROOT_WORDS && ROOT_WORDS.has(w)),
+      isRareRoot: !!rareRootSet.has(w),
       isDefense: !!defenseSet.has(w),
       isValue: w.endsWith("값"),
       lastSyl,
@@ -484,6 +489,7 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
       if (owNext.length === 0) { score -= 110; continue; }
       if (Number.isFinite(ATTACK_DEPTH[ow]) && ATTACK_DEPTH[ow] <= 2) score -= 45;
       if (ROOT_WORDS && ROOT_WORDS.has(ow)) score -= 25;
+      if (rareRootSet.has(ow)) score -= 30;
       if (ow.endsWith("값")) score -= 30;
       const ply = owNext.slice(0, OPP_PLY_CAP);
       for (const o2 of ply) {
@@ -509,29 +515,30 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   const wins = list.filter(i => i.nextCount === 0);
   if (wins.length) return pick(wins).w;
 
-  /* 2. 공격 단어 — 깊이 최저만 사용 */
+  /* 2. 값 루트 — ~~값/값표/표준값. 받아치기 어려운 강력한 수 */
+  const values = list.filter(i => i.isValue);
+  if (values.length) return bestFrom(values);
+
+  /* 3. 희귀 루트 단어 — 상대가 대응하기 가장 어려운 승리 루트 */
+  const rareRoots = list.filter(i => i.isRareRoot);
+  if (rareRoots.length) return bestFrom(rareRoots);
+
+  /* 4. 주요 루트 단어 — 받아치기 힘든 승리 루트 */
+  const roots = list.filter(i => i.isRoot && !i.isRareRoot);
+  if (roots.length) return bestFrom(roots);
+
+  /* 5. 공격 단어 — 깊이 최저만 사용 */
   const attacks = list.filter(i => i.isAttack);
   if (attacks.length) {
     const minDepth = Math.min(...attacks.map(i => i.depth));
     return bestFrom(attacks.filter(i => i.depth === minDepth));
   }
 
-  /* 3. 값 루트 */
-  const values = list.filter(i => i.isValue);
-  if (values.length) return bestFrom(values);
+/* 6. 일반(비방어) 단어 — 지지 않는 최선 */
+  const normals = list.filter(i => !i.isDefense);
+  if (normals.length) return bestFrom(normals);
 
-  /* 4. 루트 단어 (방어 회피: 루트가 있으면 무조건 루트만 사용) */
-  const roots = list.filter(i => i.isRoot);
-  if (roots.length) {
-    const chosen = bestFrom(roots);
-    if (chosen) return chosen;
-  }
-
-  /* 4-2. 비방어 단어 중 희귀 끝 음절 우선 (방어 회피 강화) */
-  const nonDefense = list.filter(i => !i.isDefense);
-  if (nonDefense.length) return bestFrom(nonDefense);
-
-  /* 5. 전부 방어 단어일 때만 최후 수단 */
+  /* 7. 전부 방어 단어일 때만 최후 수단 */
   return bestFrom(list);
 }
 
