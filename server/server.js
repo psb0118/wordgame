@@ -609,6 +609,12 @@ function getPlayerBySocket(room, socketId) {
   return room.players.find(p => p.socketId === socketId) || null;
 }
 
+/* 플레이어가 장착 중인 칭호 — 저장된 계정 데이터에서 조회 */
+function playerTitle(player) {
+  if (!player || player.isBot) return "";
+  return (playerCache.get(player.id)?.currentTitle) || "";
+}
+
 function getPlayerByIndex(room, index) {
   return room.players.find(p => p.playerIndex === index) || null;
 }
@@ -660,8 +666,18 @@ function getPublicRoomState(room) {
       isBot: p.isBot, hearts: p.hearts, alive: p.alive,
       connected: p.connected, eliminated: p.eliminated,
       mistakes: p.mistakes || 0,
-      waiting: p.waiting || false
+      waiting: p.waiting || false,
+      title: playerTitle(p)
     })),
+    rankedRatings: (() => {
+      const o = {};
+      for (const p of room.players) {
+        if (p.isBot) continue;
+        const d = playerCache.get(p.id);
+        if (d && d.ranked && typeof d.ranked.rating === "number") o[p.playerIndex] = d.ranked.rating;
+      }
+      return o;
+    })(),
     playerCount: room.players.filter(p => !p.isBot && !p.waiting).length,
     maxPlayers: MAX_PLAYERS,
     maxHearts: MAX_HEARTS,
@@ -1119,14 +1135,17 @@ app.get("/api/health", (req, res) => {
 
 app.get("/api/leaderboard", async (req, res) => {
   try {
-    const mode = req.query.mode === "ranked" ? "ranked" : req.query.mode === "ai" ? "multi" : "multi";
+    const mode = req.query.mode === "ranked" ? "ranked"
+      : (req.query.mode === "single" || req.query.mode === "ai") ? "single"
+      : "multi";
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit || "10"), 10) || 10));
     let rows = [];
     if (dbMode === "pg") {
       const isRanked = mode === "ranked";
-      const col = isRanked ? "ranked_rating" : "rating";
-      const winCol = isRanked ? "ranked_wins" : "wins";
-      const lossCol = isRanked ? "ranked_losses" : "losses";
+      const isSingle = mode === "single";
+      const col = isRanked ? "ranked_rating" : isSingle ? "single_rating" : "rating";
+      const winCol = isRanked ? "ranked_wins" : isSingle ? "single_wins" : "wins";
+      const lossCol = isRanked ? "ranked_losses" : isSingle ? "single_losses" : "losses";
       rows = (await dbPool.query(
         `SELECT id, nickname, ${col} AS stat_rating, ${winCol} AS stat_wins, ${lossCol} AS stat_losses
          FROM players WHERE id <> $1 ORDER BY ${col} DESC LIMIT $2`,
@@ -1136,7 +1155,7 @@ app.get("/api/leaderboard", async (req, res) => {
       rows = [...playerCache.values()]
         .filter(p => p && p.id !== AI_PLAYER_ID)
         .map(p => {
-          const s = (p && (mode === "ranked" ? p.ranked : p.multi)) || { rating: 1000, wins: 0, losses: 0 };
+          const s = (p && (mode === "ranked" ? p.ranked : mode === "single" ? p.single : p.multi)) || { rating: 1000, wins: 0, losses: 0 };
           return {
             id: p.id, nickname: p.nickname,
             stat_rating: s.rating, stat_wins: s.wins, stat_losses: s.losses
@@ -1817,7 +1836,7 @@ io.on("connection", (socket) => {
         return;
       }
       const nickname = String(data?.nickname ?? "").trim();
-      const mode = data?.mode === "ranked" ? "ranked" : data?.mode === "single" ? "multi" : "multi";
+      const mode = data?.mode === "ranked" ? "ranked" : data?.mode === "single" ? "single" : "multi";
       if (!nickname) {
         socket.emit("admin:statsUpdated", { ok: false, reason: "닉네임을 입력해주세요." });
         return;

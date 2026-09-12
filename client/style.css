@@ -1913,6 +1913,69 @@ button:active:not(:disabled) {
 }
 .fx-cash { animation: cash-flash 0.6s ease-out; }
 
+/* 단어 등장 팝 애니메이션 — "딱" 단어 나오는 느낌 */
+.last-char-box.fx-word-pop .last-char,
+.last-char-box.fx-word-pop .last-hint {
+  animation: wordPop 0.55s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes wordPop {
+  0% { transform: scale(0.4); opacity: 0; }
+  55% { transform: scale(1.18); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.history-item.latest {
+  animation: wordSlam 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes wordSlam {
+  0% { transform: translateX(-14px); opacity: 0; }
+  60% { transform: translateX(3px); opacity: 1; }
+  100% { transform: translateX(0); opacity: 1; }
+}
+
+/* 플레이어 이름 앞 칭호 — [칭호](이름) */
+.player-title {
+  color: #fbbf24;
+  font-weight: 700;
+}
+.player-item .player-title {
+  margin-right: 2px;
+}
+
+/* 칭호 획득/변경 팝 */
+.title-chip.fx-title-pop {
+  animation: titlePop 0.9s ease;
+}
+@keyframes titlePop {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+  40% { transform: scale(1.25); box-shadow: 0 0 16px 4px rgba(251, 191, 36, 0.6); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+}
+
+/* 계정 패널 — 안내 문구 */
+.acc-pw-help {
+  font-size: 12px;
+  color: #9ca3af;
+  margin: 6px 0;
+  line-height: 1.5;
+}
+
+/* 관리자 패널 — 두음법칙/연결 안내 */
+.admin-dueum {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.dueum-chip {
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  color: #fbbf24;
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
 /* 모달 공통 (버그 제보) */
 .modal {
   position: fixed;

@@ -36,6 +36,7 @@ let currentTitle = "";
 let shopInfo = null;
 let rankedQueued = false;
 let rankedMatchInfo = null;
+let rankedAutoLeave = null;
 
 /* ---------------------------------------------------------
    모드별 DOM 요소 맵 (single / online / ranked)
@@ -239,6 +240,7 @@ const DUEUM = {
   "렬": ["렬", "열"], "령": ["령", "영"],
   "러": ["러", "너"], "럭": ["럭", "넉"], "런": ["런", "넌"],
   "럴": ["럴", "널"], "럽": ["럽", "넙"],
+  "레": ["레", "네", "에"],
   "로": ["로", "노"], "록": ["록", "녹"], "론": ["론", "논"],
   "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놑"],
   "롯": ["롯", "놃"], "롱": ["롱", "농"], "뢰": ["뢰", "뇌"],
@@ -430,6 +432,8 @@ function initSocket() {
   /* -- 랭크 매칭 -------------------------------------- */
   socket.on("ranked:matched", (data) => {
     if (!data || !data.ok || !data.state) return;
+    clearTimeout(rankedAutoLeave);
+    rankedAutoLeave = null;
     rankedQueued = false;
     rankedMatchInfo = { opponent: data.opponent, opponentRating: data.opponentRating };
     gameState = data.state;
@@ -490,7 +494,12 @@ function initSocket() {
     if (data.ok) {
       if (typeof data.money === "number") moneyBalance = data.money;
       if (Array.isArray(data.titles)) ownedTitles = data.titles;
-      if (typeof data.currentTitle === "string") currentTitle = data.currentTitle;
+      if (typeof data.currentTitle === "string" && data.currentTitle !== currentTitle) {
+        currentTitle = data.currentTitle;
+        renderMoneyBar();
+        const chip = $("#titleChip");
+        if (chip) applyFx(chip, "fx-title-pop", 900);
+      }
       if (typeof data.ratingBoostGames === "number") ratingBoostGames = data.ratingBoostGames;
       if (typeof data.moneyMultiplier === "number") moneyMultiplier = data.moneyMultiplier;
       renderMoneyBar();
@@ -735,6 +744,7 @@ function initSocket() {
     gameSessionId++;
     localUsedWords.clear();
     clearInput();
+    lastPopChar = null;
     renderGameState(gameState);
     showMessage("게임이 시작되었습니다!", "success");
     socket.emit("player:getRanking");
@@ -756,7 +766,10 @@ function initSocket() {
         localUsedWords.add(data.word);
       }
       applyFx($(".last-char-box"), "fx-flash-ok");
-      showMessage(`${data.nickname}: ${data.word}${data.depth != null ? " [깊이 " + data.depth + "]" : ""}`, "success");
+      const plName = (gameState?.players?.find(p => p.playerIndex === data.player)?.title)
+        ? `[${gameState.players.find(p => p.playerIndex === data.player).title}]${data.nickname}`
+        : data.nickname;
+      showMessage(`${data.nickname ? plName : "플레이어"}: ${data.word}${data.depth != null ? " [깊이 " + data.depth + "]" : ""}`, "success");
       const isMyWord = data.player === playerIndex;
       if (isMyWord) {
         submitting = false;
@@ -873,6 +886,15 @@ function initSocket() {
       const wrap = $("#onlineRestartWrap");
       if (wrap) wrap.classList.remove("hidden");
     }
+
+    /* 랭크 게임은 끝나면 자동으로 매칭 대기실로 복귀 */
+    if (currentMode === "ranked") {
+      clearTimeout(rankedAutoLeave);
+      rankedAutoLeave = setTimeout(() => {
+        rankedAutoLeave = null;
+        if (gameState && gameState.finished) leaveRoom();
+      }, 4000);
+    }
   });
 
 }
@@ -890,6 +912,10 @@ function renderGameState(state) {
 
   const lastChar = state.currentWord ? state.currentWord.at(-1) : null;
   setText([modeEl("last") || "#last"], lastChar || "-");
+  if (lastChar && lastChar !== lastPopChar) {
+    lastPopChar = lastChar;
+    applyFx(document.querySelector(".last-char-box"), "fx-word-pop", 600);
+  }
 
   const allowed = lastChar ? allowedFirstChars(lastChar) : [];
   const hintEl = modeGet("hint") || (isSingle ? $("#lastHint") : $("#onlineLastHint"));
@@ -987,7 +1013,8 @@ function renderPlayers(state) {
           ratingTag = ` <span class="rated-chip">${formatRank(rr)} · ${r}점</span>`;
         }
       }
-      row.innerHTML = `${escapeHtml(String(p.nickname || "플레이어"))} — ${p.waiting ? "-" : hearts}${mistakesText} — ${status}${ratingTag}`;
+      const titleHtml = p.title ? `<span class="player-title">[${escapeHtml(String(p.title))}]</span> ` : "";
+      row.innerHTML = `${titleHtml}${escapeHtml(String(p.nickname || "플레이어"))} — ${p.waiting ? "-" : hearts}${mistakesText} — ${status}${ratingTag}`;
 
       if (canKick && showKick && !p.isBot && p.playerIndex !== playerIndex) {
         const kick = document.createElement("button");
@@ -1009,6 +1036,7 @@ function renderPlayers(state) {
 }
 
 let lastHearts = null;
+let lastPopChar = null;
 
 function renderHearts(hearts) {
   const v = Math.max(0, Number(hearts) || 0);
@@ -1052,6 +1080,10 @@ function renderHistory(state) {
   if (!container) return;
 
   container.innerHTML = "";
+  const titleHtmlFor = (idx) => {
+    const pl = state?.players?.find(p => p.playerIndex === idx);
+    return pl?.title ? `<span class="player-title">[${escapeHtml(String(pl.title))}]</span> ` : "";
+  };
   for (const item of history) {
     const row = document.createElement("div");
     row.className = "history-item";
@@ -1062,7 +1094,7 @@ function renderHistory(state) {
     if (item.turn === 0) {
       row.textContent = `시작: ${item.word}${depth}`;
     } else {
-      row.textContent = `${item.turn}. ${item.nickname || "플레이어"}: ${item.word}${depth}`;
+      row.innerHTML = `${item.turn}. ${titleHtmlFor(item.player)}${escapeHtml(item.nickname || "플레이어")}: ${escapeHtml(item.word)}${depth}`;
     }
     container.appendChild(row);
   }
@@ -1276,6 +1308,8 @@ function submitOnlineWord() { return submitWord("online"); }
 function submitRankedWord() { return submitWord("ranked"); }
 
 function leaveRoom() {
+  clearTimeout(rankedAutoLeave);
+  rankedAutoLeave = null;
   if (!socket || !socketConnected) return;
   socket.emit("room:leave");
   roomId = null;
@@ -1495,9 +1529,29 @@ function renderAdminBody(data) {
 
   const configCard = isSuper ? `
     <div class="admin-card">
-      <h4>수치 조정 (게임 전체 설정 — 최고 관리자 전용)</h4>
+      <h4>게임 규칙 설정 (게임 전체에 적용 — 최고 관리자 전용)</h4>
+      <div class="admin-info">아래 값들을 바꾸고 [적용]을 누르면 다음 게임부터 반영됩니다. 값은 1 이상이어야 합니다.</div>
       <input type="password" id="adminPw" placeholder="관리자 비밀번호 (변경 시 필요)" autocomplete="off" data-pw-toggle>
       ${rows}
+    </div>
+  ` : "";
+
+  /* 두음법칙 연결 안내 — 관리자가 왜 특정 단어가 연결되는지 이해할 수 있게 */
+  const dueumCard = isSuper ? `
+    <div class="admin-card">
+      <h4>두음법칙 (연결 규칙) 안내</h4>
+      <div class="admin-info">기본 규칙은 앞 단어의 끝 글자와 같은 글자로 시작해야 합니다.
+        여기에 두음법칙 예외가 적용되어, 끝이 <b>레</b>면 <b>레·에·네</b> 로 시작하는 단어도 이어집니다.</div>
+      <div class="admin-dueum">
+        <span class="dueum-chip">래 → 내</span><span class="dueum-chip">레 → 에·네</span>
+        <span class="dueum-chip">례 → 예</span><span class="dueum-chip">랑 → 낭</span>
+        <span class="dueum-chip">럭 → 넉</span><span class="dueum-chip">리 → 이</span>
+        <span class="dueum-chip">려 → 여</span><span class="dueum-chip">로 → 노</span>
+        <span class="dueum-chip">루 → 누</span><span class="dueum-chip">니 → 이</span>
+        <span class="dueum-chip">녀 → 여</span><span class="dueum-chip">뇨 → 요</span>
+      </div>
+      <div class="admin-info">이 예외가 없으면 '에'나 '예'로 시작하는 단어가 끝 글자 때문에 거부될 수 있습니다.<br>
+        단어가 있는데 안 먹힌다고 제보가 오면 먼저 마지막 글자와 두음법칙 여부를 확인해보세요.</div>
     </div>
   ` : "";
 
@@ -1595,6 +1649,7 @@ function renderAdminBody(data) {
     ${subCard}
     ${resetCard}
     ${configCard}
+    ${dueumCard}
     ${statsCard}
     ${moneyCard}
     ${bugCard}
@@ -1786,7 +1841,12 @@ function renderAccountInfo(nick) {
   const box = $("#accChangeBox");
   if (box) box.classList.toggle("hidden", myAdminRole === "none");
 
-  /* 비밀번호 저장 체크박스 — 일반 사용자는 자동 저장, 관리자는 켜야만 저장 */
+  /* 비밀번호 저장 — 일반 사용자는 항상 자동 저장(선택 화면 없음), 관리자만 체크박스 표시 */
+  const creWrap = $(".acc-save-creds");
+  if (creWrap) {
+    const isAdmin = myAdminRole !== "none";
+    creWrap.classList.toggle("hidden", !isAdmin);
+  }
   const cre = $("#accSaveCreds");
   if (cre) {
     const stored = localStorage.getItem("kkSaveAdmin");
@@ -1797,9 +1857,9 @@ function renderAccountInfo(nick) {
   const lbl = $("#accSaveCredsLabel");
   if (lbl) {
     if (myAdminRole !== "none") {
-      lbl.textContent = myNickname ? `'${myNickname}' 로그인 정보 저장 (체크 시 자동 로그인)` : "비밀번호 저장 (체크 시 자동 로그인)";
+      lbl.textContent = myNickname ? `'${myNickname}' 관리자 로그인 정보 저장 (체크 시 자동 로그인)` : "관리자 비밀번호 저장 (체크 시 자동 로그인)";
     } else {
-      lbl.textContent = "비밀번호 자동 저장 (입력 시 다시 물어보지 않음)";
+      lbl.textContent = "일반 사용자는 비밀번호가 항상 자동 저장됩니다.";
     }
   }
 }
