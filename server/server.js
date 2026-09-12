@@ -1459,24 +1459,50 @@ io.on("connection", (socket) => {
             && !isOneShot(w, room.usedWords, WORD_INDEX)
             && !DEFENSE_WORDS.has(w));
       } else {
-        const aiPick = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS);
-        candidates = aiPick ? [aiPick] : [];
+        /* 사람에게 가장 유리한 수를 권한다 — AI가 가장 받아치기 어려운 수
+           (기존: AI의 최선의 수 = 사람에게 가장 불리한 수를 주던 문제 수정) */
+        candidates = getCandidates(room.currentWord, room.usedWords, WORD_INDEX);
       }
 
       if (candidates.length === 0) { socket.emit("game:hint", { ok: false, reason: "힌트를 찾을 수 없습니다." }); return; }
 
-      /* 첫 턴도 '최선의 수' — 상대 선택지를 가장 적게 주는 단어를 권한다 */
+      /* '최선의 수' — 상대 선택지를 가장 적게 주는 단어를 권한다.
+         후보가 많으면 샘플링해 검색 비용을 한정한다 */
+      const HINT_SAMPLE = 150;
+      let sample = candidates;
+      if (candidates.length > HINT_SAMPLE) {
+        sample = [...candidates];
+        for (let i = sample.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [sample[i], sample[j]] = [sample[j], sample[i]];
+        }
+        sample = sample.slice(0, HINT_SAMPLE);
+      }
+
       let word;
       if (room.turnNumber === 0) {
-        let best = candidates[0];
+        let best = sample[0];
         let bestCount = Infinity;
-        for (const c of candidates) {
+        for (const c of sample) {
           const n = getCandidates(c, room.usedWords, WORD_INDEX).length;
           if (n < bestCount) { bestCount = n; best = c; }
         }
         word = best;
       } else {
-        word = candidates[0];
+        /* 1순위: 즉시 승리(한방) — AI가 응답 불가 */
+        const oneshots = sample.filter(w => isOneShot(w, room.usedWords, WORD_INDEX));
+        if (oneshots.length > 0) {
+          word = oneshots[0];
+        } else {
+          /* 2순위: AI 응답 선택지를 가장 적게 주는 수 */
+          let best = sample[0];
+          let bestCount = Infinity;
+          for (const c of sample) {
+            const n = getCandidates(c, room.usedWords, WORD_INDEX).length;
+            if (n < bestCount) { bestCount = n; best = c; }
+          }
+          word = best;
+        }
       }
       room.hintsUsed = (room.hintsUsed || 0) + 1;
       socket.emit("game:hint", { ok: true, word, hintsUsed: room.hintsUsed, hintsLeft: HINTS_PER_GAME - room.hintsUsed, mode: room.mode });

@@ -23,7 +23,7 @@ const DUEUM = {
   "렬": ["렬", "열"], "령": ["령", "영"],
   "력": ["력", "역"], "역": ["역", "력"],
   "러": ["러", "너"], "럭": ["럭", "넉"], "런": ["런", "넌"],
-  "럴": ["럴", "널"], "럽": ["럽", "넙"],
+"럴": ["럴", "널"], "럽": ["럽", "넙"],
   "레": ["레", "네", "에"],
   "로": ["로", "노"], "록": ["록", "녹"], "론": ["론", "논"],
   "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놑"],
@@ -425,19 +425,64 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
 }
 
 /* =========================================================
+   강제 승리(유도) 탐색 — 뒤에 가능한 루트 단어가 적은 끝밭침으로
+   상대를 몰아 넣는 "끝물" 승리 라인을 찾는다
+   - isWinningMove : 이 단어를 지금 두면 내가 확정 승리인가
+   - canForceWin   : 지금 이 말에서 해당 차례가 확정 승리를 강제할 수 있는가
+   - 가지가 너무 넓으면(null) "증명 불가"로 판정해 빠르게 포기
+   - 공유 used Set을 add/delete로 재활용해 검색 속도를 확보
+========================================================= */
+
+const WIN_NODE_CAP = 12000;   /* 탐색 노드 예산 */
+const WIN_MAX_DEPTH = 18;     /* 최대 수심(플라이) */
+const WIN_BRANCH = 64;        /* 한 위치에서 고려할 최대 가지 수 */
+
+function canForceWin(word, usedSet, depth, budget, WORD_INDEX) {
+  if (depth > WIN_MAX_DEPTH) return null;
+  if (--budget.nodes < 0) return null;
+  usedSet.add(word);
+  const moves = getCandidates(word, usedSet, WORD_INDEX);
+  if (moves.length === 0) { usedSet.delete(word); return false; }
+  if (moves.length > WIN_BRANCH) { usedSet.delete(word); return null; }
+  for (const m of moves) {
+    const r = isWinningMove(m, usedSet, depth + 1, budget, WORD_INDEX);
+    if (r === true) { usedSet.delete(word); return true; }
+    if (r === null) { usedSet.delete(word); return null; }
+  }
+  usedSet.delete(word);
+  return false;
+}
+
+function isWinningMove(m, usedSet, depth, budget, WORD_INDEX) {
+  usedSet.add(m);
+  const opp = getCandidates(m, usedSet, WORD_INDEX);
+  if (opp.length === 0) { usedSet.delete(m); return true; }
+  if (opp.length > WIN_BRANCH) { usedSet.delete(m); return null; }
+  for (const o of opp) {
+    const r = canForceWin(o, usedSet, depth + 1, budget, WORD_INDEX);
+    if (r === true) { usedSet.delete(m); return false; } /* 상대가 확정 승리 → 이 수는 승리 수 아님 */
+    if (r === null) { usedSet.delete(m); return null; }
+  }
+  usedSet.delete(m);
+  return true;
+}
+
+/* =========================================================
    AI — 최강 전략적 단어 선택
    절대 원칙 (우선순위):
    1. 즉시 승리(한방) → 무조건 사용
-   2. 값으로 끝나는 루트 단어(값표, 표준값, ~~값) → 상대가 받아치기 힘든 승리 루트
-   3. 희귀 루트 단어 → 상대가 대응하기 가장 어려운 승리 루트
-   4. 주요 루트 단어 → 받아치기 힘든 승리 루트
-   5. 공격 단어 (깊이 낮을수록 강함)
-   6. 일반(비방어) 단어 중 상대 선택지를 최소화
-   7. 모든 후보가 방어 단어일 때만 마지막 수단으로 사용
+   2. 강제 승리(유도) 라인 — 뒤에 가능한 루트 단어가 적은 끝밭침으로 몰고 가
+      확정 승리를 증명할 수 있으면 그 수를 우선 사용 (꾼·늬 같은 짧은 말밭)
+   3. 값으로 끝나는 루트 단어(값표, 표준값, ~~값) → 상대가 받아치기 힘든 승리 루트
+   4. 희귀 루트 단어 → 상대가 대응하기 가장 어려운 승리 루트
+   5. 주요 루트 단어 → 받아치기 힘든 승리 루트
+   6. 공격 단어 (깊이 낮을수록 강함)
+   7. 일반(비방어) 단어 중 상대 선택지를 최소화
+   8. 모든 후보가 방어 단어일 때만 마지막 수단으로 사용
    - 루트/희귀 루트 단어를 우선 사용하되 공격 단어는 그 다음 수단으로 쓴다
    - 방어 단어는 지지 않기 위해 평소엔 절대 쓰지 않는다
    - 상대에게 즉시 승리(한방)를 주는 단어는 회피
-   - 상대가 이 단어를 받아친 뒤에도 AI가 이길 수 있는지 2수 먼저 내다본다
+   - 상대가 이 단어를 받아친 뒤에도 AI가 이길 수 있는지 여러 수 먼저 내다본다
 ========================================================= */
 
 function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS) {
@@ -491,8 +536,11 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     let score = 0;
     if (info.isValue) score += 90;
     if (info.isRoot) score += 35;
-    if (info.rarityCount <= 5) score += 20;
-    else if (info.rarityCount <= 15) score += 10;
+    /* 유도 보너스 — 끝밭침 뒤에 남은 단어가 적을수록 상대를 좁은 골목으로 몰아넣는다
+       (꾼·늬처럼 남은 단어 1~2개뿐인 끝밭침이면 사실상 확정 승리 도미노) */
+    if (info.rarityCount <= 2) score += 60;
+    else if (info.rarityCount <= 5) score += 38;
+    else if (info.rarityCount <= 15) score += 18;
 
     score -= Math.min(info.nextCount, 15) * 2;
     const opp = getCandidates(info.w, newUsed, WORD_INDEX, OPP_CAP + 1);
@@ -502,6 +550,8 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
       owUsed.add(info.w);
       const owNext = getCandidates(ow, owUsed, WORD_INDEX, 16);
       if (owNext.length === 0) { score -= 110; continue; }
+      /* 상대 응수가 나를 좁은 골목으로 몰아넣는 구조(뒤에 1~3개뿐)면 위험 */
+      if (owNext.length <= 3) { score -= 35; continue; }
       if (Number.isFinite(ATTACK_DEPTH[ow]) && ATTACK_DEPTH[ow] <= 2) score -= 45;
       if (ROOT_WORDS && ROOT_WORDS.has(ow)) score -= 25;
       if (rareRootSet.has(ow)) score -= 30;
@@ -530,30 +580,46 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   const wins = list.filter(i => i.nextCount === 0);
   if (wins.length) return pick(wins).w;
 
-  /* 2. 값 루트 — ~~값/값표/표준값. 받아치기 어려운 강력한 수 */
+  /* 2. 강제 승리(유도) 라인 — 뒤에 가능한 루트 단어가 적은 끝밭침(꾼·늬 등)으로
+        상대를 몰아 넣어 확정 승리까지 끌고 가는 수가 있으면 무조건 그 수를 둔다
+        (증명 불가한 넓은 지점은 빠르게 포기하고 기존 전략으로 내려감.
+         nextCount가 16 Cap으로 계산되므로 리스트가 너무 크면 스킵) */
+  if (list.length <= 160) {
+    const winUsed = new Set(usedWords);
+    const budget = { nodes: WIN_NODE_CAP };
+    for (const item of list) {
+      const oppAll = getCandidates(item.w, winUsed, WORD_INDEX, WIN_BRANCH + 1);
+      if (oppAll.length > WIN_BRANCH) continue; /* 상대 응수가 넓어 증명 불가 */
+      const r = isWinningMove(item.w, winUsed, 0, budget, WORD_INDEX);
+      if (r === true) return item.w;
+      if (budget.nodes <= 0) break;
+    }
+  }
+
+  /* 3. 값 루트 — ~~값/값표/표준값. 받아치기 어려운 강력한 수 */
   const values = list.filter(i => i.isValue);
   if (values.length) return bestFrom(values);
 
-  /* 3. 희귀 루트 단어 — 상대가 대응하기 가장 어려운 승리 루트 */
+  /* 4. 희귀 루트 단어 — 상대가 대응하기 가장 어려운 승리 루트 */
   const rareRoots = list.filter(i => i.isRareRoot);
   if (rareRoots.length) return bestFrom(rareRoots);
 
-  /* 4. 주요 루트 단어 — 받아치기 힘든 승리 루트 */
+  /* 5. 주요 루트 단어 — 받아치기 힘든 승리 루트 */
   const roots = list.filter(i => i.isRoot && !i.isRareRoot);
   if (roots.length) return bestFrom(roots);
 
-  /* 5. 공격 단어 — 깊이 최저만 사용 */
+  /* 6. 공격 단어 — 깊이 최저만 사용 */
   const attacks = list.filter(i => i.isAttack);
   if (attacks.length) {
     const minDepth = Math.min(...attacks.map(i => i.depth));
     return bestFrom(attacks.filter(i => i.depth === minDepth));
   }
 
-/* 6. 일반(비방어) 단어 — 지지 않는 최선 */
+  /* 7. 일반(비방어) 단어 — 지지 않는 최선 */
   const normals = list.filter(i => !i.isDefense);
   if (normals.length) return bestFrom(normals);
 
-  /* 7. 전부 방어 단어일 때만 최후 수단 */
+  /* 8. 전부 방어 단어일 때만 최후 수단 */
   return bestFrom(list);
 }
 
