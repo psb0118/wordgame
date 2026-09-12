@@ -117,38 +117,6 @@ function loadAdminConfig() {
 
 const { WORD_SET, ATTACK_DEPTH, WORD_INDEX, ROOT_WORDS, RARE_ROOT_WORDS, DEFENSE_WORDS } = loadData(DATA_DIR, ROOT_DIR);
 
-/* 루트 단어로 열 수 있는 시작 음절 (공격/한방/방어 단어 제외, 희귀 루트 포함).
-   AI가 첫 수를 잡았을 때 루트 단어로 강하게 열도록 사용한다 */
-const ROOT_START_SYLLABLES = (() => {
-  const deadLast = new Set();
-  const lastChars = new Set();
-  for (const w of ROOT_WORDS) lastChars.add(w.at(-1));
-  for (const w of RARE_ROOT_WORDS) lastChars.add(w.at(-1));
-  for (const c of lastChars) {
-    const dead = allowedFirstChars(c).every(ch => {
-      const b = WORD_INDEX.get(ch);
-      return !b || b.length === 0;
-    });
-    if (dead) deadLast.add(c);
-  }
-  const chars = new Set();
-  for (const w of ROOT_WORDS) {
-    if (w.length <= 1) continue;
-    if (deadLast.has(w.at(-1))) continue;
-    if (Number.isFinite(ATTACK_DEPTH[w])) continue;
-    if (DEFENSE_WORDS.has(w)) continue;
-    chars.add(w[0]);
-  }
-  for (const w of RARE_ROOT_WORDS) {
-    if (w.length <= 1) continue;
-    if (deadLast.has(w.at(-1))) continue;
-    if (Number.isFinite(ATTACK_DEPTH[w])) continue;
-    if (DEFENSE_WORDS.has(w)) continue;
-    chars.add(w[0]);
-  }
-  return [...chars];
-})();
-
 /* =========================================================
    데이터베이스 — PostgreSQL 또는 JSON 파일 폴백
 ========================================================= */
@@ -924,23 +892,12 @@ function startNewGame(room, opts = {}) {
   room.winner = null;
   room.loser = null;
 
-  /* 첫 선공 랜덤 — AI 모드에서는 AI가 먼저 시작할 수도 있다 */
-  const eligibleFirst = room.players.filter(p => !p.eliminated && !p.waiting &&
-    (room.mode === "ai" ? true : !p.isBot));
-  if (eligibleFirst.length === 0) { room.started = false; return false; }
-  const firstPlayer = eligibleFirst[Math.floor(Math.random() * eligibleFirst.length)];
-
   /* 시작 음절 — 이전 라운드와 같은 음절이 반복되지 않도록 회피.
-     AI 모드에서 AI가 첫 수를 잡으면 루트 단어로 열 수 있는 음절을 우선 사용한다 */
-  let pool = (room.mode === "ai" && firstPlayer.isBot && ROOT_START_SYLLABLES.length)
-    ? ROOT_START_SYLLABLES : STARTING_SYLLABLES;
+     항상 정해진 시작 음절(가/기/나/다/마/자/시)만 사용한다 */
+  let pool = STARTING_SYLLABLES;
   if (room.lastSyllable && pool.length > 1) {
     pool = pool.filter(s => s !== room.lastSyllable);
   }
-  if (pool.length === 0) {
-    pool = STARTING_SYLLABLES.filter(s => s !== room.lastSyllable);
-  }
-  if (pool.length === 0) pool = STARTING_SYLLABLES;
   const syllable = pool[Math.floor(Math.random() * pool.length)];
   room.lastSyllable = syllable;
   room.startSyllable = syllable;
@@ -949,7 +906,12 @@ function startNewGame(room, opts = {}) {
     word: syllable, player: -1, nickname: "시작",
     depth: null, turn: room.history.length
   });
-  room.turnPlayerIndex = firstPlayer.playerIndex;
+
+  /* 첫 선공 랜덤 — AI 모드에서는 AI가 먼저 시작할 수도 있다 */
+  const eligibleFirst = room.players.filter(p => !p.eliminated && !p.waiting &&
+    (room.mode === "ai" ? true : !p.isBot));
+  if (eligibleFirst.length === 0) { room.started = false; return false; }
+  room.turnPlayerIndex = eligibleFirst[Math.floor(Math.random() * eligibleFirst.length)].playerIndex;
 
   io.to(room.id).emit("game:started", {
     ok: true, startWord: syllable,
@@ -1585,7 +1547,7 @@ io.on("connection", (socket) => {
       if (!nickname) { socket.emit("ranked:queueStatus", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
       if (findRoomBySocket(socket.id)) { removeFromRankedQueue(socket.id); }
       if (!addToRankedQueue(socket.id, nickname, pd.ranked.rating)) {
-        socket.emit("ranked:queueStatus", { ok: true, queued: true, message: "이미 매칭 대기 중입니다." });
+        socket.emit("ranked:queueStatus", { ok: true, queued: true, reason: "이미 매칭 대기 중입니다." });
         return;
       }
       registerOnline(socket.id, nickname);
@@ -1765,6 +1727,9 @@ io.on("connection", (socket) => {
       if (targetSocket) {
         targetSocket.emit("room:kicked", { ok: true, reason: "방장/관리자에 의해 추방되었습니다." });
         targetSocket.leave(room.id);
+        /* 클라이언트의 후속 room:leave가 빈 '방을 나갔습니다.'를 띄우지 않도록 정리 */
+        targetSocket.data.roomId = null;
+        targetSocket.data.playerIndex = null;
       }
       removePlayer(room, target.socketId, "kick");
       io.to(room.id).emit("room:playerLeft", {

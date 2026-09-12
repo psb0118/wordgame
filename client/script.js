@@ -401,12 +401,18 @@ function initSocket() {
        (일반 사용자는 입력한 비밀번호 자동 저장 / 관리자는 체크박스 선택 시에만 저장) */
     if (myNickname) socket.emit("player:setName", { nickname: myNickname, password: myPassword });
     socket.emit("admin:getRole");
+    /* 연결이 늦어져 싱글 게임 자동 시작 타이머를 놓친 경우를 대비해 재시도 */
+    if (currentMode === "single" && !roomId && !gameState && !startingGame) {
+      startSingleGame();
+    }
   });
 
   socket.on("disconnect", () => {
     socketConnected = false;
     submitting = false;
     startingGame = false;
+    rankedQueued = false;
+    updateRankedQueueUI();
     stopCountdown();
     updateInputState();
     showMessage("서버와 연결이 끊어졌습니다.", "error");
@@ -656,6 +662,7 @@ function initSocket() {
   });
 
   socket.on("room:error", (data) => {
+    startingGame = false;
     showMessage(data.reason || "방 오류", "error");
   });
 
@@ -820,23 +827,14 @@ function initSocket() {
   socket.on("game:error", (data) => {
     const inputArea = currentMode === "single" ? $(".single-input-area") : $(".online-input-area");
     applyFx(inputArea, "fx-shake");
-    if (data.heartLost) {
-      showMessage(data.reason || "하트를 잃었습니다!", "error");
-    } else if (data.allowed) {
-      showMessage(data.reason + " (다시 시도해주세요)", "warning");
-    } else {
-      showMessage(data.reason || "오류", "error");
-    }
-    if (data.hearts != null) {
-      renderHearts(data.hearts);
-    }
-    if (data.mistakes != null && data.mistakesPerLife != null) {
-      const remaining = data.mistakesPerLife - data.mistakes;
-      renderMistakes(data.mistakes, data.mistakesPerLife);
-      if (remaining > 0 && remaining <= 2) {
-        showMessage(`실수 ${data.mistakes}/${data.mistakesPerLife} (하트까지 ${remaining}번)`, "warning");
-      }
-    }
+    const nearHeart = data.mistakes != null && data.mistakesPerLife != null
+      && (data.mistakesPerLife - data.mistakes) > 0 && (data.mistakesPerLife - data.mistakes) <= 2;
+    let message = data.reason || "오류";
+    if (data.allowed) message += " (다시 시도해주세요)";
+    if (nearHeart) message += ` (실수 ${data.mistakes}/${data.mistakesPerLife}, 하트까지 ${data.mistakesPerLife - data.mistakes}번)`;
+    showMessage(message, data.heartLost ? "error" : (data.allowed || nearHeart ? "warning" : "error"));
+    if (data.hearts != null) renderHearts(data.hearts);
+    if (data.mistakes != null && data.mistakesPerLife != null) renderMistakes(data.mistakes, data.mistakesPerLife);
     submitting = false;
     updateInputState();
     focusInput();
@@ -982,6 +980,10 @@ function renderGameState(state) {
   renderRoomInfo(state);
   renderCountdown(state);
   updateRuleNotice(state);
+  if (state.started && !state.finished) {
+    const turnMe = state.players?.find(p => p.playerIndex === state.turnPlayer);
+    renderMistakes(turnMe?.mistakes ?? 0, state.mistakesPerLife || 5);
+  }
   updateInputState();
 }
 
@@ -991,6 +993,10 @@ function updateRuleNotice(state) {
   const turn = state.turnNumber || 0;
   const el = modeGet("ruleNotice");
   if (!el) return;
+
+  /* 게임 진행 중일 때만 안내 표시 — 방을 나갔다가 새 게임을 시작해도 다시 보이게 한다 */
+  el.classList.toggle("hidden", !(state.started && !state.finished));
+  if (!(state.started && !state.finished)) return;
 
   if (turn < freeTurns) {
     el.textContent = `첫 ${freeTurns}턴은 공격 단어 사용 금지 (${turn}/${freeTurns}) · 실수는 내 차례마다 초기화`;
@@ -1102,11 +1108,12 @@ function renderHistory(state) {
   for (const item of history) {
     const row = document.createElement("div");
     row.className = "history-item";
-    if (item.turn === history.length - 1 && item.turn > 0) {
+    const isStartEntry = item.player === -1 || item.nickname === "시작";
+    if (!isStartEntry && item.turn === history.length - 1 && item.turn > 0) {
       row.classList.add("latest");
     }
     const depth = item.depth != null ? ` [${item.depth}]` : "";
-    if (item.turn === 0) {
+    if (isStartEntry) {
       row.textContent = `시작: ${item.word}${depth}`;
     } else {
       row.innerHTML = `${item.turn}. ${titleHtmlFor(item.player)}${escapeHtml(item.nickname || "플레이어")}: ${escapeHtml(item.word)}${depth}`;
