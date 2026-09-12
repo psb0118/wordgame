@@ -829,10 +829,12 @@ function initSocket() {
   });
 
   socket.on("game:word", (data) => {
-    if (data.ok) {
-      if (currentMode === "single") {
-        localUsedWords.add(data.word);
-      }
+    if (!data || data.ok === false) return;
+    if (data.roomId && roomId && data.roomId !== roomId) return;
+    if (isStaleAIEvent(data.mode)) return;
+    if (currentMode === "single") {
+      localUsedWords.add(data.word);
+    }
       applyFx($(".last-char-box"), "fx-flash-ok");
       const plName = (gameState?.players?.find(p => p.playerIndex === data.player)?.title)
         ? `[${gameState.players.find(p => p.playerIndex === data.player).title}]${data.nickname}`
@@ -851,16 +853,17 @@ function initSocket() {
           focusInput();
         }
       }
-    }
   });
 
   socket.on("game:roundReset", (data) => {
+    if (data && data.roomId && roomId && data.roomId !== roomId) return;
     if (isStaleAIEvent(data && data.mode)) return;
     showMessage(data.reason || "새 라운드가 시작됩니다!", "info");
   });
 
   socket.on("game:oneshot", (data) => {
     if (!data) return;
+    if (data.roomId && roomId && data.roomId !== roomId) return;
     if (isStaleAIEvent(data.mode)) return;
     const target = data.targetNickname || "상대";
     const isMe = data.target === playerIndex;
@@ -873,6 +876,7 @@ function initSocket() {
   });
 
   socket.on("game:error", (data) => {
+    if (data && data.roomId && roomId && data.roomId !== roomId) return;
     const inputArea = currentMode === "single" ? $(".single-input-area") : $(".online-input-area");
     applyFx(inputArea, "fx-shake");
     const nearHeart = data.mistakes != null && data.mistakesPerLife != null
@@ -889,6 +893,7 @@ function initSocket() {
   });
 
   socket.on("game:timeout", (data) => {
+    if (data && data.roomId && roomId && data.roomId !== roomId) return;
     if (isStaleAIEvent(data && data.mode)) return;
     const timeoutName = data.nickname || `플레이어 ${data.player + 1}`;
     if (data.player === playerIndex) {
@@ -914,7 +919,7 @@ function initSocket() {
     /* 같은 소켓에 남아 있던 다른 게임(싱글/ai 등)이 끝났을 때 도착하는
        game:finished를 현재 랭크 게임의 종료로 오인해 자동으로 나가지는
        버그 방지 — 현재 방과 다른 방의 종료 이벤트는 무시한다. */
-    const finishedRoomId = data && data.state ? data.state.roomId : null;
+    const finishedRoomId = data && data.state ? data.state.roomId : (data ? data.roomId : null);
     if (finishedRoomId && roomId && finishedRoomId !== roomId) {
       return;
     }
@@ -1173,7 +1178,7 @@ function renderHistory(state) {
     if (isStartEntry) {
       row.textContent = `시작: ${item.word}${depth}`;
     } else {
-      row.innerHTML = `${item.turn}. ${titleHtmlFor(item.player)}${escapeHtml(item.nickname || "플레이어")}: ${escapeHtml(item.word)}${depth}`;
+      row.innerHTML = `${item.turn}. ${titleHtmlFor(item.player)}${escapeHtml(item.nickname || "플레이어")}: <span class="history-word">${escapeHtml(item.word)}</span>${depth}`;
     }
     container.appendChild(row);
   }

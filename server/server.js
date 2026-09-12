@@ -491,6 +491,11 @@ function tryMatchRanked() {
       continue;
     }
 
+    /* 매칭 확정 전에 이전 방(싱글/AI 방 등)에서 분리 — 랭크 게임 중 이전 방의
+       이벤트가 들어와 턴/입력이 꼬이는 문제 방지 */
+    leaveRoomForSocket(io.sockets.sockets.get(a.socketId), "leave");
+    leaveRoomForSocket(io.sockets.sockets.get(b.socketId), "leave");
+
     const roomId = createRoomId();
     const room = {
       id: roomId,
@@ -643,6 +648,26 @@ function findRoomBySocket(socketId) {
   return null;
 }
 
+/* 소켓의 현재 방 조회 — socket.data.roomId(최신 방)를 우선한다.
+   레거시로 한 소켓이 여러 방에 남아 있더라도 최신 방 기준으로 동작한다 */
+function getPlayerRoom(socket) {
+  if (!socket) return null;
+  return ROOMS.get(socket.data.roomId) || findRoomBySocket(socket.id);
+}
+
+/* 소켓을 이전 방에서 완전히 분리 — 방 생성/입장/랭크 매칭 진입 시 호출해
+   한 소켓이 여러 방(특히 싱글/AI 방)에 남아 이벤트가 서로 섞이는 문제를 방지한다 */
+function leaveRoomForSocket(socket, reason) {
+  const room = getPlayerRoom(socket);
+  if (!room) return;
+  socket.leave(room.id);
+  socket.data.roomId = null;
+  socket.data.playerIndex = null;
+  removePlayer(room, socket.id, reason || "leave");
+  const realConnected = room.players.filter(p => !p.isBot && p.connected);
+  if (realConnected.length === 0) { stopTurnTimer(room); ROOMS.delete(room.id); }
+}
+
 function getPublicRoomState(room) {
   if (!room) return null;
   return {
@@ -747,7 +772,7 @@ function handleTurnTimeout(room, gameSessionId) {
     player: player.playerIndex, nickname: player.nickname,
     hearts: player.hearts, eliminated: player.eliminated,
     mistakes: player.mistakes, mistakesPerLife: MISTAKES_PER_LIFE,
-    heartLost, mode: room.mode
+    heartLost, mode: room.mode, roomId: room.id
   });
 
   const alive = getAlivePlayers(room);
@@ -758,7 +783,7 @@ function handleTurnTimeout(room, gameSessionId) {
 
   if (heartLost && !player.eliminated) {
     if (room.mode === "ai") {
-      io.to(room.id).emit("game:roundReset", { reason: "하트 1개를 잃었습니다. 새 라운드를 시작합니다.", mode: room.mode });
+      io.to(room.id).emit("game:roundReset", { reason: "하트 1개를 잃었습니다. 새 라운드를 시작합니다.", mode: room.mode, roomId: room.id });
       startNewGame(room, { preserveHearts: true });
     } else {
       const next = findNextAlivePlayer(room, player.playerIndex);
@@ -843,6 +868,13 @@ async function finishGame(room, winnerIndex, loserIndex) {
     state: getPublicRoomState(room)
   });
   broadcastRoomState(room);
+
+  /* 인간 접속자가 하나도 없으면(싱글/AI 방에서 인간이 이탈한 경우 등)
+     종료된 방을 즉시 정리해 좀비 방으로 남지 않게 한다 */
+  const connectedHumans = room.players.filter(p => !p.isBot && p.connected);
+  if (connectedHumans.length === 0) {
+    ROOMS.delete(room.id);
+  }
 }
 
 /* =========================================================
@@ -984,7 +1016,7 @@ function playWord(room, player, rawWord, gameSessionId) {
 
   io.to(room.id).emit("game:word", {
     ok: true, word, player: player.playerIndex, nickname: player.nickname,
-    depth, nextCount: nextCandidates.length, mode: room.mode
+    depth, nextCount: nextCandidates.length, mode: room.mode, roomId: room.id
   });
   broadcastRoomState(room);
 
@@ -1012,7 +1044,7 @@ function playWord(room, player, rawWord, gameSessionId) {
       word, killer: player.playerIndex, killerNickname: player.nickname,
       target: loser, targetNickname: loserPlayer.nickname,
       hearts: loserPlayer.hearts, eliminated: loserPlayer.eliminated,
-      mode: room.mode
+      mode: room.mode, roomId: room.id
     });
 
     const alive = getAlivePlayers(room);
@@ -1024,7 +1056,7 @@ function playWord(room, player, rawWord, gameSessionId) {
     /* 다음 라운드로 자연스럽게 이어짐 — 게임(목숨)은 유지 */
     io.to(room.id).emit("game:roundReset", {
       reason: `한방 단어 '${word}'! ${loserPlayer.nickname}님이 하트 1개를 잃었습니다.`,
-      mode: room.mode
+      mode: room.mode, roomId: room.id
     });
     startNewGame(room, { preserveHearts: true });
     return { ok: true, finished: true };
@@ -1208,8 +1240,7 @@ io.on("connection", (socket) => {
     try {
       const nickname = normalizeWord(data?.nickname) || "플레이어";
       const mode = data?.mode === "ai" ? "ai" : "online";
-      const oldRoom = findRoomBySocket(socket.id);
-      if (oldRoom) { socket.leave(oldRoom.id); removePlayer(oldRoom, socket.id, "recreate"); }
+      leaveRoomForSocket(socket, "recreate");
 
       const room = createRoom(socket.id, nickname, mode);
       socket.join(room.id);
@@ -1262,6 +1293,10 @@ io.on("connection", (socket) => {
         socket.emit("room:error", { ok: false, reason: `"${nickname}" 닉네임은 이미 사용 중입니다.` });
         return;
       }
+
+      /* 입장 확정 전에 이전 방(싱글/AI 방 포함)에서 분리 — 한 소켓이 여러 방에
+         남아 이벤트가 섞이는 것을 막는다. 재접속(existing) 경로에는 적용하지 않는다 */
+      leaveRoomForSocket(socket, "leave");
 
       const isMidGame = room.started && !room.finished;
 
@@ -1329,7 +1364,7 @@ io.on("connection", (socket) => {
 
   socket.on("game:word", (data) => {
     try {
-      const room = findRoomBySocket(socket.id);
+      const room = getPlayerRoom(socket);
       if (!room) { socket.emit("game:error", { ok: false, reason: "게임 방에 참여하지 않았습니다." }); return; }
       if (room.finished || !room.started) {
         socket.emit("game:error", { ok: false, reason: "게임이 진행 중이 아닙니다." });
@@ -1378,7 +1413,7 @@ io.on("connection", (socket) => {
             if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
           } else if (heartLost) {
             if (room.mode === "ai") {
-              io.to(room.id).emit("game:roundReset", { reason: "하트 1개를 잃었습니다. 새 라운드를 시작합니다." });
+              io.to(room.id).emit("game:roundReset", { reason: "하트 1개를 잃었습니다. 새 라운드를 시작합니다.", mode: room.mode, roomId: room.id });
               startNewGame(room, { preserveHearts: true });
             } else {
               const next = findNextAlivePlayer(room, player.playerIndex);
@@ -1402,7 +1437,7 @@ io.on("connection", (socket) => {
 
   socket.on("game:hint", () => {
     try {
-      const room = findRoomBySocket(socket.id);
+      const room = getPlayerRoom(socket);
       if (!room) { socket.emit("game:hint", { ok: false, reason: "게임 방에 참여하지 않았습니다." }); return; }
       if (room.mode !== "ai") { socket.emit("game:hint", { ok: false, reason: "싱글플레이에서만 힌트를 사용할 수 있습니다." }); return; }
       if (!room.started || room.finished) { socket.emit("game:hint", { ok: false, reason: "게임이 진행 중이 아닙니다." }); return; }
@@ -1454,7 +1489,7 @@ io.on("connection", (socket) => {
 
   socket.on("game:start", () => {
     try {
-      const room = findRoomBySocket(socket.id);
+      const room = getPlayerRoom(socket);
       if (!room) return;
       if (room.mode !== "online") {
         socket.emit("game:error", { ok: false, reason: "온라인 모드에서만 시작할 수 있습니다." });
@@ -1485,7 +1520,7 @@ io.on("connection", (socket) => {
 
   socket.on("game:restart", () => {
     try {
-      const room = findRoomBySocket(socket.id);
+      const room = getPlayerRoom(socket);
       if (!room) return;
       if (room.hostSocketId !== socket.id) {
         socket.emit("game:error", { ok: false, reason: "방장만 게임을 다시 시작할 수 있습니다." });
@@ -1534,7 +1569,7 @@ io.on("connection", (socket) => {
     removeFromRankedQueue(socket.id);
     broadcastRankedQueue();
     unregisterOnline(socket.id);
-    const room = findRoomBySocket(socket.id);
+    const room = getPlayerRoom(socket);
     if (!room) return;
     const player = getPlayerBySocket(room, socket.id);
     if (player) {
@@ -1556,7 +1591,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("room:state", () => {
-    const room = findRoomBySocket(socket.id);
+    const room = getPlayerRoom(socket);
     if (room) socket.emit("game:state", getPublicRoomState(room));
   });
 
@@ -1566,7 +1601,9 @@ io.on("connection", (socket) => {
       const pd = await getPlayerData(socket.id);
       const nickname = String(pd.nickname || "플레이어").trim();
       if (!nickname) { socket.emit("ranked:queueStatus", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
-      if (findRoomBySocket(socket.id)) { removeFromRankedQueue(socket.id); }
+      /* 매칭 대기 중 이전 방 게임이 계속 돌아가는 것을 막기 위해 현재 방에서 분리 */
+      leaveRoomForSocket(socket, "leave");
+      socket.emit("room:left", { ok: true });
       if (!addToRankedQueue(socket.id, nickname, pd.ranked.rating)) {
         socket.emit("ranked:queueStatus", { ok: true, queued: true, reason: "이미 매칭 대기 중입니다." });
         return;
@@ -1629,7 +1666,7 @@ io.on("connection", (socket) => {
       await savePlayerData(socket.id, pd);
       socket.emit("shop:result", { ok: true, message: `칭호 '${title.name}'(으)로 변경했습니다.`, currentTitle: pd.currentTitle });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
-      broadcastRoomState(findRoomBySocket(socket.id));
+      broadcastRoomState(getPlayerRoom(socket));
     } catch (err) { console.error("칭호 변경 오류:", err); }
   });
 
@@ -1730,7 +1767,7 @@ io.on("connection", (socket) => {
   /* 추방 — 방장 또는 관리자만 가능 */
   socket.on("room:kick", async (data) => {
     try {
-      const room = findRoomBySocket(socket.id);
+      const room = getPlayerRoom(socket);
       if (!room) { socket.emit("room:error", { ok: false, reason: "방에 참여하지 않았습니다." }); return; }
       const isHost = room.hostSocketId === socket.id;
       const reg = await requireNickname(socket);
@@ -2170,7 +2207,7 @@ io.on("connection", (socket) => {
         adminAuthed.delete(socket.id);
       }
 
-      const room = findRoomBySocket(socket.id);
+      const room = getPlayerRoom(socket);
       if (room) {
         const dup = room.players.find(p => !p.isBot && p.socketId !== socket.id && p.nickname === nickname);
         if (dup) {
@@ -2265,7 +2302,7 @@ io.on("connection", (socket) => {
         socket.emit("room:inviteSent", { ok: false, reason: `'${target}' 님이 현재 온라인이 아닙니다.` });
         return;
       }
-      const room = findRoomBySocket(socket.id);
+      const room = getPlayerRoom(socket);
       if (!room || room.mode === "ai" || room.finished) {
         socket.emit("room:inviteSent", { ok: false, reason: "초대는 온라인 방에서만 보낼 수 있습니다." });
         return;

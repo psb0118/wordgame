@@ -504,6 +504,42 @@ button:disabled {
   color: var(--text-dim);
 }
 
+/* 하트 / 실수 HUD — 각각 칩 형태로 보이게 */
+.game-status > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: var(--card-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.9rem;
+}
+
+#hearts,
+#heartsOnline,
+#heartsRanked,
+#heartDisplay {
+  color: #e11d48;
+  font-size: 1.08rem;
+  letter-spacing: 1.5px;
+}
+
+#mistakesDisplay,
+#mistakesDisplayOnline,
+#mistakesDisplayRanked {
+  min-width: 2.1em;
+  text-align: center;
+  color: inherit;
+}
+
+#mistakesDisplay[data-danger="true"],
+#mistakesDisplayOnline[data-danger="true"],
+#mistakesDisplayRanked[data-danger="true"] {
+  color: var(--red);
+  animation: shakeX 0.4s;
+}
+
 #timer[data-urgent="true"] {
   color: var(--red);
   font-weight: bold;
@@ -741,9 +777,21 @@ button:disabled {
   animation: slideIn 0.35s ease-out;
 }
 
+.history-item.latest .history-word {
+  display: inline-block;
+  animation: wordPop 0.32s cubic-bezier(0.22, 1.4, 0.36, 1);
+  color: var(--accent);
+}
+
 @keyframes slideIn {
   from { transform: translateX(18px); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes wordPop {
+  0% { transform: scale(0.7); opacity: 0; }
+  70% { transform: scale(1.06); }
+  100% { transform: scale(1); opacity: 1; }
 }
 
 .shake {
