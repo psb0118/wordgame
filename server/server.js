@@ -2291,6 +2291,27 @@ io.on("connection", (socket) => {
         adminAuthed.delete(socket.id);
       }
 
+      /* 재접속/새 소켓에서도 같은 닉네임이라면 기존 플레이어 데이터(돈, 랭킹 등)를
+         현재 소켓 ID로 이관 — 소켓 ID는 재접속 때마다 바뀌므로 닉네임이 곧 계정이다.
+         기존 소켓이 아직 살아 있는 경우(중복 로그인)는 이관하지 않는다. */
+      const existingId = await findPlayerIdByNickname(nickname);
+      if (existingId && existingId !== socket.id && !io.sockets.sockets.has(existingId)) {
+        const oldData = await getPlayerData(existingId);
+        oldData.id = socket.id;
+        oldData.nickname = nickname;
+        if (dbMode === "pg") {
+          playerCache.set(socket.id, oldData);
+          playerCache.delete(existingId);
+          try { await dbPool.query("DELETE FROM players WHERE id = $1", [existingId]); } catch (err) { console.error("기존 레코드 삭제 오류:", err.message); }
+          await savePlayerData(socket.id, oldData);
+        } else {
+          playerCache.set(socket.id, oldData);
+          playerCache.delete(existingId);
+          saveJsonDb();
+        }
+        console.log(`[ACCOUNT] '${nickname}' 데이터 이관: ${existingId} -> ${socket.id}`);
+      }
+
       const room = getPlayerRoom(socket);
       if (room) {
         const dup = room.players.find(p => !p.isBot && p.socketId !== socket.id && p.nickname === nickname);
