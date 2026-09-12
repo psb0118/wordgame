@@ -993,6 +993,14 @@ function playWord(room, player, rawWord, gameSessionId) {
     if (loserPlayer.eliminated) loserPlayer.hearts = 0;
     loserPlayer.alive = !loserPlayer.eliminated;
 
+    /* 랭크 전용: 중간에 한방단어로 매치가 끝나지 않도록
+       마지막 하트라도 1개로 복구하고 새 라운드로 이어간다 */
+    if (room.mode === "ranked" && loserPlayer.eliminated) {
+      loserPlayer.eliminated = false;
+      loserPlayer.hearts = 1;
+      loserPlayer.alive = true;
+    }
+
     io.to(room.id).emit("game:oneshot", {
       word, killer: player.playerIndex, killerNickname: player.nickname,
       target: loser, targetNickname: loserPlayer.nickname,
