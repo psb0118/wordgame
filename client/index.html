@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=8">
+  <link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
   <main class="wrap">
@@ -341,7 +341,49 @@
     </div>
   </div>
 
+  <div id="howWrap" class="how-wrap">
+    <button id="howBtn" class="how-btn" title="게임 방법">❓ 게임 방법</button>
+    <div id="howModal" class="modal hidden">
+      <div class="modal-box how-box">
+        <div class="how-head">
+          <h3>게임 방법</h3>
+          <button class="modal-close" data-how-close>✕</button>
+        </div>
+        <div class="how-body">
+          <section>
+            <h4>기본 규칙</h4>
+            <p>끝말잇기입니다. 마지막 단어의 <b>끝 글자</b>로 시작하는 단어를 입력창에 쓰고 Enter(또는 [입력])을 누르세요. 단어는 국어사전에 있는 한글 단어만 인정됩니다.</p>
+          </section>
+          <section>
+            <h4>턴과 시간</h4>
+            <p>각자 차례마다 <b>제한 시간</b>이 주어집니다. 제한 시간 안에 입력하지 못하면 <b>실수</b>로 처리됩니다.</p>
+          </section>
+          <section>
+            <h4>실수와 하트</h4>
+            <p>실수를 <b>5회</b> 쌓으면 하트가 <b>1개</b> 차감됩니다. 하트는 게임당 <b>2개</b>이며, 다 떨어지면 탈락합니다. 내 차례가 돌아오면 실수는 다시 초기화됩니다.</p>
+          </section>
+          <section>
+            <h4>힌트 (싱글 전용)</h4>
+            <p>싱글플레이에서는 내 차례에 [힌트] 버튼을 눌러 추천 단어를 받을 수 있습니다. 힌트는 <b>한 판당 5개</b>까지 사용할 수 있습니다.</p>
+          </section>
+          <section>
+            <h4>공격 · 한방 · 방어 단어</h4>
+            <p><b>공격 단어</b>는 상대를 압박하는 단어로, 라운드 시작 후 <b>첫 1턴</b>에는 사용할 수 없습니다. 상대가 대응할 단어를 찾지 못하면 <b>한방</b>이 되어 상대 하트가 1개 차감됩니다. <b>방어 단어</b>는 위기에서 빠져나오는 단어입니다.</p>
+          </section>
+          <section>
+            <h4>모드 안내</h4>
+            <p><b>싱글플레이</b> — AI와 1:1 대결. <b>온라인 멀티</b> — 방을 만들거나 코드로 참가해 여러 명과 대결. <b>랭크 매칭</b> — 같은 실력대와 자동 매칭되어 레이팅과 등급이 오르내립니다. 랭크에서는 한방을 맞아도 바로 지지 않고 하트가 깎이며 다음 라운드로 이어집니다.</p>
+          </section>
+          <section>
+            <h4>점수와 칭호</h4>
+            <p>대결 결과에 따라 레이팅 점수가 변하고, 순위에 따라 <b>칭호</b>가 부여됩니다. 상점에서 다양한 아이템과 혜택을 확인하세요.</p>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="/socket.io/socket.io.js"></script>
-  <script src="script.js?v=7"></script>
+  <script src="script.js?v=8"></script>
 </body>
 </html>

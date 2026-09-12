@@ -34,6 +34,8 @@ let ONESHOT_FREE_TURNS = 1;
 let MISTAKES_PER_LIFE = 5;
 const AI_PLAYER_ID = "ai";
 const STARTING_SYLLABLES = ["가", "기", "나", "다", "마", "자", "시"];
+/* 싱글플레이 힌트 한 판(게임)당 사용 횟수 제한 */
+const HINTS_PER_GAME = 5;
 
 /* =========================================================
    관리자 설정 — 수치로 조정 가능한 모든 값
@@ -572,7 +574,8 @@ function createRoom(socketId, nickname, mode) {
     turnStartedAt: null,
     turnEndsAt: null,
     lastSyllable: null,
-    gameSessionId: 0
+    gameSessionId: 0,
+    hintsUsed: 0
   };
   addPlayer(room, socketId, nickname);
   ROOMS.set(roomId, room);
@@ -657,6 +660,8 @@ function getPublicRoomState(room) {
     turnTime: TURN_TIME,
     oneShotFreeTurns: ONESHOT_FREE_TURNS,
     mistakesPerLife: MISTAKES_PER_LIFE,
+    hintsUsed: room.hintsUsed || 0,
+    hintsLimit: HINTS_PER_GAME,
     history: room.history.map(item => ({
       word: item.word, player: item.player, nickname: item.nickname,
       depth: item.depth, turn: item.turn
@@ -883,6 +888,7 @@ function startNewGame(room, opts = {}) {
     room.currentWord = null;
     room.history = [];
     room.usedWords = new Set();
+    room.hintsUsed = 0;
   } else {
     room.currentWord = null;
   }
@@ -1402,6 +1408,10 @@ io.on("connection", (socket) => {
       if (!player) { socket.emit("game:hint", { ok: false, reason: "플레이어를 찾을 수 없습니다." }); return; }
       if (player.eliminated) { socket.emit("game:hint", { ok: false, reason: "탈락한 플레이어입니다." }); return; }
       if (room.turnPlayerIndex !== player.playerIndex) { socket.emit("game:hint", { ok: false, reason: "지금은 당신의 차례가 아닙니다." }); return; }
+      if ((room.hintsUsed || 0) >= HINTS_PER_GAME) {
+        socket.emit("game:hint", { ok: false, reason: `힌트를 모두 사용했습니다. (이번 판 ${HINTS_PER_GAME}개 제한)` });
+        return;
+      }
 
       let candidates;
       if (room.turnNumber === 0) {
@@ -1431,7 +1441,9 @@ io.on("connection", (socket) => {
       } else {
         word = candidates[0];
       }
-      socket.emit("game:hint", { ok: true, word });
+      room.hintsUsed = (room.hintsUsed || 0) + 1;
+      socket.emit("game:hint", { ok: true, word, hintsUsed: room.hintsUsed, hintsLeft: HINTS_PER_GAME - room.hintsUsed });
+      broadcastRoomState(room);
     } catch (error) {
       console.error("game:hint 오류:", error);
       socket.emit("game:hint", { ok: false, reason: "힌트 처리 중 오류가 발생했습니다." });

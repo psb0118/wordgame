@@ -743,9 +743,15 @@ function initSocket() {
         input.value = data.word;
         focusInput();
       }
-    } else if (data.reason) {
-      showMessage(data.reason, "info");
     }
+    if (typeof data.hintsLeft === "number") {
+      const hintBtn = $("#hintBtn");
+      if (hintBtn) {
+        hintBtn.textContent = `힌트 (${data.hintsLeft})`;
+        if (data.hintsLeft <= 0) hintBtn.disabled = true;
+      }
+    }
+    if (!data.ok && data.reason) showMessage(data.reason, "info");
   });
 
   /* -- 게임 이벤트 ------------------------------------- */
@@ -1207,7 +1213,19 @@ function updateInputState() {
 
   if (input) input.disabled = disabled;
   if (btn) btn.disabled = disabled;
-  if (hintBtn) hintBtn.disabled = disabled || currentMode !== "single";
+
+  const hintsAvail = gameState && Number.isInteger(gameState.hintsLimit)
+    ? Math.max(0, gameState.hintsLimit - (gameState.hintsUsed || 0)) : null;
+  if (hintBtn) {
+    const inSingleGame = currentMode === "single" && gameState && gameState.started && !gameState.finished && hintsAvail != null;
+    if (inSingleGame) {
+      hintBtn.textContent = `힌트 (${hintsAvail})`;
+      hintBtn.disabled = disabled || hintsAvail <= 0;
+    } else {
+      hintBtn.textContent = "힌트";
+      hintBtn.disabled = disabled || currentMode !== "single";
+    }
+  }
 
   const inputArea = currentMode === "single" ? $(".single-input-area") : (currentMode === "ranked" ? $("#ranked .entry") : $(".online-input-area"));
   if (inputArea) {
@@ -2289,8 +2307,22 @@ document.addEventListener("DOMContentLoaded", () => {
       if (e.target === adminModal) closeAdminPanel();
     });
   }
+
+  /* 게임 방법 (우하단) */
+  const howModal = $("#howModal");
+  $("#howBtn")?.addEventListener("click", () => howModal?.classList.remove("hidden"));
+  if (howModal) {
+    howModal.addEventListener("click", (e) => {
+      if (e.target.closest("[data-how-close]")) howModal.classList.add("hidden");
+      if (e.target === howModal) howModal.classList.add("hidden");
+    });
+  }
+
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeAdminPanel();
+    if (e.key === "Escape") {
+      closeAdminPanel();
+      $("#howModal")?.classList.add("hidden");
+    }
   });
 
   /* 닉네임 */
