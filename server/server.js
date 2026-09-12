@@ -747,7 +747,7 @@ function handleTurnTimeout(room, gameSessionId) {
     player: player.playerIndex, nickname: player.nickname,
     hearts: player.hearts, eliminated: player.eliminated,
     mistakes: player.mistakes, mistakesPerLife: MISTAKES_PER_LIFE,
-    heartLost
+    heartLost, mode: room.mode
   });
 
   const alive = getAlivePlayers(room);
@@ -758,7 +758,7 @@ function handleTurnTimeout(room, gameSessionId) {
 
   if (heartLost && !player.eliminated) {
     if (room.mode === "ai") {
-      io.to(room.id).emit("game:roundReset", { reason: "하트 1개를 잃었습니다. 새 라운드를 시작합니다." });
+      io.to(room.id).emit("game:roundReset", { reason: "하트 1개를 잃었습니다. 새 라운드를 시작합니다.", mode: room.mode });
       startNewGame(room, { preserveHearts: true });
     } else {
       const next = findNextAlivePlayer(room, player.playerIndex);
@@ -984,7 +984,7 @@ function playWord(room, player, rawWord, gameSessionId) {
 
   io.to(room.id).emit("game:word", {
     ok: true, word, player: player.playerIndex, nickname: player.nickname,
-    depth, nextCount: nextCandidates.length
+    depth, nextCount: nextCandidates.length, mode: room.mode
   });
   broadcastRoomState(room);
 
@@ -1011,7 +1011,8 @@ function playWord(room, player, rawWord, gameSessionId) {
     io.to(room.id).emit("game:oneshot", {
       word, killer: player.playerIndex, killerNickname: player.nickname,
       target: loser, targetNickname: loserPlayer.nickname,
-      hearts: loserPlayer.hearts, eliminated: loserPlayer.eliminated
+      hearts: loserPlayer.hearts, eliminated: loserPlayer.eliminated,
+      mode: room.mode
     });
 
     const alive = getAlivePlayers(room);
@@ -1022,7 +1023,8 @@ function playWord(room, player, rawWord, gameSessionId) {
 
     /* 다음 라운드로 자연스럽게 이어짐 — 게임(목숨)은 유지 */
     io.to(room.id).emit("game:roundReset", {
-      reason: `한방 단어 '${word}'! ${loserPlayer.nickname}님이 하트 1개를 잃었습니다.`
+      reason: `한방 단어 '${word}'! ${loserPlayer.nickname}님이 하트 1개를 잃었습니다.`,
+      mode: room.mode
     });
     startNewGame(room, { preserveHearts: true });
     return { ok: true, finished: true };
@@ -1442,7 +1444,7 @@ io.on("connection", (socket) => {
         word = candidates[0];
       }
       room.hintsUsed = (room.hintsUsed || 0) + 1;
-      socket.emit("game:hint", { ok: true, word, hintsUsed: room.hintsUsed, hintsLeft: HINTS_PER_GAME - room.hintsUsed });
+      socket.emit("game:hint", { ok: true, word, hintsUsed: room.hintsUsed, hintsLeft: HINTS_PER_GAME - room.hintsUsed, mode: room.mode });
       broadcastRoomState(room);
     } catch (error) {
       console.error("game:hint 오류:", error);
@@ -1516,8 +1518,10 @@ io.on("connection", (socket) => {
       if (!room) return;
       socket.leave(roomId);
       removePlayer(room, socket.id, "leave");
-      const realPlayers = room.players.filter(p => !p.isBot);
-      if (realPlayers.length === 0) { stopTurnTimer(room); ROOMS.delete(room.id); }
+      /* 연결된 실제 플레이어가 아무도 없으면 방 즉시 정리 —
+         싱글(AI) 방은 인간이 나가도 좀비로 남아 이벤트를 뿜는 문제 방지 */
+      const realConnected = room.players.filter(p => !p.isBot && p.connected);
+      if (realConnected.length === 0) { stopTurnTimer(room); ROOMS.delete(room.id); }
       socket.data.roomId = null;
       socket.data.playerIndex = null;
       socket.emit("room:left", { ok: true });
@@ -1538,6 +1542,11 @@ io.on("connection", (socket) => {
         player.connected = false;
         io.to(room.id).emit("room:playerDisconnected", { playerIndex: player.playerIndex, nickname: player.nickname });
         broadcastRoomState(room);
+        if (room.mode === "ai") {
+          /* 싱글(AI) 방은 재접속 의미가 없으므로 즉시 정리 — 좀비 방 방지 */
+          stopTurnTimer(room);
+          ROOMS.delete(room.id);
+        }
       } else {
         removePlayer(room, socket.id, "disconnect");
         const realPlayers = room.players.filter(p => !p.isBot);

@@ -21,6 +21,7 @@ const DUEUM = {
   "랏": ["랏", "낫"], "랑": ["랑", "낭"], "래": ["래", "내"], "랭": ["랭", "냉"],
   "략": ["략", "약"], "량": ["량", "양"], "련": ["련", "연"],
   "렬": ["렬", "열"], "령": ["령", "영"],
+  "력": ["력", "역"], "역": ["역", "력"],
   "러": ["러", "너"], "럭": ["럭", "넉"], "런": ["런", "넌"],
   "럴": ["럴", "널"], "럽": ["럽", "넙"],
   "레": ["레", "네", "에"],
@@ -34,8 +35,12 @@ const DUEUM = {
   "릇": ["릇", "늣"], "룩": ["룩", "눅"], "룅": ["룅", "뇡"], "럿": ["럿", "엇", "넛"],
   "럼": ["럼", "엄", "넘"], "름": ["름", "늠"],
   "륨": ["륨", "늄", "윰"], "늉": ["늉", "융"],
+  "늄": ["늄", "윰"], "윰": ["윰", "늄"],
   "렁": ["렁", "엉"], "렴": ["렴", "염"],
+  "렷": ["렷", "엿", "녓"],
   "녓": ["녓", "엿"], "엿": ["엿", "녓"],
+  "릊": ["릊", "늦", "읒"], "늦": ["늦", "릊", "읒"], "읒": ["읒", "릊", "늦"],
+  "릅": ["릅", "늡"], "늡": ["늡", "릅"],
   "닢": ["닢", "잎"], "잎": ["잎", "닢"]
 };
 
@@ -277,21 +282,34 @@ function isAttackWord(word, ATTACK_DEPTH) {
   return getAttackDepth(word, ATTACK_DEPTH) !== null;
 }
 
-function getCandidates(previousWord, usedWords, WORD_INDEX) {
+let _syllableRarityCache = null;
+function syllableRarity(WORD_INDEX) {
+  if (!_syllableRarityCache) {
+    const count = new Map();
+    for (const [ch] of WORD_INDEX) {
+      const bucket = WORD_INDEX.get(ch);
+      if (bucket) count.set(ch, bucket.length);
+    }
+    _syllableRarityCache = count;
+  }
+  return _syllableRarityCache;
+}
+
+function getCandidates(previousWord, usedWords, WORD_INDEX, limit) {
   previousWord = normalizeWord(previousWord);
   if (!previousWord) return [];
   const used = usedWords instanceof Set ? usedWords : new Set(usedWords || []);
   const result = [];
   const lastChar = previousWord.at(-1);
   const allowed = allowedFirstChars(lastChar);
-  const existingSet = new Set();
+  /* 각 허용 글자는 서로 다른 버킷 → 단어 중복 없음 (existingSet 불필요) */
   for (const firstChar of allowed) {
     const bucket = WORD_INDEX.get(firstChar);
     if (!bucket) continue;
     for (const word of bucket) {
-      if (!used.has(word) && !existingSet.has(word)) {
+      if (!used.has(word)) {
         result.push(word);
-        existingSet.add(word);
+        if (limit > 0 && result.length >= limit) return result;
       }
     }
   }
@@ -308,7 +326,8 @@ function getCandidates(previousWord, usedWords, WORD_INDEX) {
 function isOneShot(word, usedWords, WORD_INDEX) {
   const ws = new Set(usedWords);
   ws.add(word);
-  const next = getCandidates(word, ws, WORD_INDEX);
+  /* 후보 16개로 조기 중단 — 다음 후보 존재 여부(0/1+)는 정확하게 보존 */
+  const next = getCandidates(word, ws, WORD_INDEX, 16);
   return next.length === 0;
 }
 
@@ -435,22 +454,17 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
 
   const lastChar = normalizeWord(currentWord).at(-1);
 
-  const SYLLABLE_RARITY = (() => {
-    const count = new Map();
-    for (const [ch] of WORD_INDEX) {
-      const bucket = WORD_INDEX.get(ch);
-      if (bucket) count.set(ch, bucket.length);
-    }
-    return count;
-  })();
+  const SYLLABLE_RARITY = syllableRarity(WORD_INDEX);
 
   let list = candidates.map(w => {
-    const next = getCandidates(w, newUsed, WORD_INDEX);
+    /* nextCount 16개까지만 조기 중단 계산 —
+       min(count,15) 점수와 '후보 0 = 한방' 판정은 그대로 정확 (16 < 15+1 보장) */
+    const nextCount = getCandidates(w, newUsed, WORD_INDEX, 16).length;
     const depth = ATTACK_DEPTH[w];
     const lastSyl = w.at(-1);
     const rarityCount = SYLLABLE_RARITY.get(lastSyl) ?? 9999;
     return {
-      w, nextCount: next.length, depth,
+      w, nextCount, depth,
       isAttack: Number.isFinite(depth),
       isRoot: !!(ROOT_WORDS && ROOT_WORDS.has(w)),
       isRareRoot: !!rareRootSet.has(w),
@@ -481,12 +495,12 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     else if (info.rarityCount <= 15) score += 10;
 
     score -= Math.min(info.nextCount, 15) * 2;
-    const opp = getCandidates(info.w, newUsed, WORD_INDEX);
+    const opp = getCandidates(info.w, newUsed, WORD_INDEX, OPP_CAP + 1);
     const sample = opp.slice(0, OPP_CAP);
     for (const ow of sample) {
       const owUsed = new Set(newUsed);
       owUsed.add(info.w);
-      const owNext = getCandidates(ow, owUsed, WORD_INDEX);
+      const owNext = getCandidates(ow, owUsed, WORD_INDEX, 16);
       if (owNext.length === 0) { score -= 110; continue; }
       if (Number.isFinite(ATTACK_DEPTH[ow]) && ATTACK_DEPTH[ow] <= 2) score -= 45;
       if (ROOT_WORDS && ROOT_WORDS.has(ow)) score -= 25;
@@ -496,7 +510,7 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
       for (const o2 of ply) {
         const o2Used = new Set(owUsed);
         o2Used.add(o2);
-        if (getCandidates(o2, o2Used, WORD_INDEX).length === 0) { score -= 120; break; }
+        if (getCandidates(o2, o2Used, WORD_INDEX, 16).length === 0) { score -= 120; break; }
       }
     }
     score += Math.random() * 8;

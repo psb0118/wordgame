@@ -252,8 +252,13 @@ const DUEUM = {
   "릇": ["릇", "늣"], "룩": ["룩", "눅"], "룅": ["룅", "뇡"],
   "럼": ["럼", "엄", "넘"], "름": ["름", "늠"],
   "륨": ["륨", "늄", "윰"], "늉": ["늉", "융"],
+  "늄": ["늄", "윰"], "윰": ["윰", "늄"],
+  "력": ["력", "역"], "역": ["역", "력"],
   "렁": ["렁", "엉"], "렴": ["렴", "염"],
+  "렷": ["렷", "엿", "녓"],
   "녓": ["녓", "엿"], "엿": ["엿", "녓"],
+  "릊": ["릊", "늦", "읒"], "늦": ["늦", "릊", "읒"], "읒": ["읒", "릊", "늦"],
+  "릅": ["릅", "늡"], "늡": ["늡", "릅"],
   "닢": ["닢", "잎"], "잎": ["잎", "닢"]
 };
 
@@ -351,6 +356,14 @@ function isMyTurn() {
     && gameState.turnPlayer === playerIndex;
 }
 
+/* 같은 소켓에 남아 있던 싱글(AI) 게임 이벤트가 멀티/랭크 화면에
+   스며들어 "AI가 들어온 것처럼" 보이는 문제 방지 —
+   AI 모드 이벤트는 싱글 탭에 있을 때만 처리한다 */
+function isStaleAIEvent(payloadMode, state) {
+  const m = payloadMode || (state && state.mode);
+  return m === "ai" && currentMode !== "single";
+}
+
 /* ---------------------------------------------------------
    입력 포커스
 --------------------------------------------------------- */
@@ -387,11 +400,13 @@ function initSocket() {
   if (socket) return;
 
   socket = io({
-    transports: ["websocket", "polling"],
+    transports: ["websocket"],
+    upgrade: false,
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,
-    reconnectionDelayMax: 5000
+    reconnectionDelayMax: 5000,
+    timeout: 10000
   });
 
   socket.on("connect", () => {
@@ -545,7 +560,12 @@ function initSocket() {
   socket.on("admin:moneyResult", (data) => {
     if (!data) return;
     setAdminStatus(data.message || data.reason || (data.ok ? "완료" : "실패"), data.ok ? "ok" : "error");
-    if (data.ok) socket.emit("player:getRanking");
+    if (data.ok) {
+      showMessage(data.message || "돈이 조절되었습니다.", "success");
+      socket.emit("player:getRanking");
+    } else {
+      showMessage(data.reason || "돈 조절에 실패했습니다.", "error");
+    }
   });
 
   socket.on("admin:bugs", (data) => {
@@ -605,9 +625,22 @@ function initSocket() {
 
   socket.on("admin:panel", (data) => {
     if (!data) return;
-    if (data.message) accountMsg(data.message, data.ok === false ? "error" : "ok");
-    else if (data.ok === false && data.reason) accountMsg(data.reason, "error");
-    renderAdminBody(data);
+    /* 전체 패널(role 포함)일 때만 재렌더링 — 적용/비밀번호 변경 같은
+       경량 결과로 패널이 초기화되어 반영이 안 보이는 문제 방지 */
+    if ("role" in data) {
+      renderAdminBody(data);
+    } else if (data.ok && "hasPassword" in data && adminModalOpen) {
+      /* 비밀번호 변경 후 경량 응답에는 패널 데이터가 없으므로 전체 패널을 다시 요청 */
+      socket.emit("admin:getPanel");
+    }
+    if (data.ok === false && data.reason) {
+      setAdminStatus(data.reason, "error");
+      accountMsg(data.reason, "error");
+    } else if (data.message) {
+      setAdminStatus(data.message, "ok");
+      accountMsg(data.message, "ok");
+      showMessage(data.message, "success");
+    }
   });
 
   socket.on("admin:configUpdated", (cfg) => {
@@ -636,6 +669,7 @@ function initSocket() {
   /* -- 방 이벤트 --------------------------------------- */
   socket.on("room:created", (data) => {
     if (!data.ok) { startingGame = false; return; }
+    if (isStaleAIEvent(null, data.state)) return;
     roomId = data.roomId;
     playerIndex = data.playerIndex;
     gameSessionId++;
@@ -649,6 +683,7 @@ function initSocket() {
 
   socket.on("room:joined", (data) => {
     if (!data.ok) return;
+    if (isStaleAIEvent(null, data.state)) return;
     roomId = data.roomId;
     playerIndex = data.playerIndex;
     gameSessionId++;
@@ -667,6 +702,7 @@ function initSocket() {
   });
 
   socket.on("room:playerJoined", (data) => {
+    if (isStaleAIEvent(null, data && data.state)) return;
     gameState = data.state;
     renderGameState(gameState);
     if (data.waiting) {
@@ -757,6 +793,7 @@ function initSocket() {
   /* -- 게임 이벤트 ------------------------------------- */
   socket.on("game:state", (data) => {
     if (data && data.roomId && roomId && data.roomId !== roomId) return;
+    if (isStaleAIEvent(data && data.mode, data)) return;
     const wasMyTurn = gameState && gameState.turnPlayer === playerIndex;
     gameState = data;
     renderGameState(gameState);
@@ -770,6 +807,7 @@ function initSocket() {
 
   socket.on("game:started", (data) => {
     if (!data || !data.state || (data.state.roomId && roomId && data.state.roomId !== roomId)) return;
+    if (isStaleAIEvent(data.state.mode)) return;
     gameState = data.state;
     gameSessionId++;
     localUsedWords.clear();
@@ -817,11 +855,13 @@ function initSocket() {
   });
 
   socket.on("game:roundReset", (data) => {
+    if (isStaleAIEvent(data && data.mode)) return;
     showMessage(data.reason || "새 라운드가 시작됩니다!", "info");
   });
 
   socket.on("game:oneshot", (data) => {
     if (!data) return;
+    if (isStaleAIEvent(data.mode)) return;
     const target = data.targetNickname || "상대";
     const isMe = data.target === playerIndex;
     let msg = `한방 단어! ${data.killerNickname || "상대"}님이 ${target}님의 하트를 1개 깎았습니다.`;
@@ -849,6 +889,7 @@ function initSocket() {
   });
 
   socket.on("game:timeout", (data) => {
+    if (isStaleAIEvent(data && data.mode)) return;
     const timeoutName = data.nickname || `플레이어 ${data.player + 1}`;
     if (data.player === playerIndex) {
       if (data.eliminated) {
