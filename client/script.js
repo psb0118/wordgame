@@ -756,6 +756,7 @@ function initSocket() {
 
   /* -- 게임 이벤트 ------------------------------------- */
   socket.on("game:state", (data) => {
+    if (data && data.roomId && roomId && data.roomId !== roomId) return;
     const wasMyTurn = gameState && gameState.turnPlayer === playerIndex;
     gameState = data;
     renderGameState(gameState);
@@ -768,6 +769,7 @@ function initSocket() {
   });
 
   socket.on("game:started", (data) => {
+    if (!data || !data.state || (data.state.roomId && roomId && data.state.roomId !== roomId)) return;
     gameState = data.state;
     gameSessionId++;
     localUsedWords.clear();
@@ -868,6 +870,14 @@ function initSocket() {
   });
 
   socket.on("game:finished", (data) => {
+    /* 같은 소켓에 남아 있던 다른 게임(싱글/ai 등)이 끝났을 때 도착하는
+       game:finished를 현재 랭크 게임의 종료로 오인해 자동으로 나가지는
+       버그 방지 — 현재 방과 다른 방의 종료 이벤트는 무시한다. */
+    const finishedRoomId = data && data.state ? data.state.roomId : null;
+    if (finishedRoomId && roomId && finishedRoomId !== roomId) {
+      return;
+    }
+
     submitting = false;
     stopCountdown();
     clearInput();
@@ -911,7 +921,7 @@ function initSocket() {
       clearTimeout(rankedAutoLeave);
       rankedAutoLeave = setTimeout(() => {
         rankedAutoLeave = null;
-        if (gameState && gameState.finished) leaveRoom();
+        if (gameState && gameState.finished && (!gameState.roomId || gameState.roomId === roomId)) leaveRoom();
       }, 4000);
     }
   });
