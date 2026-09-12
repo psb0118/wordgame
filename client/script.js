@@ -15,6 +15,7 @@ let playerIndex = null;
 let gameState = null;
 let currentMaxHearts = 2;
 let submitting = false;
+let submitLockTimer = null;
 let countdownTimer = null;
 let gameSessionId = 0;
 let startingGame = false;
@@ -363,6 +364,20 @@ function focusInput() {
 function clearInput() {
   const input = modeGet("input");
   if (input) input.value = "";
+}
+
+/* 제출 중 잠금 — 응답 이벤트가 어떤 이유로든 늦더라도
+   2초 후 자동 해제되어 입력이 영원히 씹히지 않게 한다 */
+function lockSubmitting() {
+  submitting = true;
+  clearTimeout(submitLockTimer);
+  submitLockTimer = setTimeout(() => {
+    submitLockTimer = null;
+    if (submitting) {
+      submitting = false;
+      updateInputState();
+    }
+  }, 2000);
 }
 
 /* ---------------------------------------------------------
@@ -1181,7 +1196,7 @@ function updateInputState() {
   const amEliminated = gameState && gameState.players
     && gameState.players[playerIndex] && gameState.players[playerIndex].eliminated;
 
-  const disabled = !socketConnected || !roomId || !myTurn || submitting || amEliminated;
+  const disabled = !socketConnected || !roomId || !myTurn || amEliminated;
 
   if (input) input.disabled = disabled;
   if (btn) btn.disabled = disabled;
@@ -1255,7 +1270,7 @@ function submitSingleWord() {
   const word = normalizeWord(input.value);
   if (!word) return;
 
-  submitting = true;
+  lockSubmitting();
   socket.emit("game:word", { word });
   updateInputState();
 }
@@ -1298,7 +1313,7 @@ function submitWord(targetMode) {
   const word = normalizeWord(input.value);
   if (!word) return;
 
-  submitting = true;
+  lockSubmitting();
   socket.emit("game:word", { word });
   updateInputState();
 }
@@ -2160,6 +2175,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#singleInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
+      if (e.isComposing || e.keyCode === 229) return;
       e.preventDefault();
       submitSingleWord();
     }
@@ -2179,7 +2195,11 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#onlineSend")?.addEventListener("click", () => submitWord("online"));
   $("#onlineInput")?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); submitWord("online"); }
+    if (e.key === "Enter") {
+      if (e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      submitWord("online");
+    }
   });
   $("#onlineRestart")?.addEventListener("click", () => {
     if (!socket || !socketConnected) return;
@@ -2205,7 +2225,11 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#rankedSend")?.addEventListener("click", () => submitWord("ranked"));
   $("#rankedInput")?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); submitWord("ranked"); }
+    if (e.key === "Enter") {
+      if (e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      submitWord("ranked");
+    }
   });
   $("#rankedLeave")?.addEventListener("click", () => {
     leaveRoom();
