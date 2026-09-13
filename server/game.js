@@ -45,6 +45,49 @@ const DUEUM = {
 };
 
 /* =========================================================
+   자동 두음법칙 확장
+
+   위 DUEUM 외에도 모든 음절에 대해 두음법칙 변형(초성 문자 교체)을
+   적용해 연결 허용 글자를 자동 생성한다. 받침(종성)은 그대로 둔다.
+
+   - 초성 ㄹ : 두음법칙 → ㄴ (라→나, 룹→눕, 랓→낯…)
+   - 초성 ㄹ : 이/야/여/예/요/유 앞 → ㅇ (리→이, 릿→잇, 류→유…)
+   - 초성 ㄴ : 이/야/여/예/요/유 앞 → ㅇ (니→이, 녀→여…)
+   역방향(눕→룹, 잇→릿)도 같은 표로 함께 허용된다.
+========================================================= */
+
+const Y_GLIDE_MOS = new Set([2, 3, 6, 7, 12, 17, 20]);
+
+function buildDueumAuto() {
+  const map = new Map();
+  for (let m = 0; m < 21; m++) {
+    const yg = Y_GLIDE_MOS.has(m);
+    for (let j = 0; j < 28; j++) {
+      for (let cho = 0; cho < 19; cho++) {
+        const base = 0xAC00 + (cho * 21 + m) * 28 + j;
+        const c = String.fromCharCode(base);
+        /* 두음법칙 변형 초성 후보 — 종성은 그대로 */
+        let partners = [];
+        if (cho === 5) partners = yg ? [11] : [2];          /* ㄹ */
+        else if (cho === 2) partners = yg ? [11, 5] : [5];  /* ㄴ */
+        else if (cho === 11) partners = yg ? [5, 2] : [];   /* ㅇ */
+        for (const pcho of partners) {
+          const p = String.fromCharCode(0xAC00 + (pcho * 21 + m) * 28 + j);
+          if (p === c) continue;
+          if (!map.has(c)) map.set(c, new Set());
+          map.get(c).add(p);
+          if (!map.has(p)) map.set(p, new Set());
+          map.get(p).add(c);
+        }
+      }
+    }
+  }
+  return map;
+}
+
+const AUTO_DUEUM = buildDueumAuto();
+
+/* =========================================================
    정규화
 ========================================================= */
 
@@ -82,6 +125,9 @@ function allowedFirstChars(lastChar) {
   for (const [from, values] of Object.entries(DUEUM)) {
     if (Array.isArray(values) && values.includes(lastChar)) result.add(from);
   }
+
+  const auto = AUTO_DUEUM.get(lastChar);
+  if (auto) for (const ch of auto) result.add(ch);
 
   return [...result];
 }

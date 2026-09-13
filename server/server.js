@@ -1437,6 +1437,16 @@ app.get("/api/leaderboard", async (req, res) => {
           stat_money: r.money, stat_streak: r.streak, stat_best_streak: r.bestStreak
         }));
     }
+    /* 같은 닉네임(같은 계정)이 좀비 레코드 때문에 중복 집계되는 것을 방지.
+       정렬은 위에서 끝났으므로 닉네임당 첫 번째(최고 순위) 레코드만 남긴다. */
+    const seenNicks = new Set();
+    rows = rows.filter(r => {
+      const k = String(r.nickname || "").trim();
+      if (!k) return true;
+      if (seenNicks.has(k)) return false;
+      seenNicks.add(k);
+      return true;
+    });
     res.json(rows.map((r, i) => ({
       id: r.id, nickname: r.nickname, mode,
       ranking: r.stat_rating, wins: r.stat_wins, losses: r.stat_losses,
@@ -2241,6 +2251,22 @@ io.on("connection", (socket) => {
     return null;
   };
 
+  /* 같은 닉네임의 모든 레코드 조회 — 소켓 ID는 재접속마다 바뀌므로 좀비 레코드가 여러 개
+     남아 랭킹에 같은 유저가 중복 표시되는 것을 막기 위해 전부 찾는다 */
+  const findAllPlayerIdsByNickname = async (nickname) => {
+    if (dbMode === "pg") {
+      try {
+        const result = await dbPool.query("SELECT id FROM players WHERE nickname = $1", [nickname]);
+        return result.rows.map(r => r.id);
+      } catch (err) { console.error("닉네임 레코드 조회 오류:", err.message); return []; }
+    }
+    const ids = [];
+    for (const [id, p] of playerCache) {
+      if (String(p?.nickname || "").trim() === nickname) ids.push(id);
+    }
+    return ids;
+  };
+
   socket.on("admin:getPanel", async () => {
     try {
       const reg = await requireNickname(socket);
@@ -2586,24 +2612,51 @@ io.on("connection", (socket) => {
 
       /* 재접속/새 소켓에서도 같은 닉네임이라면 기존 플레이어 데이터(돈, 랭킹 등)를
          현재 소켓 ID로 이관 — 소켓 ID는 재접속 때마다 바뀌므로 닉네임이 곧 계정이다.
-         기존 소켓이 아직 살아 있는 경우(중복 로그인)는 이관하지 않는다. */
-      const existingId = await findPlayerIdByNickname(nickname);
-      if (existingId && existingId !== socket.id && !io.sockets.sockets.has(existingId)) {
-        const oldData = await getPlayerData(existingId);
+         같은 닉네임의 좀비(이미 끊긴 소켓) 레코드가 여러 개 쌓이면 랭킹에 같은 유저가
+         중복 표시되므로, 소켓이 죽은 레코드는 하나만 남겨 이관하고 나머지는 전부 제거한다.
+         살아 있는 소켓(다른 탭)의 레코드는 건드리지 않는다. */
+      const sameNickIds = await findAllPlayerIdsByNickname(nickname);
+      const deadOnes = sameNickIds.filter(id => id !== socket.id && !io.sockets.sockets.has(id));
+      const migratedId = deadOnes[0] || null;
+      for (const id of deadOnes) {
+        if (id === migratedId) continue;
+        playerCache.delete(id);
+        if (dbMode === "pg") {
+          try { await dbPool.query("DELETE FROM players WHERE id = $1", [id]); } catch (err) { console.error("중복 레코드 삭제 오류:", err.message); }
+        }
+        console.log(`[ACCOUNT] '${nickname}' 중복 레코드 정리: ${id}`);
+      }
+      if (migratedId) {
+        const oldData = await getPlayerData(migratedId);
         oldData.id = socket.id;
         oldData.nickname = nickname;
+        playerCache.set(socket.id, oldData);
+        playerCache.delete(migratedId);
         if (dbMode === "pg") {
-          playerCache.set(socket.id, oldData);
-          playerCache.delete(existingId);
-          try { await dbPool.query("DELETE FROM players WHERE id = $1", [existingId]); } catch (err) { console.error("기존 레코드 삭제 오류:", err.message); }
-          await savePlayerData(socket.id, oldData);
-        } else {
-          playerCache.set(socket.id, oldData);
-          playerCache.delete(existingId);
-          saveJsonDb();
+          try { await dbPool.query("DELETE FROM players WHERE id = $1", [migratedId]); } catch (err) { console.error("기존 레코드 삭제 오류:", err.message); }
         }
-        console.log(`[ACCOUNT] '${nickname}' 데이터 이관: ${existingId} -> ${socket.id}`);
+        await savePlayerData(socket.id, oldData);
+        console.log(`[ACCOUNT] '${nickname}' 데이터 이관: ${migratedId} -> ${socket.id}`);
       }
+      /* 빠르게 새로고침하는 경우 직전 소켓이 아직 "연결 중"으로 보여 위 정리가 안 될 수 있음.
+         잠시 뒤 다시 확인해 끊긴 좀비 레코드가 남아 있으면 정리한다. */
+      setTimeout(async () => {
+        try {
+          if (!io.sockets.sockets.has(socket.id)) return;
+          const rest = await findAllPlayerIdsByNickname(nickname);
+          let changed = false;
+          for (const id of rest) {
+            if (id === socket.id || io.sockets.sockets.has(id)) continue;
+            playerCache.delete(id);
+            if (dbMode === "pg") {
+              try { await dbPool.query("DELETE FROM players WHERE id = $1", [id]); } catch (err) { console.error("지연 정리 오류:", err.message); }
+            }
+            console.log(`[ACCOUNT] '${nickname}' 지연 좀비 레코드 정리: ${id}`);
+            changed = true;
+          }
+          if (changed && dbMode !== "pg") saveJsonDb();
+        } catch (err) { console.error("닉네임 지연 정리 오류:", err); }
+      }, 5000);
 
       const room = getPlayerRoom(socket);
       if (room) {

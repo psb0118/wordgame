@@ -345,6 +345,38 @@ const DUEUM = {
   "닢": ["닢", "잎"], "잎": ["잎", "닢"]
 };
 
+/* 자동 두음법칙 확장 — 서버 game.js와 동일 로직
+   (초성 두음법칙 교체만, 받침 유지, 역방향 포함) */
+const Y_GLIDE_MOS = new Set([2, 3, 6, 7, 12, 17, 20]); /* 이/야/여/예/요/유 앞 */
+
+function buildDueumAuto() {
+  const map = new Map();
+  for (let m = 0; m < 21; m++) {
+    const yg = Y_GLIDE_MOS.has(m);
+    for (let j = 0; j < 28; j++) {
+      for (let cho = 0; cho < 19; cho++) {
+        const base = 0xAC00 + (cho * 21 + m) * 28 + j;
+        const c = String.fromCharCode(base);
+        let partners = [];
+        if (cho === 5) partners = yg ? [11] : [2];         /* ㄹ */
+        else if (cho === 2) partners = yg ? [11, 5] : [5]; /* ㄴ */
+        else if (cho === 11) partners = yg ? [5, 2] : [];  /* ㅇ */
+        for (const pcho of partners) {
+          const p = String.fromCharCode(0xAC00 + (pcho * 21 + m) * 28 + j);
+          if (p === c) continue;
+          if (!map.has(c)) map.set(c, new Set());
+          map.get(c).add(p);
+          if (!map.has(p)) map.set(p, new Set());
+          map.get(p).add(c);
+        }
+      }
+    }
+  }
+  return map;
+}
+
+const AUTO_DUEUM = buildDueumAuto();
+
 function getJongsung(char) {
   if (!char || char.length !== 1) return null;
   const code = char.charCodeAt(0);
@@ -379,6 +411,9 @@ function allowedFirstChars(lastChar) {
   for (const [from, values] of Object.entries(DUEUM)) {
     if (Array.isArray(values) && values.includes(lastChar)) result.add(from);
   }
+
+  const auto = AUTO_DUEUM.get(lastChar);
+  if (auto) for (const ch of auto) result.add(ch);
 
   return [...result];
 }
