@@ -222,6 +222,8 @@ async function initDatabase() {
           current_title TEXT DEFAULT '',
           last_check_date TEXT DEFAULT '',
           attendance_streak INTEGER DEFAULT 0,
+          recent_games TEXT DEFAULT '[]',
+          daily TEXT DEFAULT '{}',
           single_rating INTEGER DEFAULT 1000,
           single_wins INTEGER DEFAULT 0,
           single_losses INTEGER DEFAULT 0,
@@ -245,7 +247,9 @@ async function initDatabase() {
           ADD COLUMN IF NOT EXISTS titles TEXT DEFAULT '[]',
           ADD COLUMN IF NOT EXISTS current_title TEXT DEFAULT '',
           ADD COLUMN IF NOT EXISTS last_check_date TEXT DEFAULT '',
-          ADD COLUMN IF NOT EXISTS attendance_streak INTEGER DEFAULT 0
+          ADD COLUMN IF NOT EXISTS attendance_streak INTEGER DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS recent_games TEXT DEFAULT '[]',
+          ADD COLUMN IF NOT EXISTS daily TEXT DEFAULT '{}'
       `);
       dbMode = "pg";
       console.log("데이터베이스: PostgreSQL 연결 완료");
@@ -277,6 +281,9 @@ function migratePlayerData(p) {
   p.currentTitle = typeof p.currentTitle === "string" ? p.currentTitle : "";
   p.lastCheckDate = typeof p.lastCheckDate === "string" ? p.lastCheckDate : "";
   p.attendanceStreak = Number.isFinite(p.attendanceStreak) ? Math.max(0, Math.floor(p.attendanceStreak)) : 0;
+  if (!Array.isArray(p.recentGames)) p.recentGames = [];
+  else p.recentGames = p.recentGames.slice(-10).filter(g => g && typeof g === "object");
+  p.daily = initDailyData(p.daily, getKstDate());
   return p;
 }
 
@@ -299,7 +306,9 @@ async function getPlayerData(playerId) {
           titles: (() => { try { return JSON.parse(row.titles || "[]"); } catch { return []; } })(),
           currentTitle: row.current_title || "",
           lastCheckDate: row.last_check_date || "",
-          attendanceStreak: row.attendance_streak || 0
+          attendanceStreak: row.attendance_streak || 0,
+          recentGames: (() => { try { return JSON.parse(row.recent_games || "[]"); } catch { return []; } })(),
+          daily: (() => { try { return JSON.parse(row.daily || "{}"); } catch { return {}; } })()
         };
         const migrated = migratePlayerData(data);
         playerCache.set(playerId, migrated);
@@ -334,6 +343,8 @@ async function savePlayerData(playerId, data) {
   safe.currentTitle = typeof safe.currentTitle === "string" ? safe.currentTitle : "";
   safe.lastCheckDate = typeof safe.lastCheckDate === "string" ? safe.lastCheckDate : "";
   safe.attendanceStreak = Math.max(0, Math.floor(num(safe.attendanceStreak, 0)));
+  safe.recentGames = Array.isArray(safe.recentGames) ? safe.recentGames.slice(-10).filter(g => g && typeof g === "object") : [];
+  safe.daily = initDailyData(safe.daily, getKstDate());
   playerCache.set(playerId, safe);
   if (dbMode === "pg") {
     try {
@@ -342,15 +353,17 @@ async function savePlayerData(playerId, data) {
           (id, nickname, rating, wins, losses, single_rating, single_wins, single_losses,
            ranked_rating, ranked_wins, ranked_losses, ranked_streak, ranked_best_streak,
            money, money_multiplier, rating_boost_games,
-           titles, current_title, last_check_date, attendance_streak, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NOW())
+           titles, current_title, last_check_date, attendance_streak,
+           recent_games, daily, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW())
         ON CONFLICT (id) DO UPDATE SET
           nickname=$2, rating=$3, wins=$4, losses=$5,
           single_rating=$6, single_wins=$7, single_losses=$8,
           ranked_rating=$9, ranked_wins=$10, ranked_losses=$11,
           ranked_streak=$12, ranked_best_streak=$13,
           money=$14, money_multiplier=$15, rating_boost_games=$16,
-          titles=$17, current_title=$18, last_check_date=$19, attendance_streak=$20, updated_at=NOW()
+          titles=$17, current_title=$18, last_check_date=$19, attendance_streak=$20,
+          recent_games=$21, daily=$22, updated_at=NOW()
       `, [
         playerId, safe.nickname || "플레이어",
         safe.multi.rating, safe.multi.wins, safe.multi.losses,
@@ -359,7 +372,8 @@ async function savePlayerData(playerId, data) {
         safe.ranked.streak, safe.ranked.bestStreak,
         safe.money, safe.moneyMultiplier, safe.ratingBoostGames,
         JSON.stringify(safe.titles), safe.currentTitle,
-        safe.lastCheckDate, safe.attendanceStreak
+        safe.lastCheckDate, safe.attendanceStreak,
+        JSON.stringify(safe.recentGames), JSON.stringify(safe.daily)
       ]);
     } catch (err) { console.error("DB 쓰기 오류:", err.message); }
   } else {
@@ -510,7 +524,9 @@ async function getRankingPayload(socketId) {
       checkedToday: data.lastCheckDate === getKstDate(),
       streak: data.attendanceStreak || 0,
       lastCheckDate: data.lastCheckDate || ""
-    }
+    },
+    recentGames: Array.isArray(data.recentGames) ? data.recentGames.slice(-10) : [],
+    daily: initDailyData(data.daily, getKstDate())
   };
 }
 
@@ -519,6 +535,82 @@ function getKstDate(ts) {
   return new Date((ts == null ? Date.now() : ts) + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 const ATTENDANCE_REWARD = (streak) => Math.min(10000, 2000 + (streak - 1) * 1000);
+
+/* =========================================================
+   일일 미션 — 날짜가 바뀌면 카운터 리셋, 달성 시 코인/칭호 보상
+========================================================= */
+
+const DAILY_MISSIONS = [
+  { id: "rankedWins", label: "랭크에서 3승 올리기", target: 3, coin: 3000 },
+  { id: "oneShots", label: "한방 단어 5번 성공", target: 5, coin: 2000 },
+  { id: "streakDone", label: "랭크 2연승 달성", target: 1, coin: 1000, title: { id: "t_daily", name: "데일리 마스터" } }
+];
+const DAILY_TITLE = DAILY_MISSIONS.find(m => m.title);
+
+function initDailyData(d, today) {
+  d = (d && typeof d === "object") ? d : {};
+  if (d.date !== today) d = { date: today, rankedWins: 0, oneShots: 0, streakDone: 0, claimed: [] };
+  if (!Array.isArray(d.claimed)) d.claimed = [];
+  d.rankedWins = Math.max(0, Math.floor(Number(d.rankedWins) || 0));
+  d.oneShots = Math.max(0, Math.floor(Number(d.oneShots) || 0));
+  d.streakDone = Math.max(0, Math.floor(Number(d.streakDone) || 0));
+  return d;
+}
+
+function buildMissionProgress(daily) {
+  const current = (m) => m.id === "rankedWins" ? daily.rankedWins : (m.id === "oneShots" ? daily.oneShots : daily.streakDone);
+  return DAILY_MISSIONS.map(m => ({
+    id: m.id,
+    label: m.label,
+    target: m.target,
+    current: Math.min(m.target, current(m)),
+    coin: m.coin || 0,
+    title: m.title || null,
+    claimed: daily.claimed.includes(m.id)
+  }));
+}
+
+/* 미션 진행 누적 (랭크 승리 / 한방 / 연승 달성) — 비동기, 실패 무시 */
+function bumpDaily(playerId, key) {
+  return getPlayerData(playerId)
+    .then(async (pd) => {
+      const daily = initDailyData(pd.daily, getKstDate());
+      if (daily.claimed.includes("rankedWins") && key === "rankedWins") return;
+      if (key === "rankedWins") daily.rankedWins++;
+      else if (key === "oneShots") daily.oneShots++;
+      else if (key === "streakDone") daily.streakDone++;
+      pd.daily = daily;
+      await savePlayerData(playerId, pd);
+    })
+    .catch(err => console.error("일일 미션 누적 오류:", err.message));
+}
+
+/* 최근 10판 전적 기록 — 종료된 방의 각 인간 플레이어에 기록 */
+async function recordMatchHistory(room, winnerIndex, loserIndex) {
+  if (!room || !room.players) return;
+  for (const p of room.players) {
+    if (p.isBot) continue;
+    try {
+      const pd = await getPlayerData(p.id);
+      const mine = (room.history || []).filter(h => h.player === p.playerIndex && typeof h.word === "string" && h.word.length > 0);
+      const wordCount = mine.length;
+      const avgWordLen = wordCount > 0 ? Math.round((mine.reduce((a, w) => a + w.word.length, 0) / wordCount) * 10) / 10 : 0;
+      const opp = room.players.find(o => o.playerIndex !== p.playerIndex && !o.isBot && o.id !== p.id);
+      const result = winnerIndex === null ? "draw" : (p.playerIndex === winnerIndex ? "win" : "lose");
+      const list = Array.isArray(pd.recentGames) ? pd.recentGames : [];
+      list.push({
+        date: new Date().toISOString(),
+        mode: room.mode || "single",
+        result,
+        vs: opp ? opp.nickname : "AI",
+        wordCount,
+        avgWordLen
+      });
+      pd.recentGames = list.slice(-10);
+      await savePlayerData(p.id, pd);
+    } catch (e) { console.error("전적 기록 오류:", e.message); }
+  }
+}
 
 function tryMatchRanked() {
   while (RANKED_QUEUE.length >= 2) {
@@ -835,8 +927,9 @@ function handleTurnTimeout(room, gameSessionId) {
   });
 
   const alive = getAlivePlayers(room);
-  if (alive.length <= 1) {
-    finishGame(room, alive.length === 1 ? alive[0].playerIndex : null, player.playerIndex);
+  if (alive.length === 0) { finishGame(room, null, null); return; }
+  if (alive.length === 1) {
+    finishGame(room, alive[0].playerIndex, player.playerIndex);
     return;
   }
 
@@ -902,6 +995,9 @@ async function finishGame(room, winnerIndex, loserIndex) {
         }
 
         if (room.mode === "ranked") {
+          /* 일일 미션 — 랭크 승리 누적, 연승 2회 달성 */
+          await bumpDaily(w.id, "rankedWins");
+          if ((result.winner.ranked && result.winner.ranked.streak) >= 2) await bumpDaily(w.id, "streakDone");
           const winnerData = await getPlayerData(w.id);
           const base = rollMoney();
           const earned = computeMoneyReward(base, winnerData);
@@ -910,8 +1006,14 @@ async function finishGame(room, winnerIndex, loserIndex) {
           const ws = io.sockets.sockets.get(w.socketId);
           if (ws) ws.emit("money:received", { amount: earned, base, multiplier: Math.round(earned / base), roomId: room.id });
         }
+
+        /* 전적 기록은 레이팅/미션 저장이 모두 끝난 뒤에 — 동시 기록 시 덮어쓰기 손실 방지 */
+        await recordMatchHistory(room, winnerIndex, loserIndex);
       })
       .catch((err) => console.error("레이팅 반영 오류:", err.message));
+  } else {
+    /* 레이팅 미반영 경기(AI/싱글, 방장 이탈 등)는 즉시 전적 기록 */
+    recordMatchHistory(room, winnerIndex, loserIndex).catch(err => console.error("전적 기록 오류:", err.message));
   }
 
   /* 방장이 탈락/이탈했으면 생존자에게 방장 이전 (재시작 데드락 방지) */
@@ -1111,9 +1213,13 @@ function playWord(room, player, rawWord, gameSessionId) {
       mode: room.mode, roomId: room.id
     });
 
+    /* 일일 미션 — '한방 단어' 성공 횟수 누적 */
+    if (!player.isBot) bumpDaily(player.id, "oneShots");
+
     const alive = getAlivePlayers(room);
-    if (alive.length <= 1) {
-      finishGame(room, alive.length === 1 ? alive[0].playerIndex : null, loser);
+    if (alive.length === 0) { finishGame(room, null, null); return { ok: true, finished: true }; }
+    if (alive.length === 1) {
+      finishGame(room, alive[0].playerIndex, loser);
       return { ok: true, finished: true };
     }
 
@@ -1527,8 +1633,9 @@ io.on("connection", (socket) => {
           broadcastRoomState(room);
           if (room.finished) return;
           const alive = getAlivePlayers(room);
-          if (alive.length <= 1) {
-            finishGame(room, alive.length === 1 ? alive[0].playerIndex : null, player.playerIndex);
+          if (alive.length === 0) { finishGame(room, null, null); return; }
+          if (alive.length === 1) {
+            finishGame(room, alive[0].playerIndex, player.playerIndex);
             return;
           }
           if (player.eliminated) {
@@ -1898,6 +2005,57 @@ io.on("connection", (socket) => {
       socket.emit("player:ranking", await getRankingPayload(socket.id));
       broadcastRoomState(getPlayerRoom(socket));
     } catch (err) { console.error("칭호 변경 오류:", err); }
+  });
+
+  socket.on("missions:status", async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const daily = initDailyData(pd.daily, getKstDate());
+      socket.emit("missions:status", {
+        ok: true,
+        daily,
+        missions: buildMissionProgress(daily)
+      });
+    } catch (err) { console.error("미션 조회 오류:", err); }
+  });
+
+  socket.on("missions:claim", async (data) => {
+    try {
+      const missionId = String(data?.id || "");
+      const mission = DAILY_MISSIONS.find(m => m.id === missionId);
+      if (!mission) { socket.emit("missions:result", { ok: false, reason: "알 수 없는 미션입니다." }); return; }
+      const pd = await getPlayerData(socket.id);
+      const daily = initDailyData(pd.daily, getKstDate());
+      if (daily.claimed.includes(missionId)) { socket.emit("missions:result", { ok: false, reason: "이미 수령한 보상입니다." }); return; }
+      const current = missionId === "rankedWins" ? daily.rankedWins : (missionId === "oneShots" ? daily.oneShots : daily.streakDone);
+      if (current < mission.target) { socket.emit("missions:result", { ok: false, reason: "아직 달성하지 못했습니다." }); return; }
+
+      daily.claimed.push(missionId);
+      pd.daily = daily;
+      let message = "보상을 수령했습니다.";
+      if (mission.coin) {
+        pd.money += mission.coin;
+        message = `${mission.coin.toLocaleString()}원을 받았습니다.`;
+      }
+      if (mission.title && !pd.titles.some(t => t.id === mission.title.id)) {
+        pd.titles.push({ id: mission.title.id, name: mission.title.name });
+        if (!pd.currentTitle) pd.currentTitle = mission.title.name;
+        message += ` 칭호 '${mission.title.name}'을 획득했습니다.`;
+      }
+      await savePlayerData(socket.id, pd);
+      socket.emit("missions:result", {
+        ok: true, message, daily: pd.daily,
+        missions: buildMissionProgress(pd.daily),
+        money: pd.money, titles: pd.titles, currentTitle: pd.currentTitle
+      });
+      socket.emit("player:ranking", await getRankingPayload(socket.id));
+      socket.emit("shop:info", {
+        ok: true, money: pd.money, moneyMultiplier: pd.moneyMultiplier,
+        ratingBoostGames: pd.ratingBoostGames, titles: pd.titles,
+        currentTitle: pd.currentTitle, titleCatalog: SHOP_TITLES,
+        potionPrice: SHOP_POTION_PRICE, multiplierPrices: SHOP_MULTIPLIER_PRICES
+      });
+    } catch (err) { console.error("미션 보상 수령 오류:", err); }
   });
 
   socket.on("shop:buyPotion", async () => {

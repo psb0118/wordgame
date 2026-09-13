@@ -2061,6 +2061,109 @@ button:active:not(:disabled) {
   background: var(--card-soft);
 }
 
+/* 칭호 장착 (상점 구매 후 변경 버튼) */
+.shop-buy.equip:hover { background: var(--accent); color: #fff; }
+.shop-buy.equipped {
+  background: #eef2ff;
+  border-color: #6366f1;
+  color: #4f46e5;
+  cursor: default;
+}
+
+/* 계정 패널: 칭호 장착 칩 */
+.acc-title-chip {
+  font-size: 0.78rem;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.acc-title-chip:hover:not(.current) { border-color: var(--accent); color: var(--accent); }
+.acc-title-chip.current {
+  background: #eef2ff;
+  border-color: #6366f1;
+  color: #4f46e5;
+  font-weight: 700;
+  cursor: default;
+}
+
+/* 일일 미션 패널 */
+.acc-mission-list,
+.acc-recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.mission-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--card-soft);
+}
+.mission-row.done { border-color: var(--green); background: var(--green-soft); }
+.mission-row.claimed { opacity: 0.6; }
+.mission-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.mission-state { font-size: 0.75rem; color: var(--text-dim); font-weight: 700; white-space: nowrap; }
+.mission-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.mission-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4f46e5, #7c3aed);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+.mission-row.done .mission-bar-fill { background: linear-gradient(90deg, #10b981, #059669); }
+.mission-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.mission-reward { font-size: 0.72rem; color: var(--text-dim); }
+.mission-claim {
+  font-size: 0.75rem;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--green);
+  background: var(--green-soft);
+  color: #059669;
+  font-weight: 700;
+  cursor: pointer;
+}
+.mission-claim:hover { background: var(--green); color: #fff; }
+
+/* 최근 10판 전적 */
+.rec-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  padding: 5px 4px;
+  border-bottom: 1px dashed var(--border);
+}
+.rec-row:last-child { border-bottom: none; }
+.rec-res { min-width: 20px; font-weight: 800; }
+.rec-win { color: #059669; }
+.rec-lose { color: #dc2626; }
+.rec-draw { color: var(--text-faint); }
+.rec-mode { color: var(--text-dim); }
+.rec-vs { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-words, .rec-len, .rec-date { color: var(--text-dim); white-space: nowrap; }
+
 /* VFX: 캐시 획득 플래시 */
 @keyframes cash-flash {
   0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(251,191,36,0.4); }
@@ -2213,10 +2316,10 @@ button:active:not(:disabled) {
 --------------------------------------------------------- */
 .side-rank {
   position: fixed;
-  top: 16px;
+  top: 70px;
   right: 16px;
   width: 264px;
-  max-height: calc(100vh - 32px);
+  max-height: calc(100vh - 90px);
   display: flex;
   flex-direction: column;
   background: rgba(255, 255, 255, 0.92);
@@ -2342,7 +2445,7 @@ button:active:not(:disabled) {
 
 .side-rank-open {
   position: fixed;
-  top: 16px;
+  top: 70px;
   right: 16px;
   z-index: 60;
   border: 1px solid var(--border);

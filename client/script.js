@@ -52,6 +52,11 @@ let attendanceStreak = 0;
 let attendanceNextReward = 0;
 const attendanceReward = (streak) => Math.min(10000, 2000 + (streak - 1) * 1000);
 
+/* 일일 미션 & 최근 전적 상태 */
+let missionsState = [];
+let recentGamesState = [];
+let dailyCounters = null;
+
 /* 실시간 랭킹 패널 상태 */
 let sideRankMode = "multi";
 const SIDE_RANK_LIMIT = 10;
@@ -106,6 +111,7 @@ function playSound(name) {
     case "heartLost": tone(330, 0.12, "sawtooth", 0.05); tone(220, 0.18, "sawtooth", 0.05, 0.1); vibrate([60, 40, 60]); break;
     case "win": tone(523, 0.1, "triangle", 0.06); tone(659, 0.1, "triangle", 0.06, 0.1); tone(784, 0.1, "triangle", 0.06, 0.2); tone(1046, 0.24, "triangle", 0.07, 0.3); vibrate([40, 40, 80]); break;
     case "lose": tone(392, 0.14, "sawtooth", 0.05); tone(311, 0.14, "sawtooth", 0.05, 0.14); tone(233, 0.24, "sawtooth", 0.05, 0.28); vibrate([80, 60, 120]); break;
+    case "draw": tone(330, 0.1, "sine", 0.05); tone(294, 0.18, "sine", 0.05, 0.1); vibrate(40); break;
     case "cash": tone(880, 0.08, "sine"); tone(1318, 0.14, "sine", 0.05, 0.06); break;
     case "error": tone(200, 0.12, "square", 0.04); vibrate(60); break;
   }
@@ -554,7 +560,20 @@ function initSocket() {
       attendanceNextReward = attendanceCheckedToday ? 0 : attendanceReward(attendanceStreak + 1);
       renderAttendance();
     }
+    if (Array.isArray(data.recentGames)) {
+      recentGamesState = data.recentGames;
+      renderRecentGames();
+    }
+    if (data.daily) {
+      dailyCounters = data.daily;
+      if (missionsState.length > 0) {
+        applyDailyToMissions(data.daily);
+        renderMissions();
+      }
+    }
     if (shopInfo) renderShop();
+    renderAccTitles();
+    renderAccountScoresStatic();
   });
 
   /* -- 랭크 매칭 -------------------------------------- */
@@ -661,6 +680,28 @@ function initSocket() {
       renderMoneyBar();
       renderShop();
     }
+  });
+
+  /* -- 일일 미션 ---------------------------------------- */
+  socket.on("missions:status", (data) => {
+    if (!data || !Array.isArray(data.missions)) return;
+    missionsState = data.missions;
+    if (data.daily) dailyCounters = data.daily;
+    renderMissions();
+  });
+
+  socket.on("missions:result", (data) => {
+    if (!data) return;
+    showMessage(data.reason || data.message || (data.ok ? "보상을 수령했습니다!" : "보상 수령에 실패했습니다."), data.ok ? "success" : "error");
+    if (data.daily) dailyCounters = data.daily;
+    if (Array.isArray(data.missions)) missionsState = data.missions;
+    if (typeof data.money === "number") moneyBalance = data.money;
+    if (Array.isArray(data.titles)) ownedTitles = data.titles;
+    if (typeof data.currentTitle === "string") currentTitle = data.currentTitle;
+    renderMoneyBar();
+    renderMissions();
+    renderShop();
+    renderAccTitles();
   });
 
   /* -- 출석체크 --------------------------------------- */
@@ -1115,6 +1156,15 @@ function initSocket() {
         saveStats();
         updateStatsUI();
       }
+    } else if (data.winner === null && data.loser === null) {
+      showMessage("무승부입니다 — 공동 탈락!", "info");
+      playSound("draw");
+      if (currentMode === "single") {
+        localStats.games++;
+        localStats.totalLength += (gameState?.history?.length || 0);
+        saveStats();
+        updateStatsUI();
+      }
     } else {
       showMessage("게임이 종료되었습니다.", "info");
     }
@@ -1122,6 +1172,7 @@ function initSocket() {
     gameState = data.state || gameState;
     renderGameState(gameState);
     socket.emit("player:getRanking");
+    socket.emit("missions:status");
 
     if (currentMode === "single") {
       showRestartButton(true);
@@ -1763,7 +1814,12 @@ function renderShop() {
   let html = `<div class="shop-sub">칭호</div>`;
   html += shopInfo.titleCatalog.map(t => {
     const owned = ownedTitles.some(o => o.id === t.id);
-    if (owned) return mkRow(t.name, `보유 중 · ${t.price.toLocaleString()}원`, "", "보유 중", "owned", t.price);
+    if (owned) {
+      const equipped = currentTitle === t.name;
+      return equipped
+        ? mkRow(t.name, `보유 중 · 장착됨 · ${t.price.toLocaleString()}원`, "", "장착중", "equipped", Infinity)
+        : mkRow(t.name, `보유 중 · ${t.price.toLocaleString()}원`, "equipTitle:" + t.id, "장착", "equip", t.price);
+    }
     return mkRow(t.name, `${t.price.toLocaleString()}원`, "buyTitle:" + t.id, "구매", "", t.price);
   }).join("");
   html += `<div class="shop-sub">물약</div>`;
@@ -1779,14 +1835,107 @@ function renderShop() {
   }
   body.innerHTML = html;
 
-  body.querySelectorAll("[id^='buyTitle:'],[id^='buyPotion'],[id^='buyMultiplier']").forEach(btn => {
+  body.querySelectorAll("[id^='buyTitle:'],[id^='buyPotion'],[id^='buyMultiplier'],[id^='equipTitle:']").forEach(btn => {
     btn.addEventListener("click", () => {
       const [kind, val] = btn.id.split(":");
       if (kind === "buyTitle") socket.emit("shop:buyTitle", { titleId: val });
       else if (kind === "buyPotion") socket.emit("shop:buyPotion");
       else if (kind === "buyMultiplier") socket.emit("shop:buyMultiplier", { multiplier: Number(val) });
+      else if (kind === "equipTitle") socket.emit("shop:setTitle", { titleId: val });
     });
   });
+}
+
+/* ---------------------------------------------------------
+   칭호 장착 (계정 패널) — 보유 칭호를 클릭해 장착/확인
+--------------------------------------------------------- */
+function renderAccTitles() {
+  const box = $("#accTitleBox");
+  const list = $("#accTitleList");
+  if (!box || !list) return;
+  box.classList.toggle("hidden", ownedTitles.length === 0);
+  if (ownedTitles.length === 0) { list.innerHTML = ""; return; }
+  list.innerHTML = ownedTitles.map(t => {
+    const isCur = currentTitle === t.name;
+    return `<button type="button" class="acc-title-chip${isCur ? " current" : ""}" data-title-id="${escapeHtml(t.id)}">${isCur ? "장착중 · " : ""}${escapeHtml(t.name)}</button>`;
+  }).join("");
+  list.querySelectorAll("[data-title-id]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (btn.classList.contains("current")) return;
+      if (socket && socketConnected) socket.emit("shop:setTitle", { titleId: btn.dataset.titleId });
+    });
+  });
+}
+
+/* ---------------------------------------------------------
+   일일 미션 패널
+--------------------------------------------------------- */
+function applyDailyToMissions(daily) {
+  missionsState.forEach(m => {
+    const cur = m.id === "rankedWins" ? (daily.rankedWins || 0) : (m.id === "oneShots" ? (daily.oneShots || 0) : (daily.streakDone || 0));
+    m.current = Math.min(m.target, cur);
+  });
+}
+
+function rewardLabel(m) {
+  const parts = [];
+  if (m.coin) parts.push(`${m.coin.toLocaleString()}원`);
+  if (m.title) parts.push(`칭호 '${m.title.name}'`);
+  return parts.length ? parts.join(" + ") : "보상 없음";
+}
+
+function renderMissions() {
+  const list = $("#missionList");
+  const box = $("#missionBox");
+  if (!list || !box) return;
+  if (missionsState.length === 0) { box.classList.add("hidden"); list.innerHTML = ""; return; }
+  box.classList.remove("hidden");
+  list.innerHTML = missionsState.map(m => {
+    const done = m.current >= m.target;
+    const claimed = !!m.claimed;
+    const pct = m.target > 0 ? Math.min(100, Math.round((m.current / m.target) * 100)) : 0;
+    return `<div class="mission-row${claimed ? " claimed" : (done ? " done" : "")}">
+      <div class="mission-head">
+        <span class="mission-label">${escapeHtml(m.label)}</span>
+        <span class="mission-state">${claimed ? "보상 수령 완료" : (done ? "달성! 보상을 받으세요" : `${m.current}/${m.target}`)}</span>
+      </div>
+      <div class="mission-bar"><div class="mission-bar-fill" style="width:${pct}%"></div></div>
+      <div class="mission-foot">
+        <span class="mission-reward">보상: ${escapeHtml(rewardLabel(m))}</span>
+        ${claimed ? "" : (done ? `<button type="button" class="mission-claim" data-mission-claim="${m.id}">받기</button>` : "")}
+      </div>
+    </div>`;
+  }).join("");
+  list.querySelectorAll("[data-mission-claim]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.missionClaim;
+      if (socket && socketConnected) socket.emit("missions:claim", { id });
+    });
+  });
+}
+
+/* ---------------------------------------------------------
+   최근 10판 전적 패널
+--------------------------------------------------------- */
+function renderRecentGames() {
+  const list = $("#recentGamesList");
+  const box = $("#recentGamesBox");
+  if (!list || !box) return;
+  if (!Array.isArray(recentGamesState) || recentGamesState.length === 0) { box.classList.add("hidden"); list.innerHTML = ""; return; }
+  box.classList.remove("hidden");
+  const modeLabel = { ranked: "랭크", online: "온라인", single: "싱글", ai: "싱글" };
+  list.innerHTML = recentGamesState.map(g => {
+    const res = g.result === "win" ? "<span class='rec-win'>승</span>" : (g.result === "lose" ? "<span class='rec-lose'>패</span>" : "<span class='rec-draw'>무</span>");
+    const date = String(g.date || "").slice(0, 16).replace("T", " ");
+    return `<div class="rec-row">
+      <span class="rec-res">${res}</span>
+      <span class="rec-mode">${modeLabel[g.mode] || g.mode || "-"}</span>
+      <span class="rec-vs">vs ${escapeHtml(g.vs || "?")}</span>
+      <span class="rec-words">단어 ${g.wordCount ?? 0}개</span>
+      <span class="rec-len">평균 ${g.avgWordLen ?? 0}자</span>
+      <span class="rec-date">${date}</span>
+    </div>`;
+  }).join("");
 }
 
 /* ---------------------------------------------------------
@@ -2155,6 +2304,10 @@ function openAccountPanel(force) {
   panel.classList.toggle("hidden", !open);
   if (open) {
     renderAccountInfo($("#nickInput")?.value.trim() || myNickname || "");
+    renderMissions();
+    renderRecentGames();
+    renderAccTitles();
+    if (socket && socketConnected) socket.emit("missions:status");
     setTimeout(() => $("#accPwInput")?.focus(), 60);
   }
 }
@@ -2289,7 +2442,7 @@ function renderFriends() {
     <div class="friend-row${f.online ? " online" : ""}">
       <span class="friend-dot"></span>
       <span class="friend-name">${escapeHtml(f.nickname)}</span>
-      ${f.online ? `<button class="friend-invite" data-friend-invite="${escapeHtml(f.nickname)}">초대</button>` : `<span class="friend-offline">오프라인</span>`}
+      ${f.online ? `<button class="friend-invite" data-friend-invite="${escapeHtml(f.nickname)}">대결 신청</button>` : `<span class="friend-offline">오프라인</span>`}
       <button class="friend-del" data-friend-del="${escapeHtml(f.nickname)}">삭제</button>
     </div>`).join("");
   list.querySelectorAll("[data-friend-invite]").forEach(btn => {
@@ -2310,13 +2463,13 @@ function inviteByNickname(nick) {
     socket.emit("room:invite", { nickname: name });
     return;
   }
-  showMessage("초대용 온라인 방을 만들고 있습니다...", "info");
+  showMessage("대결용 온라인 방을 만들고 있습니다...", "info");
   const t = setTimeout(() => { startingGame = false; }, 6000);
   const created = (d) => {
     socket.off("room:created", created);
     clearTimeout(t);
     if (d && d.ok) socket.emit("room:invite", { nickname: name });
-    else showMessage("온라인 방을 만들지 못해 초대를 보내지 못했습니다.", "error");
+    else showMessage("온라인 방을 만들지 못해 대결 신청을 보내지 못했습니다.", "error");
   };
   socket.once("room:created", created);
   socket.emit("room:create", { nickname: myNickname, mode: "online" });

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=13">
+  <link rel="stylesheet" href="style.css?v=14">
 </head>
 <body>
   <main class="wrap">
@@ -375,6 +375,14 @@
         <div class="acc-row"><span>소지금</span><strong id="accMoney">0</strong></div>
         <div class="acc-row"><span>칭호</span><strong id="accTitle">없음</strong></div>
       </div>
+      <div id="missionBox" class="acc-change hidden">
+        <div class="acc-change-title">일일 미션 (매일 자정에 초기화)</div>
+        <div id="missionList" class="acc-mission-list"></div>
+      </div>
+      <div id="recentGamesBox" class="acc-change hidden">
+        <div class="acc-change-title">최근 10판 전적</div>
+        <div id="recentGamesList" class="acc-recent-list"></div>
+      </div>
       <div id="accTitleBox" class="acc-change hidden">
         <div class="acc-change-title">칭호 선택 (보유한 칭호를 클릭하면 게임과 리더보드에 표시됩니다)</div>
         <div id="accTitleList" class="acc-title-list"></div>
@@ -432,6 +440,6 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="script.js?v=13"></script>
+  <script src="script.js?v=14"></script>
 </body>
 </html>
