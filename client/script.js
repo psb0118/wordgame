@@ -997,6 +997,14 @@ function initSocket() {
     }
   });
 
+  /* -- 방 목록 브라우저 -------------------------------- */
+  socket.on("room:list", (data) => {
+    if (!data) return;
+    if (!data.ok) { roomListStatus(data.reason || "방 목록을 불러오지 못했습니다.", "error"); return; }
+    roomListRooms = Array.isArray(data.rooms) ? data.rooms : [];
+    renderRoomList();
+  });
+
   socket.on("game:hint", (data) => {
     if (!data) return;
     if (data.ok && data.word) {
@@ -1644,8 +1652,77 @@ function joinOnlineRoom() {
   if (!requireNickname()) return;
   const code = normalizeWord($("#roomCode")?.value);
   if (!code) { showMessage("방 코드를 입력해주세요.", "error"); return; }
+  closeRoomList();
   socket.emit("room:join", { roomId: code, nickname: makeNickname() });
   showMessage("방에 입장하는 중...", "waiting");
+}
+
+/* -- 방 목록 브라우저 ----------------------------------- */
+let roomListRooms = [];
+let roomListTimer = null;
+
+function openRoomList() {
+  const panel = $("#roomListPanel");
+  if (!panel) return;
+  panel.classList.remove("hidden");
+  if (roomListTimer) clearInterval(roomListTimer);
+  roomListTimer = setInterval(fetchRoomList, 10000);
+  fetchRoomList();
+}
+
+function closeRoomList() {
+  const panel = $("#roomListPanel");
+  if (panel) panel.classList.add("hidden");
+  if (roomListTimer) { clearInterval(roomListTimer); roomListTimer = null; }
+}
+
+function fetchRoomList() {
+  if (!socket || !socketConnected) return;
+  socket.emit("room:list");
+}
+
+function roomListStatus(text, type) {
+  const body = $("#roomListBody");
+  if (!body) return;
+  body.innerHTML = `<div class="room-list-status ${type}">${escapeHtml(text)}</div>`;
+}
+
+function renderRoomList() {
+  const body = $("#roomListBody");
+  if (!body) return;
+  const rooms = roomListRooms.filter(r => r && r.roomId !== roomId);
+  if (rooms.length === 0) {
+    body.innerHTML = `<div class="room-list-status">현재 열린 방이 없습니다. 방을 만들면 여기에 표시됩니다.</div>`;
+    return;
+  }
+  const rows = rooms.map(r => `
+    <button class="room-list-row" data-id="${escapeHtml(String(r.roomId))}">
+      <span class="rl-code">${escapeHtml(String(r.roomId))}</span>
+      <span class="rl-host">${escapeHtml(String(r.host || "플레이어"))}</span>
+      <span class="rl-count">${Number(r.playerCount) || 0}/${Number(r.maxPlayers) || 0}</span>
+      <span class="rl-status">${r.started ? "진행 중" : "대기 중"}</span>
+      <span class="rl-join">입장 →</span>
+    </button>`).join("");
+  body.innerHTML = rows;
+  body.querySelectorAll(".room-list-row").forEach(row => {
+    row.addEventListener("click", () => joinRoomFromList(row.dataset.id));
+  });
+}
+
+function joinRoomFromList(roomIdToJoin) {
+  if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+  if (!requireNickname()) return;
+  closeRoomList();
+  socket.emit("room:join", { roomId: roomIdToJoin, nickname: makeNickname() });
+  showMessage("방에 입장하는 중...", "waiting");
+}
+
+function randomJoinRoom() {
+  if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+  if (!requireNickname()) return;
+  const rooms = roomListRooms.filter(r => r && r.roomId !== roomId);
+  if (rooms.length === 0) { roomListStatus("입장할 수 있는 방이 없습니다.", "error"); return; }
+  joinRoomFromList(rooms[Math.floor(Math.random() * rooms.length)].roomId);
 }
 
 /* ---------------------------------------------------------
@@ -2776,6 +2853,10 @@ document.addEventListener("DOMContentLoaded", () => {
   /* 온라인 */
   $("#create")?.addEventListener("click", createOnlineRoom);
   $("#join")?.addEventListener("click", joinOnlineRoom);
+  $("#roomListBtn")?.addEventListener("click", openRoomList);
+  $("#roomListRefresh")?.addEventListener("click", fetchRoomList);
+  $("#roomListRandom")?.addEventListener("click", randomJoinRoom);
+  $("#roomListClose")?.addEventListener("click", closeRoomList);
   $("#startOnline")?.addEventListener("click", () => {
     if (!socket || !socketConnected) return;
     socket.emit("game:start");

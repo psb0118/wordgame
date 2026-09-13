@@ -113,8 +113,21 @@
         <button id="create">방 만들기</button>
         <label>방 코드<input id="roomCode" maxlength="6" placeholder="X8F2KD"></label>
         <button id="join">방 참가</button>
+        <button id="roomListBtn">방 목록</button>
         <label>초대할 닉네임<input id="onlineInviteInput" maxlength="12" placeholder="친구 닉네임" autocomplete="off"></label>
         <button id="onlineInviteBtn">초대</button>
+      </div>
+
+      <div id="roomListPanel" class="room-list-panel hidden">
+        <div class="room-list-head">
+          <strong>열린 방</strong>
+          <span class="room-list-actions">
+            <button id="roomListRefresh" class="secondary">새로고침</button>
+            <button id="roomListRandom">랜덤 입장</button>
+            <button id="roomListClose" class="secondary">닫기</button>
+          </span>
+        </div>
+        <div id="roomListBody"></div>
       </div>
 
       <div id="roomInfo" class="room"></div>

@@ -1830,6 +1830,30 @@ io.on("connection", (socket) => {
     } catch (error) { console.error("room:leave 오류:", error); }
   });
 
+  /* 방 목록 브라우저 — 온라인 멀티 방(미종료)을 공개 목록으로 제공한다.
+     AI(싱글) 방과 랭크 매칭 방은 제외하고, 호스트/인원/시작 여부만 노출한다. */
+  socket.on("room:list", () => {
+    try {
+      const rooms = [...ROOMS.values()]
+        .filter(r => r && r.mode === "online" && !r.finished)
+        .map(r => {
+          const humans = r.players.filter(p => !p.isBot);
+          const host = humans.find(p => p.socketId === r.hostSocketId) || humans[0] || null;
+          return {
+            roomId: r.id,
+            host: host ? host.nickname : "플레이어",
+            playerCount: r.players.filter(p => !p.isBot && !p.waiting).length,
+            maxPlayers: MAX_PLAYERS,
+            started: !!r.started
+          };
+        });
+      socket.emit("room:list", { ok: true, rooms });
+    } catch (error) {
+      console.error("room:list 오류:", error);
+      socket.emit("room:list", { ok: false, reason: "방 목록을 불러오지 못했습니다." });
+    }
+  });
+
   socket.on("disconnect", (reason) => {
     console.log(`[DISCONNECT] ${socket.id} / ${reason}`);
     adminAuthed.delete(socket.id);

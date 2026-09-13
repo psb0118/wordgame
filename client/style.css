@@ -376,6 +376,97 @@ button:disabled {
   padding: 10px;
 }
 
+/* 방 목록 브라우저 */
+.room-list-panel {
+  margin-bottom: 12px;
+  padding: 12px;
+  background: var(--card-soft);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.room-list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 0.9rem;
+}
+
+.room-list-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+#roomListBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.room-list-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.9rem;
+  transition: border-color 0.15s;
+}
+
+.room-list-row:hover {
+  border-color: var(--accent);
+}
+
+.room-list-row .rl-code {
+  font-weight: 700;
+  color: var(--accent);
+  min-width: 60px;
+}
+
+.room-list-row .rl-host {
+  flex: 1;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-list-row .rl-count {
+  color: var(--text-dim);
+  min-width: 48px;
+}
+
+.room-list-row .rl-status {
+  color: var(--purple);
+  min-width: 52px;
+}
+
+.room-list-row .rl-join {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.room-list-status {
+  padding: 14px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 0.9rem;
+}
+
+.room-list-status.error {
+  color: var(--red);
+}
+
 /* 방 정보 */
 .room {
   padding: 12px;
