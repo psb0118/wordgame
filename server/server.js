@@ -220,6 +220,8 @@ async function initDatabase() {
           rating_boost_games INTEGER DEFAULT 0,
           titles TEXT DEFAULT '[]',
           current_title TEXT DEFAULT '',
+          last_check_date TEXT DEFAULT '',
+          attendance_streak INTEGER DEFAULT 0,
           single_rating INTEGER DEFAULT 1000,
           single_wins INTEGER DEFAULT 0,
           single_losses INTEGER DEFAULT 0,
@@ -241,7 +243,9 @@ async function initDatabase() {
           ADD COLUMN IF NOT EXISTS money_multiplier INTEGER DEFAULT 1,
           ADD COLUMN IF NOT EXISTS rating_boost_games INTEGER DEFAULT 0,
           ADD COLUMN IF NOT EXISTS titles TEXT DEFAULT '[]',
-          ADD COLUMN IF NOT EXISTS current_title TEXT DEFAULT ''
+          ADD COLUMN IF NOT EXISTS current_title TEXT DEFAULT '',
+          ADD COLUMN IF NOT EXISTS last_check_date TEXT DEFAULT '',
+          ADD COLUMN IF NOT EXISTS attendance_streak INTEGER DEFAULT 0
       `);
       dbMode = "pg";
       console.log("데이터베이스: PostgreSQL 연결 완료");
@@ -271,6 +275,8 @@ function migratePlayerData(p) {
   p.ratingBoostGames = Math.floor(p.ratingBoostGames);
   if (!Array.isArray(p.titles)) p.titles = [];
   p.currentTitle = typeof p.currentTitle === "string" ? p.currentTitle : "";
+  p.lastCheckDate = typeof p.lastCheckDate === "string" ? p.lastCheckDate : "";
+  p.attendanceStreak = Number.isFinite(p.attendanceStreak) ? Math.max(0, Math.floor(p.attendanceStreak)) : 0;
   return p;
 }
 
@@ -291,7 +297,9 @@ async function getPlayerData(playerId) {
           moneyMultiplier: row.money_multiplier,
           ratingBoostGames: row.rating_boost_games,
           titles: (() => { try { return JSON.parse(row.titles || "[]"); } catch { return []; } })(),
-          currentTitle: row.current_title || ""
+          currentTitle: row.current_title || "",
+          lastCheckDate: row.last_check_date || "",
+          attendanceStreak: row.attendance_streak || 0
         };
         const migrated = migratePlayerData(data);
         playerCache.set(playerId, migrated);
@@ -324,6 +332,8 @@ async function savePlayerData(playerId, data) {
   safe.ratingBoostGames = Math.max(0, Math.floor(num(safe.ratingBoostGames, 0)));
   safe.titles = Array.isArray(safe.titles) ? safe.titles.filter(t => t && typeof t === "object") : [];
   safe.currentTitle = typeof safe.currentTitle === "string" ? safe.currentTitle : "";
+  safe.lastCheckDate = typeof safe.lastCheckDate === "string" ? safe.lastCheckDate : "";
+  safe.attendanceStreak = Math.max(0, Math.floor(num(safe.attendanceStreak, 0)));
   playerCache.set(playerId, safe);
   if (dbMode === "pg") {
     try {
@@ -332,15 +342,15 @@ async function savePlayerData(playerId, data) {
           (id, nickname, rating, wins, losses, single_rating, single_wins, single_losses,
            ranked_rating, ranked_wins, ranked_losses, ranked_streak, ranked_best_streak,
            money, money_multiplier, rating_boost_games,
-           titles, current_title, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
+           titles, current_title, last_check_date, attendance_streak, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NOW())
         ON CONFLICT (id) DO UPDATE SET
           nickname=$2, rating=$3, wins=$4, losses=$5,
           single_rating=$6, single_wins=$7, single_losses=$8,
           ranked_rating=$9, ranked_wins=$10, ranked_losses=$11,
           ranked_streak=$12, ranked_best_streak=$13,
           money=$14, money_multiplier=$15, rating_boost_games=$16,
-          titles=$17, current_title=$18, updated_at=NOW()
+          titles=$17, current_title=$18, last_check_date=$19, attendance_streak=$20, updated_at=NOW()
       `, [
         playerId, safe.nickname || "플레이어",
         safe.multi.rating, safe.multi.wins, safe.multi.losses,
@@ -348,7 +358,8 @@ async function savePlayerData(playerId, data) {
         safe.ranked.rating, safe.ranked.wins, safe.ranked.losses,
         safe.ranked.streak, safe.ranked.bestStreak,
         safe.money, safe.moneyMultiplier, safe.ratingBoostGames,
-        JSON.stringify(safe.titles), safe.currentTitle
+        JSON.stringify(safe.titles), safe.currentTitle,
+        safe.lastCheckDate, safe.attendanceStreak
       ]);
     } catch (err) { console.error("DB 쓰기 오류:", err.message); }
   } else {
@@ -462,6 +473,9 @@ function saveBugReports() {
 
 const RANKED_QUEUE = [];
 const RANKED_QUEUE_MAP = new Map(); /* socketId -> true */
+/* 랭크 복수전 — socketId -> 상대 socketId. 한쪽이 신청하면 대기, 양쪽이
+   같은 상대를 신청하면 즉시 그 둘끼리 새 랭크 매치를 시작한다 */
+const REMATCHES = new Map();
 
 function addToRankedQueue(socketId, nickname, rating) {
   if (RANKED_QUEUE_MAP.has(socketId)) return false;
@@ -491,9 +505,20 @@ async function getRankingPayload(socketId) {
     moneyMultiplier: data.moneyMultiplier,
     ratingBoostGames: data.ratingBoostGames,
     titles: data.titles,
-    currentTitle: data.currentTitle
+    currentTitle: data.currentTitle,
+    attendance: {
+      checkedToday: data.lastCheckDate === getKstDate(),
+      streak: data.attendanceStreak || 0,
+      lastCheckDate: data.lastCheckDate || ""
+    }
   };
 }
+
+/* 출석체크 — KST 기준 날짜, 연속 출석 보상 (2000원 + 연속 일수별 보너스, 최대 1만 원) */
+function getKstDate(ts) {
+  return new Date((ts == null ? Date.now() : ts) + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+const ATTENDANCE_REWARD = (streak) => Math.min(10000, 2000 + (streak - 1) * 1000);
 
 function tryMatchRanked() {
   while (RANKED_QUEUE.length >= 2) {
@@ -509,60 +534,70 @@ function tryMatchRanked() {
       continue;
     }
 
-    /* 매칭 확정 전에 이전 방(싱글/AI 방 등)에서 분리 — 랭크 게임 중 이전 방의
-       이벤트가 들어와 턴/입력이 꼬이는 문제 방지 */
-    leaveRoomForSocket(io.sockets.sockets.get(a.socketId), "leave");
-    leaveRoomForSocket(io.sockets.sockets.get(b.socketId), "leave");
-
-    const roomId = createRoomId();
-    const room = {
-      id: roomId,
-      hostSocketId: a.socketId,
-      mode: "ranked",
-      players: [],
-      currentWord: null,
-      turnPlayerIndex: 0,
-      turnNumber: 0,
-      history: [],
-      usedWords: new Set(),
-      started: false,
-      finished: false,
-      winner: null,
-      loser: null,
-      timer: null,
-      turnStartedAt: null,
-      turnEndsAt: null,
-      lastSyllable: null,
-      gameSessionId: 0,
-      rankedRatingA: a.rating,
-      rankedRatingB: b.rating
-    };
-    addPlayer(room, a.socketId, a.nickname);
-    addPlayer(room, b.socketId, b.nickname);
-    ROOMS.set(roomId, room);
-
-    io.sockets.sockets.get(a.socketId).join(roomId);
-    io.sockets.sockets.get(b.socketId).join(roomId);
-    io.sockets.sockets.get(a.socketId).data.roomId = roomId;
-    io.sockets.sockets.get(a.socketId).data.playerIndex = 0;
-    io.sockets.sockets.get(b.socketId).data.roomId = roomId;
-    io.sockets.sockets.get(b.socketId).data.playerIndex = 1;
-
-    registerOnline(a.socketId, a.nickname);
-    registerOnline(b.socketId, b.nickname);
-
-    io.sockets.sockets.get(a.socketId).emit("ranked:matched", {
-      ok: true, roomId, playerIndex: 0, opponent: b.nickname, opponentRating: b.rating,
-      state: getPublicRoomState(room)
-    });
-    io.sockets.sockets.get(b.socketId).emit("ranked:matched", {
-      ok: true, roomId, playerIndex: 1, opponent: a.nickname, opponentRating: a.rating,
-      state: getPublicRoomState(room)
-    });
-    startNewGame(room);
-    console.log(`[RANKED MATCH] ${a.nickname}(${a.rating}) vs ${b.nickname}(${b.rating}) → ${roomId}`);
+    startRankedGame(a, b);
   }
   broadcastRankedQueue();
+}
+
+/* 두 소켓을 즉시 랭크 매치로 연결해 새 게임을 시작한다 (일반 큐 매칭 + 복수전 공용) */
+function startRankedGame(a, b) {
+  const sa = io.sockets.sockets.get(a.socketId);
+  const sb = io.sockets.sockets.get(b.socketId);
+  if (!sa || !sb) return false;
+
+  /* 매칭 확정 전에 이전 방(싱글/AI 방 등)에서 분리 — 랭크 게임 중 이전 방의
+     이벤트가 들어와 턴/입력이 꼬이는 문제 방지 */
+  leaveRoomForSocket(sa, "leave");
+  leaveRoomForSocket(sb, "leave");
+
+  const roomId = createRoomId();
+  const room = {
+    id: roomId,
+    hostSocketId: a.socketId,
+    mode: "ranked",
+    players: [],
+    currentWord: null,
+    turnPlayerIndex: 0,
+    turnNumber: 0,
+    history: [],
+    usedWords: new Set(),
+    started: false,
+    finished: false,
+    winner: null,
+    loser: null,
+    timer: null,
+    turnStartedAt: null,
+    turnEndsAt: null,
+    lastSyllable: null,
+    gameSessionId: 0,
+    rankedRatingA: a.rating,
+    rankedRatingB: b.rating
+  };
+  addPlayer(room, a.socketId, a.nickname);
+  addPlayer(room, b.socketId, b.nickname);
+  ROOMS.set(roomId, room);
+
+  sa.join(roomId);
+  sb.join(roomId);
+  sa.data.roomId = roomId;
+  sa.data.playerIndex = 0;
+  sb.data.roomId = roomId;
+  sb.data.playerIndex = 1;
+
+  registerOnline(a.socketId, a.nickname);
+  registerOnline(b.socketId, b.nickname);
+
+  sa.emit("ranked:matched", {
+    ok: true, roomId, playerIndex: 0, opponent: b.nickname, opponentRating: b.rating,
+    state: getPublicRoomState(room)
+  });
+  sb.emit("ranked:matched", {
+    ok: true, roomId, playerIndex: 1, opponent: a.nickname, opponentRating: a.rating,
+    state: getPublicRoomState(room)
+  });
+  startNewGame(room);
+  console.log(`[RANKED MATCH] ${a.nickname}(${a.rating}) vs ${b.nickname}(${b.rating}) → ${roomId}`);
+  return true;
 }
 
 /* =========================================================
@@ -577,7 +612,7 @@ function createRoomId() {
   return id;
 }
 
-function createRoom(socketId, nickname, mode) {
+function createRoom(socketId, nickname, mode, opts = {}) {
   const roomId = createRoomId();
   const room = {
     id: roomId,
@@ -598,7 +633,10 @@ function createRoom(socketId, nickname, mode) {
     turnEndsAt: null,
     lastSyllable: null,
     gameSessionId: 0,
-    hintsUsed: 0
+    hintsUsed: 0,
+    /* 싱글(AI) 난이도 — easy/normal/hard. AI 생각 시간과 선택 수준이 달라진다 */
+    difficulty: opts.difficulty || "normal",
+    aiThinkMs: { easy: 1500, normal: 800, hard: 300 }[opts.difficulty || "normal"] || 800
   };
   addPlayer(room, socketId, nickname);
   ROOMS.set(roomId, room);
@@ -769,10 +807,13 @@ function startTurnTimer(room, gameSessionId) {
   }, TURN_TIME * 1000);
 
   if (player.isBot && room.mode === "ai") {
+    /* 난이도별 AI 생각 시간 — 보통/어려움은 빠르게, 쉬움은 여유있게 두어
+       반응 속도 차이도 체감되게 한다 */
+    const thinkMs = (room.aiThinkMs != null && room.aiThinkMs >= 100) ? room.aiThinkMs : 500;
     setTimeout(() => {
       if (room.gameSessionId !== gameSessionId) return;
       runAI(room, gameSessionId);
-    }, 500);
+    }, thinkMs);
   }
 }
 
@@ -1106,10 +1147,32 @@ function runAI(room, gameSessionId) {
   if (room.turnPlayerIndex !== player.playerIndex) return;
 
   let word;
+  const difficulty = room.difficulty || "normal";
   if (room.turnNumber === 0) {
-    word = chooseAIStartWord(room.startSyllable || "", room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS);
+    if (difficulty === "easy") {
+      /* 쉬움: 시작 음절에 맞는 안전한 단어를 무작위로 — 희귀 루트/공격·한방 단어를 노리지 않음 */
+      const legal = getCandidates(room.startSyllable || "", room.usedWords, WORD_INDEX)
+        .filter(w => w.startsWith(room.startSyllable) && !isAttackWord(w, ATTACK_DEPTH) && !isOneShot(w, room.usedWords, WORD_INDEX));
+      word = legal.length > 0 ? legal[Math.floor(Math.random() * legal.length)] : null;
+    } else {
+      word = chooseAIStartWord(room.startSyllable || "", room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS);
+    }
   } else {
-    word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS);
+    if (difficulty === "easy") {
+      /* 쉬움: 즉시 한방이 열리면 잡고, 아니면 무작위 — 강제승리 유도나 희귀 루트를 쓰지 않아
+         전략 싸움에 약하다 */
+      const candidates = getCandidates(room.currentWord, room.usedWords, WORD_INDEX);
+      if (candidates.length === 0) word = null;
+      else {
+        const winners = candidates.filter(w => isOneShot(w, room.usedWords, WORD_INDEX));
+        word = winners.length > 0
+          ? winners[Math.floor(Math.random() * winners.length)]
+          : candidates[Math.floor(Math.random() * candidates.length)];
+      }
+    } else {
+      /* 보통: 기존 최강 전략. 어려움: 강제 승리 탐색을 더 넓게/깊게 하고 최선의 수에 가깝게 결정 */
+      word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS, difficulty === "hard" ? { strong: true } : undefined);
+    }
   }
 
   if (!word) {
@@ -1298,9 +1361,11 @@ io.on("connection", (socket) => {
     try {
       const nickname = normalizeWord(data?.nickname) || "플레이어";
       const mode = data?.mode === "ai" ? "ai" : "online";
+      /* 싱글 난이도 — 잘못된 값이면 보통으로 폴백 */
+      const difficulty = ["easy", "normal", "hard"].includes(data?.difficulty) ? data.difficulty : "normal";
       leaveRoomForSocket(socket, "recreate");
 
-      const room = createRoom(socket.id, nickname, mode);
+      const room = createRoom(socket.id, nickname, mode, { difficulty });
       socket.join(room.id);
       socket.data.roomId = room.id;
       socket.data.playerIndex = 0;
@@ -1631,6 +1696,7 @@ io.on("connection", (socket) => {
 
   socket.on("room:leave", () => {
     try {
+      REMATCHES.delete(socket.id);
       const roomId = socket.data.roomId;
       if (!roomId) return;
       const room = ROOMS.get(roomId);
@@ -1650,6 +1716,7 @@ io.on("connection", (socket) => {
   socket.on("disconnect", (reason) => {
     console.log(`[DISCONNECT] ${socket.id} / ${reason}`);
     adminAuthed.delete(socket.id);
+    REMATCHES.delete(socket.id);
     removeFromRankedQueue(socket.id);
     broadcastRankedQueue();
     unregisterOnline(socket.id);
@@ -1682,6 +1749,7 @@ io.on("connection", (socket) => {
   /* -- 실시간 랭크 게임 매칭 ----------------------------- */
   socket.on("ranked:queue", async () => {
     try {
+      REMATCHES.delete(socket.id);
       const pd = await getPlayerData(socket.id);
       const nickname = String(pd.nickname || "플레이어").trim();
       if (!nickname) { socket.emit("ranked:queueStatus", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
@@ -1700,9 +1768,87 @@ io.on("connection", (socket) => {
   });
 
   socket.on("ranked:cancel", () => {
+    REMATCHES.delete(socket.id);
     removeFromRankedQueue(socket.id);
     socket.emit("ranked:queueStatus", { ok: true, queued: false });
     broadcastRankedQueue();
+  });
+
+  /* -- 랭크 복수전 (다시 대결) --------------------------- */
+  socket.on("ranked:rematch", async () => {
+    try {
+      const room = getPlayerRoom(socket);
+      if (!room || room.mode !== "ranked" || !room.finished) {
+        socket.emit("ranked:rematchStatus", { ok: false, reason: "복수전을 신청할 수 있는 상태가 아닙니다." });
+        return;
+      }
+      const me = room.players.find(p => p.socketId === socket.id);
+      const opp = room.players.find(p => p.socketId !== socket.id && !p.isBot && p.connected);
+      const opponentSocket = opp ? io.sockets.sockets.get(opp.socketId) : null;
+      if (!me || !opp || !opponentSocket) return;
+
+      if (REMATCHES.get(opp.socketId) === socket.id) {
+        /* 상대가 이미 복수전을 신청한 상태 → 즉시 그 둘끼리 다시 매칭 */
+        REMATCHES.delete(opp.socketId);
+        REMATCHES.delete(socket.id);
+        const [pdMe, pdOpp] = await Promise.all([getPlayerData(socket.id), getPlayerData(opp.socketId)]);
+        startRankedGame(
+          { socketId: socket.id, nickname: pdMe.nickname || me.nickname || "플레이어", rating: pdMe.ranked.rating },
+          { socketId: opp.socketId, nickname: pdOpp.nickname || opp.nickname || "플레이어", rating: pdOpp.ranked.rating }
+        );
+      } else {
+        REMATCHES.set(socket.id, opp.socketId);
+        const pdMe = await getPlayerData(socket.id);
+        socket.emit("ranked:rematchStatus", { ok: true, waiting: true, opponent: opp.nickname });
+        opponentSocket.emit("ranked:rematchOffer", {
+          from: pdMe.nickname || me.nickname || "플레이어", roomId: room.id
+        });
+        console.log(`[REMATCH] ${me.nickname} → ${opp.nickname} (신청)`);
+      }
+    } catch (err) { console.error("복수전 신청 오류:", err); }
+  });
+
+  socket.on("ranked:rematchCancel", () => {
+    REMATCHES.delete(socket.id);
+    socket.emit("ranked:rematchStatus", { ok: true, waiting: false });
+  });
+
+  /* -- 출석체크 ----------------------------------------- */
+  socket.on("attendance:status", async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const today = getKstDate();
+      if (pd.lastCheckDate === today) {
+        socket.emit("attendance:status", { ok: true, checkedToday: true, streak: pd.attendanceStreak || 0, nextReward: 0 });
+        return;
+      }
+      const yesterday = getKstDate(Date.now() - 86400000);
+      const continuing = pd.lastCheckDate === yesterday;
+      /* 하루라도 건너뛰면 연속이 끊기므로, 대기 상태에서는 유효 연속만 보여준다 */
+      const streak = continuing ? (pd.attendanceStreak || 0) : 0;
+      const nextStreak = continuing ? (pd.attendanceStreak || 0) + 1 : 1;
+      socket.emit("attendance:status", { ok: true, checkedToday: false, streak, nextReward: ATTENDANCE_REWARD(nextStreak) });
+    } catch (err) { console.error("출석 상태 오류:", err); }
+  });
+
+  socket.on("attendance:check", async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const today = getKstDate();
+      if (pd.lastCheckDate === today) {
+        socket.emit("attendance:result", { ok: false, reason: "이미 오늘 출석했습니다.", checkedToday: true, streak: pd.attendanceStreak || 0 });
+        return;
+      }
+      const yesterday = getKstDate(Date.now() - 86400000);
+      const streak = pd.lastCheckDate === yesterday ? (pd.attendanceStreak || 0) + 1 : 1;
+      const reward = ATTENDANCE_REWARD(streak);
+      pd.lastCheckDate = today;
+      pd.attendanceStreak = streak;
+      pd.money += reward;
+      await savePlayerData(socket.id, pd);
+      socket.emit("attendance:result", { ok: true, reward, streak, money: pd.money, checkedToday: true });
+      console.log(`[ATTENDANCE] ${String(pd.nickname || "플레이어")} ${today} ${streak}일차 +${reward}원`);
+    } catch (err) { console.error("출석체크 오류:", err); }
   });
 
   /* -- 상점 --------------------------------------------- */
@@ -1886,18 +2032,7 @@ io.on("connection", (socket) => {
 
   socket.on("player:getRanking", async () => {
     try {
-      const data = await getPlayerData(socket.id);
-      socket.emit("player:ranking", {
-        nickname: data.nickname,
-        single: { ...data.single, rank: calculateRank(data.single.rating) },
-        multi: { ...data.multi, rank: calculateRank(data.multi.rating) },
-        ranked: { ...data.ranked, rank: calculateRank(data.ranked.rating) },
-        money: data.money,
-        moneyMultiplier: data.moneyMultiplier,
-        ratingBoostGames: data.ratingBoostGames,
-        titles: data.titles,
-        currentTitle: data.currentTitle
-      });
+      socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("랭킹 조회 오류:", err); }
   });
 

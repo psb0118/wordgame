@@ -24,6 +24,8 @@ let myPassword = localStorage.getItem("kkPassword") || "";
 let friends = [];
 let friendsPanelOpen = false;
 let pendingInvite = null;
+/* 싱글 AI 난이도 (easy/normal/hard) */
+let aiDifficulty = localStorage.getItem("kkAiDiff") || "normal";
 
 const localStats = JSON.parse(localStorage.getItem("kkStats") || '{"wins":0,"losses":0,"games":0,"totalLength":0}');
 let localUsedWords = new Set();
@@ -38,13 +40,80 @@ let shopInfo = null;
 let rankedQueued = false;
 let rankedMatchInfo = null;
 let rankedAutoLeave = null;
+let rankedRematchReq = false;
+let rankedAutoContinue = localStorage.getItem("kkAutoRequeue") === "1";
 let rankedStreak = 0;
 let rankedBestStreak = 0;
 let lastRankedStreak = 0;
 
+/* 출석체크 상태 */
+let attendanceCheckedToday = false;
+let attendanceStreak = 0;
+let attendanceNextReward = 0;
+const attendanceReward = (streak) => Math.min(10000, 2000 + (streak - 1) * 1000);
+
 /* 실시간 랭킹 패널 상태 */
 let sideRankMode = "multi";
 const SIDE_RANK_LIMIT = 10;
+
+/* ---------------------------------------------------------
+   사운드 & 진동 — Web Audio. 브라우저 자동재생 정책 때문에
+   첫 사용자 조작 시 AudioContext를 시작한다
+--------------------------------------------------------- */
+let soundEnabled = localStorage.getItem("kkSound") !== "0";
+let audioCtx = null;
+function ensureAudio() {
+  if (typeof window === "undefined") return null;
+  if (!audioCtx) {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) audioCtx = new AC();
+    } catch (e) { audioCtx = null; }
+  }
+  if (audioCtx && audioCtx.state === "suspended") { try { audioCtx.resume(); } catch (e) {} }
+  return audioCtx;
+}
+function tone(freq, dur = 0.08, type = "sine", vol = 0.05, delay = 0) {
+  if (!soundEnabled) return;
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  try {
+    const t0 = ctx.currentTime + delay;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(vol, t0 + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.03);
+  } catch (e) { /* 오디오 실패는 조용히 무시 */ }
+}
+function vibrate(pattern) {
+  if (!soundEnabled) return;
+  if (navigator.vibrate) { try { navigator.vibrate(pattern); } catch (e) {} }
+}
+function playSound(name) {
+  if (!soundEnabled) return;
+  switch (name) {
+    case "start": tone(392, 0.09, "triangle"); tone(523, 0.09, "triangle", 0.05, 0.09); tone(659, 0.12, "triangle", 0.05, 0.18); break;
+    case "turn": tone(660, 0.07, "sine"); vibrate(20); break;
+    case "word": tone(523, 0.09, "triangle"); tone(784, 0.1, "triangle", 0.05, 0.08); vibrate(25); break;
+    case "oppWord": tone(330, 0.07, "sine", 0.04); break;
+    case "oneshot": tone(523, 0.09, "square", 0.05); tone(659, 0.09, "square", 0.05, 0.08); tone(784, 0.15, "square", 0.05, 0.16); vibrate(50); break;
+    case "heartLost": tone(330, 0.12, "sawtooth", 0.05); tone(220, 0.18, "sawtooth", 0.05, 0.1); vibrate([60, 40, 60]); break;
+    case "win": tone(523, 0.1, "triangle", 0.06); tone(659, 0.1, "triangle", 0.06, 0.1); tone(784, 0.1, "triangle", 0.06, 0.2); tone(1046, 0.24, "triangle", 0.07, 0.3); vibrate([40, 40, 80]); break;
+    case "lose": tone(392, 0.14, "sawtooth", 0.05); tone(311, 0.14, "sawtooth", 0.05, 0.14); tone(233, 0.24, "sawtooth", 0.05, 0.28); vibrate([80, 60, 120]); break;
+    case "cash": tone(880, 0.08, "sine"); tone(1318, 0.14, "sine", 0.05, 0.06); break;
+    case "error": tone(200, 0.12, "square", 0.04); vibrate(60); break;
+  }
+}
+function renderSoundToggle() {
+  const btn = $("#soundToggle");
+  if (btn) btn.textContent = soundEnabled ? "🔊" : "🔇";
+}
 
 /* ---------------------------------------------------------
    모드별 DOM 요소 맵 (single / online / ranked)
@@ -479,6 +548,12 @@ function initSocket() {
     currentTitle = data.currentTitle || "";
     renderMoneyBar();
     renderAccountScoresStatic();
+    if (data.attendance) {
+      attendanceCheckedToday = !!data.attendance.checkedToday;
+      attendanceStreak = data.attendance.streak || 0;
+      attendanceNextReward = attendanceCheckedToday ? 0 : attendanceReward(attendanceStreak + 1);
+      renderAttendance();
+    }
     if (shopInfo) renderShop();
   });
 
@@ -488,6 +563,8 @@ function initSocket() {
     clearTimeout(rankedAutoLeave);
     rankedAutoLeave = null;
     rankedQueued = false;
+    rankedRematchReq = false;
+    showRankedRematchBar(false, false);
     rankedMatchInfo = { opponent: data.opponent, opponentRating: data.opponentRating };
     gameState = data.state;
     roomId = data.roomId;
@@ -518,10 +595,36 @@ function initSocket() {
     }
   });
 
+  /* -- 랭크 복수전 (다시 대결) -------------------------- */
+  socket.on("ranked:rematchStatus", (data) => {
+    if (!data) return;
+    if (data.ok === false) {
+      rankedRematchReq = false;
+      showRankedRematchBar(true, false);
+      showMessage(data.reason || "복수전 신청에 실패했습니다.", "error");
+      return;
+    }
+    if (data.waiting) {
+      rankedRematchReq = true;
+      showRankedRematchBar(true, true);
+      showMessage(`⚔ 복수전을 신청했습니다. (상대 ${data.opponent || ""}의 수락을 기다립니다.)`, "info");
+    } else {
+      rankedRematchReq = false;
+      showRankedRematchBar(true, false);
+    }
+  });
+
+  socket.on("ranked:rematchOffer", (data) => {
+    if (!data || !data.from || currentMode !== "ranked") return;
+    if (gameState && !gameState.finished) return;
+    showMessage(`⚔ ${data.from}님이 복수전을 신청했습니다! [복수전] 버튼을 눌러 받아들이세요.`, "success");
+  });
+
   socket.on("money:received", (data) => {
     if (!data) return;
     moneyBalance += data.amount;
     renderMoneyBar();
+    playSound("cash");
     const mult = data.multiplier && data.multiplier > 1 ? ` (배율 ${data.multiplier}배 적용!)` : "";
     showMessage(`💰 +${data.amount.toLocaleString()}원 획득!${mult}`, "win");
     applyFx($("#rankedMessage") || $(".money-bar"), "fx-cash");
@@ -557,6 +660,36 @@ function initSocket() {
       if (typeof data.moneyMultiplier === "number") moneyMultiplier = data.moneyMultiplier;
       renderMoneyBar();
       renderShop();
+    }
+  });
+
+  /* -- 출석체크 --------------------------------------- */
+  socket.on("attendance:status", (data) => {
+    if (!data || !data.ok) return;
+    attendanceCheckedToday = !!data.checkedToday;
+    attendanceStreak = data.streak || 0;
+    attendanceNextReward = data.nextReward || 0;
+    renderAttendance();
+  });
+
+  socket.on("attendance:result", (data) => {
+    if (!data) return;
+    if (data.ok) {
+      attendanceCheckedToday = true;
+      attendanceStreak = data.streak || 0;
+      attendanceNextReward = 0;
+      if (typeof data.money === "number") moneyBalance = data.money;
+      renderMoneyBar();
+      renderShop();
+      renderAttendance();
+      showMessage(`📅 출석 완료! ${data.streak ? data.streak + "일 연속 " : ""} +${(data.reward || 0).toLocaleString()}원 획득!`, "win");
+      playSound("cash");
+      if (navigator.vibrate) navigator.vibrate([40, 40, 80]);
+      socket.emit("player:getRanking");
+    } else {
+      attendanceCheckedToday = true;
+      renderAttendance();
+      if (data.reason) showMessage(data.reason, "info");
     }
   });
 
@@ -818,7 +951,10 @@ function initSocket() {
     if (isMyTurn) {
       submitting = false;
       updateInputState();
-      if (!wasMyTurn) focusInput();
+      if (!wasMyTurn) {
+        focusInput();
+        playSound("turn");
+      }
     }
   });
 
@@ -832,6 +968,7 @@ function initSocket() {
     lastPopChar = null;
     renderGameState(gameState);
     showMessage("게임이 시작되었습니다!", "success");
+    playSound("start");
     socket.emit("player:getRanking");
     updateRuleNotice(gameState);
     const hostControls = $("#hostControls");
@@ -841,6 +978,12 @@ function initSocket() {
     const specNotice = $("#spectatorNotice");
     if (specNotice) specNotice.classList.add("hidden");
     submitting = false;
+    if (currentMode === "ranked") {
+      rankedRematchReq = false;
+      showRankedRematchBar(false, false);
+      clearTimeout(rankedAutoLeave);
+      rankedAutoLeave = null;
+    }
     updateInputState();
     focusInput();
   });
@@ -859,10 +1002,12 @@ function initSocket() {
       showMessage(`${data.nickname ? plName : "플레이어"}: ${data.word}${data.depth != null ? " [깊이 " + data.depth + "]" : ""}`, "success");
       const isMyWord = data.player === playerIndex;
       if (isMyWord) {
+        playSound("word");
         submitting = false;
         clearInput();
         updateInputState();
       } else {
+        playSound("oppWord");
         /* 상대가 낸 단어 이후에 'game:state'가 늦게 오는 경우에도 내 턴이면 바로 입력 가능하도록 */
         if (isMyTurn()) {
           submitting = false;
@@ -884,6 +1029,8 @@ function initSocket() {
     if (isStaleAIEvent(data.mode)) return;
     const target = data.targetNickname || "상대";
     const isMe = data.target === playerIndex;
+    if (isMe) playSound("heartLost");
+    else if (data.killer === playerIndex) playSound("oneshot");
     let msg = `한방 단어! ${data.killerNickname || "상대"}님이 ${target}님의 하트를 1개 깎았습니다.`;
     if (isMe && data.hearts != null) msg += ` (남은 하트: ${data.hearts})`;
     showMessage(msg, isMe ? "error" : "info");
@@ -894,6 +1041,7 @@ function initSocket() {
 
   socket.on("game:error", (data) => {
     if (data && data.roomId && roomId && data.roomId !== roomId) return;
+    playSound("error");
     const inputArea = currentMode === "single" ? $(".single-input-area") : $(".online-input-area");
     applyFx(inputArea, "fx-shake");
     const nearHeart = data.mistakes != null && data.mistakesPerLife != null
@@ -914,6 +1062,7 @@ function initSocket() {
     if (isStaleAIEvent(data && data.mode)) return;
     const timeoutName = data.nickname || `플레이어 ${data.player + 1}`;
     if (data.player === playerIndex) {
+      playSound("heartLost");
       if (data.eliminated) {
         showMessage(`시간 초과! 탈락!`, "error");
       } else if (data.heartLost) {
@@ -948,6 +1097,7 @@ function initSocket() {
 
     if (data.winner !== null && data.winner === playerIndex) {
       showMessage("게임에서 승리했습니다!", "win");
+      playSound("win");
       if (currentMode === "single") {
         localStats.wins++;
         localStats.games++;
@@ -957,6 +1107,7 @@ function initSocket() {
       }
     } else if (data.loser !== null && data.loser === playerIndex) {
       showMessage("게임에서 패배했습니다.", "lose");
+      playSound("lose");
       if (currentMode === "single") {
         localStats.losses++;
         localStats.games++;
@@ -979,13 +1130,31 @@ function initSocket() {
       if (wrap) wrap.classList.remove("hidden");
     }
 
-    /* 랭크 게임은 끝나면 자동으로 매칭 대기실로 복귀 */
+    /* 랭크 게임 종료 후 처리 — 복수전 버튼 제공, 자동 계속매칭 설정에 따라
+       자동 재매칭 또는 매칭 대기실 복귀 */
     if (currentMode === "ranked") {
       clearTimeout(rankedAutoLeave);
-      rankedAutoLeave = setTimeout(() => {
-        rankedAutoLeave = null;
-        if (gameState && gameState.finished && (!gameState.roomId || gameState.roomId === roomId)) leaveRoom();
-      }, 4000);
+      rankedAutoLeave = null;
+      rankedRematchReq = false;
+      showRankedRematchBar(true, false);
+      if (rankedAutoContinue) {
+        showMessage("게임이 끝났습니다. 잠시 후 자동으로 다음 상대를 찾습니다...", "info");
+        rankedAutoLeave = setTimeout(() => {
+          rankedAutoLeave = null;
+          if (gameState && gameState.finished && (!gameState.roomId || gameState.roomId === roomId)) {
+            resetRankedBoard();
+            rankedQueued = true;
+            updateRankedQueueUI();
+            if (socket && socketConnected) socket.emit("ranked:queue");
+          }
+        }, 2200);
+      } else {
+        showRankedRematchBar(true, false);
+        rankedAutoLeave = setTimeout(() => {
+          rankedAutoLeave = null;
+          if (gameState && gameState.finished && (!gameState.roomId || gameState.roomId === roomId)) leaveRoom();
+        }, 8000);
+      }
     }
   });
 
@@ -1339,7 +1508,8 @@ function startSingleGame() {
 
   socket.emit("room:create", {
     nickname: makeNickname(),
-    mode: "ai"
+    mode: "ai",
+    difficulty: aiDifficulty
   });
 }
 
@@ -1423,6 +1593,8 @@ function submitRankedWord() { return submitWord("ranked"); }
 function leaveRoom() {
   clearTimeout(rankedAutoLeave);
   rankedAutoLeave = null;
+  rankedRematchReq = false;
+  showRankedRematchBar(false, false);
   if (!socket || !socketConnected) return;
   socket.emit("room:leave");
   roomId = null;
@@ -1454,6 +1626,8 @@ function resetRankedBoard() {
   renderHearts(currentMaxHearts);
   renderMistakes(0, 5);
   clearInput();
+  rankedRematchReq = false;
+  showRankedRematchBar(false, false);
   $("#rankedGame")?.classList.add("hidden");
   $("#rankedLobby")?.classList.remove("hidden");
   updateRankedQueueUI();
@@ -1495,6 +1669,16 @@ function updateRankedQueueUI() {
     info.dataset.active = rankedQueued ? "true" : "false";
     if (!rankedQueued) info.textContent = "";
   }
+}
+
+/* 랭크 종료 후 복수전/취소 버튼 표시 */
+function showRankedRematchBar(visible, requested) {
+  const wrap = $("#rankedRematchWrap");
+  if (wrap) wrap.classList.toggle("hidden", !visible);
+  const btn = $("#rankedRematchBtn");
+  const cancel = $("#rankedRematchCancelBtn");
+  if (btn) btn.classList.toggle("hidden", !(visible && !requested));
+  if (cancel) cancel.classList.toggle("hidden", !(visible && requested));
 }
 
 /* 짧은 애니메이션 클래스 토글 (VFX) */
@@ -1547,6 +1731,24 @@ function renderRankedStreakChip() {
 /* ---------------------------------------------------------
    상점 렌더링
 --------------------------------------------------------- */
+function renderAttendance() {
+  const btn = $("#attendanceBtn");
+  const info = $("#attendanceInfo");
+  if (!btn || !info) return;
+  const streakLabel = attendanceStreak > 0
+    ? `<span class="att-num">연속 ${attendanceStreak}일</span>`
+    : "오늘부터 첫 출석을 노려보세요!";
+  if (attendanceCheckedToday) {
+    btn.disabled = true;
+    btn.textContent = "오늘 출석 완료 ✓";
+    info.innerHTML = `이미 출석했습니다. 내일 또 만나요! ${streakLabel}`;
+  } else {
+    btn.disabled = false;
+    btn.textContent = "📅 출석체크 하기";
+    info.innerHTML = `출석하면 <b>${(attendanceNextReward || 0).toLocaleString()}원</b>을 받아요. ${streakLabel}`;
+  }
+}
+
 function renderShop() {
   const body = $("#shopBody");
   if (!body || !shopInfo) return;
@@ -2301,6 +2503,17 @@ document.addEventListener("DOMContentLoaded", () => {
   initNicknameBar();
   updateStatsUI();
   initSideRanking();
+  renderSoundToggle();
+
+  /* 소리/진동 토글 — 첫 조작 시 AudioContext 시작 (자동재생 정책 대응) */
+  $("#soundToggle")?.addEventListener("click", () => {
+    soundEnabled = !soundEnabled;
+    localStorage.setItem("kkSound", soundEnabled ? "1" : "0");
+    renderSoundToggle();
+    playSound("word");
+  });
+  document.addEventListener("pointerdown", () => ensureAudio(), { once: false });
+  document.addEventListener("keydown", () => ensureAudio(), { once: false });
 
   /* 탭 전환 */
   $all(".tabs button").forEach(btn => {
@@ -2326,7 +2539,10 @@ document.addEventListener("DOMContentLoaded", () => {
         updateRankedQueueUI();
         renderRankedStreakChip();
       } else if (currentMode === "shop") {
-        if (socket && socketConnected) socket.emit("shop:list");
+        if (socket && socketConnected) {
+          socket.emit("shop:list");
+          socket.emit("attendance:status");
+        }
       }
       loadSideRanking(sideRankMode, true);
     });
@@ -2345,6 +2561,16 @@ document.addEventListener("DOMContentLoaded", () => {
     leaveRoom();
     setTimeout(startSingleGame, 200);
   });
+
+  /* 싱글 AI 난이도 선택 */
+  const diffSel = $("#aiDifficulty");
+  if (diffSel) {
+    diffSel.value = aiDifficulty;
+    diffSel.addEventListener("change", () => {
+      aiDifficulty = diffSel.value || "normal";
+      localStorage.setItem("kkAiDiff", aiDifficulty);
+    });
+  }
 
   $("#singleSend")?.addEventListener("click", submitSingleWord);
   $("#hintBtn")?.addEventListener("click", () => {
@@ -2401,6 +2627,38 @@ document.addEventListener("DOMContentLoaded", () => {
     updateRankedQueueUI();
     socket.emit("ranked:cancel");
   });
+
+  /* 자동 계속매칭 — 게임 후 자동으로 다음 매칭 이어가기 */
+  const autoCb = $("#rankedAutoContinue");
+  if (autoCb) {
+    autoCb.checked = rankedAutoContinue;
+    autoCb.addEventListener("change", () => {
+      rankedAutoContinue = autoCb.checked;
+      localStorage.setItem("kkAutoRequeue", rankedAutoContinue ? "1" : "0");
+    });
+  }
+
+  /* 복수전 — 같은 상대와 다시 대결 */
+  $("#rankedRematchBtn")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) return;
+    if (!gameState || !gameState.finished) { showMessage("게임이 종료된 후 사용할 수 있습니다.", "info"); return; }
+    clearTimeout(rankedAutoLeave);
+    rankedAutoLeave = null;
+    rankedRematchReq = true;
+    showRankedRematchBar(true, true);
+    socket.emit("ranked:rematch");
+  });
+  $("#rankedRematchCancelBtn")?.addEventListener("click", () => {
+    rankedRematchReq = false;
+    showRankedRematchBar(true, false);
+    socket.emit("ranked:rematchCancel");
+    showMessage("복수전 신청을 취소했습니다.", "info");
+    clearTimeout(rankedAutoLeave);
+    rankedAutoLeave = setTimeout(() => {
+      rankedAutoLeave = null;
+      if (gameState && gameState.finished && (!gameState.roomId || gameState.roomId === roomId)) leaveRoom();
+    }, 4000);
+  });
   $("#rankedSend")?.addEventListener("click", () => submitWord("ranked"));
   $("#rankedInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -2414,6 +2672,13 @@ document.addEventListener("DOMContentLoaded", () => {
     renderRoomInfo(null);
   });
   $("#loadLbRanked")?.addEventListener("click", toggleLeaderboardRanked);
+
+  /* 출석체크 */
+  $("#attendanceBtn")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+    if (!myNickname) { showMessage("출석체크는 닉네임을 저장한 뒤 이용할 수 있습니다.", "error"); return; }
+    socket.emit("attendance:check");
+  });
 
   /* 상점/버그 */
   $("#bugBtn")?.addEventListener("click", () => { $("#bugModal")?.classList.remove("hidden"); });

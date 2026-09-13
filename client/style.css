@@ -568,6 +568,36 @@ button:disabled {
   margin: 16px 0;
 }
 
+/* 싱글 AI 난이도 선택 */
+.single-options {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  font-size: 0.9rem;
+  color: var(--text-faint);
+}
+.single-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--text);
+}
+.single-options select {
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.9rem;
+}
+.single-options-hint {
+  font-size: 0.75rem;
+}
+
 .last-char-box {
   text-align: center;
   background: var(--card);
@@ -1763,6 +1793,19 @@ button:active:not(:disabled) {
   color: #c4b5fd;
   font-size: 0.78rem;
 }
+/* 소리/진동 토글 */
+.sound-chip {
+  margin-left: 6px;
+  background: rgba(148, 163, 184, 0.15);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  color: var(--text);
+  line-height: normal;
+}
+.sound-chip:hover { background: rgba(148, 163, 184, 0.3); }
 
 /* AI 승률 바 */
 .ai-winrate {
@@ -1834,6 +1877,24 @@ button:active:not(:disabled) {
   color: #92400e;
   font-weight: 800;
 }
+/* 랭크 자동 계속매칭 토글 */
+.autoqueue-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 4px 0 2px;
+  user-select: none;
+}
+.autoqueue-label input {
+  cursor: pointer;
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+}
 .rated-chip {
   font-size: 0.72rem;
   background: rgba(99,102,241,0.1);
@@ -1853,6 +1914,53 @@ button:active:not(:disabled) {
   margin: 6px 0;
 }
 .shop-money strong { color: #fbbf24; font-size: 1.15em; }
+
+/* 출석체크 카드 */
+.attendance-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: linear-gradient(135deg, #164e63, #0e7490);
+  border: 1px solid #0ea5e9;
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 6px 0;
+  color: #e0f2fe;
+}
+.attendance-text {
+  min-width: 0;
+}
+.attendance-title {
+  font-size: 1rem;
+  font-weight: 800;
+  margin-bottom: 2px;
+}
+.attendance-info {
+  font-size: 0.8rem;
+  color: #bae6fd;
+}
+.attendance-info .att-num {
+  font-weight: 800;
+  color: #fbbf24;
+}
+.attendance-card button {
+  background: #0d9488;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.attendance-card button:disabled {
+  background: #0f766e;
+  color: #a7f3d0;
+  cursor: default;
+  opacity: 0.8;
+}
 .shop-sub {
   font-size: 0.78rem;
   font-weight: 700;

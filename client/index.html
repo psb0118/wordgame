@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=12">
+  <link rel="stylesheet" href="style.css?v=13">
 </head>
 <body>
   <main class="wrap">
@@ -30,6 +30,7 @@
       <span class="money-chip">💰 <b id="moneyDisplay">0</b></span>
       <span class="boost-chip hidden" id="boostChip" title="다음 N번 게임 동안 레이팅/승리 보상 2배">물약 <b id="boostCount">0</b>판</span>
       <span class="title-chip hidden" id="titleChip"></span>
+      <button id="soundToggle" class="sound-chip" title="소리/진동 켜기·끄기">🔊</button>
     </div>
 
     <!-- 싱글플레이 -->
@@ -57,6 +58,17 @@
           <div class="timer-value" id="timer">-</div>
         </div>
         <div class="turn-indicator" id="turnIndicator"></div>
+      </div>
+
+      <div class="single-options">
+        <label>AI 난이도
+          <select id="aiDifficulty" title="AI가 단어를 고르는 수준과 응답 속도">
+            <option value="easy">쉬움</option>
+            <option value="normal" selected>보통</option>
+            <option value="hard">어려움</option>
+          </select>
+        </label>
+        <span class="single-options-hint">쉬움은 무작위 대응 · 보통은 강력 전략 · 어려움은 최선의 수로 승부합니다.</span>
       </div>
 
       <div class="rule-notice" id="ruleNotice"></div>
@@ -173,12 +185,16 @@
     <section id="ranked" class="panel hidden">
       <div class="rule-notice">실시간 랭크 매칭 — 온라인 레이팅과 다른 <b>랭크 점수</b>를 사용합니다. 승리하면 돈(코인)을 받을 수 있어요.</div>
 
-      <div id="rankedLobby">
-        <div class="onlineTop">
-          <button id="rankedQueueBtn">🔍 매칭 시작</button>
-          <button id="rankedCancelBtn" class="secondary hidden">매칭 취소</button>
-        </div>
-        <div id="rankedQueueInfo" class="ranked-queue-info"></div>
+<div id="rankedLobby">
+          <div class="onlineTop">
+            <button id="rankedQueueBtn">🔍 매칭 시작</button>
+            <button id="rankedCancelBtn" class="secondary hidden">매칭 취소</button>
+          </div>
+          <div id="rankedQueueInfo" class="ranked-queue-info"></div>
+          <label class="autoqueue-label">
+            <input type="checkbox" id="rankedAutoContinue">
+            <span>게임 후 자동으로 다음 매칭 이어가기</span>
+          </label>
         <div class="ranked-prize">
           <b>승리 보상:</b>
           <span>5,000</span><span>10,000</span><span>25,000</span><span>50,000</span><span>100,000</span><span>500,000</span><span>1,000,000</span><span style="color:#fbbf24;font-weight:700;">5,000,000</span>
@@ -222,6 +238,11 @@
           <span>실수 <span id="mistakesDisplayRanked">0/5</span></span>
         </div>
 
+        <div id="rankedRematchWrap" class="hidden" style="text-align:center;margin:10px 0;">
+          <button id="rankedRematchBtn" class="wide">⚔ 복수전</button>
+          <button id="rankedRematchCancelBtn" class="wide secondary hidden">복수전 취소</button>
+        </div>
+
         <button id="rankedLeave" class="wide secondary">나가기</button>
       </div>
 
@@ -236,6 +257,13 @@
     <!-- 상점 -->
     <section id="shop" class="panel hidden">
       <div class="rule-notice">랭크 매칭 승리로 번 <b>돈(코인)</b>으로 칭호·물약·배율을 구매할 수 있습니다.</div>
+      <div class="attendance-card">
+        <div class="attendance-text">
+          <div class="attendance-title">📅 출석체크</div>
+          <div class="attendance-info" id="attendanceInfo">매일 1회 출석하면 돈을 받아요!</div>
+        </div>
+        <button id="attendanceBtn">📅 출석체크</button>
+      </div>
       <div class="shop-money">
         <span>💰 소지금</span>
         <strong id="shopMoney">0</strong>
@@ -404,6 +432,6 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="script.js?v=12"></script>
+  <script src="script.js?v=13"></script>
 </body>
 </html>

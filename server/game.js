@@ -440,13 +440,18 @@ const WIN_NODE_CAP = 12000;   /* 탐색 노드 예산 */
 const WIN_MAX_DEPTH = 18;     /* 최대 수심(플라이) */
 const WIN_BRANCH = 64;        /* 한 위치에서 고려할 최대 가지 수 */
 
+/* AI 난이도(어려움) 대비 더 넓게/깊게 탐색하기 위한 가변 파라미터 —
+   chooseAIWord가 강모드 진입 시 임시로 조정하고 항상 원복한다 */
+let _winBranch = WIN_BRANCH;
+let _winDepth = WIN_MAX_DEPTH;
+
 function canForceWin(word, usedSet, depth, budget, WORD_INDEX) {
-  if (depth > WIN_MAX_DEPTH) return null;
+  if (depth > _winDepth) return null;
   if (--budget.nodes < 0) return null;
   usedSet.add(word);
   const moves = getCandidates(word, usedSet, WORD_INDEX);
   if (moves.length === 0) { usedSet.delete(word); return false; }
-  if (moves.length > WIN_BRANCH) { usedSet.delete(word); return null; }
+  if (moves.length > _winBranch) { usedSet.delete(word); return null; }
   for (const m of moves) {
     const r = isWinningMove(m, usedSet, depth + 1, budget, WORD_INDEX);
     if (r === true) { usedSet.delete(word); return true; }
@@ -460,7 +465,7 @@ function isWinningMove(m, usedSet, depth, budget, WORD_INDEX) {
   usedSet.add(m);
   const opp = getCandidates(m, usedSet, WORD_INDEX);
   if (opp.length === 0) { usedSet.delete(m); return true; }
-  if (opp.length > WIN_BRANCH) { usedSet.delete(m); return null; }
+  if (opp.length > _winBranch) { usedSet.delete(m); return null; }
   for (const o of opp) {
     const r = canForceWin(o, usedSet, depth + 1, budget, WORD_INDEX);
     if (r === true) { usedSet.delete(m); return false; } /* 상대가 확정 승리 → 이 수는 승리 수 아님 */
@@ -488,9 +493,12 @@ function isWinningMove(m, usedSet, depth, budget, WORD_INDEX) {
    - 상대가 이 단어를 받아친 뒤에도 AI가 이길 수 있는지 여러 수 먼저 내다본다
 ========================================================= */
 
-function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS) {
+function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS, opts) {
   const candidates = getCandidates(currentWord, usedWords, WORD_INDEX);
   if (!candidates.length) return null;
+
+  /* 난이도 — strong(어려움): 강제 승리를 더 넓게/깊게 탐색하고 최선에 가깝게 고름 */
+  const strong = !!(opts && opts.strong);
 
   const newUsed = new Set([...usedWords]);
   const defenseSet = DEFENSE_WORDS || new Set();
@@ -575,7 +583,9 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     const scored = capSample(group).map(i => ({ i, s: oppScore(i) }));
     scored.sort((a, b) => b.s - a.s);
     const topScore = scored[0].s;
-    const top = scored.filter(x => x.s >= topScore - 12);
+    /* 어려움은 최선에 거의 결정적으로, 보통은 상위 몇 개 중 무작위(다양성) */
+    const band = strong ? 3 : 12;
+    const top = scored.filter(x => x.s >= topScore - band);
     return pick(top).i.w;
   };
 
@@ -589,13 +599,21 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
          nextCount가 16 Cap으로 계산되므로 리스트가 너무 크면 스킵) */
   if (list.length <= 160) {
     const winUsed = new Set(usedWords);
-    const budget = { nodes: WIN_NODE_CAP };
-    for (const item of list) {
-      const oppAll = getCandidates(item.w, winUsed, WORD_INDEX, WIN_BRANCH + 1);
-      if (oppAll.length > WIN_BRANCH) continue; /* 상대 응수가 넓어 증명 불가 */
-      const r = isWinningMove(item.w, winUsed, 0, budget, WORD_INDEX);
-      if (r === true) return item.w;
-      if (budget.nodes <= 0) break;
+    const prevBranch = _winBranch;
+    const prevDepth = _winDepth;
+    if (strong) { _winBranch = 160; _winDepth = 24; }
+    const budget = { nodes: strong ? WIN_NODE_CAP * 5 : WIN_NODE_CAP };
+    try {
+      for (const item of list) {
+        const oppAll = getCandidates(item.w, winUsed, WORD_INDEX, strong ? 200 : WIN_BRANCH + 1);
+        if (oppAll.length > (strong ? 200 : WIN_BRANCH)) continue; /* 상대 응수가 넓어 증명 불가 */
+        const r = isWinningMove(item.w, winUsed, 0, budget, WORD_INDEX);
+        if (r === true) return item.w;
+        if (budget.nodes <= 0) break;
+      }
+    } finally {
+      _winBranch = prevBranch;
+      _winDepth = prevDepth;
     }
   }
 
