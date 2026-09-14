@@ -41,6 +41,8 @@ let rankedQueued = false;
 let rankedMatchInfo = null;
 let rankedAutoLeave = null;
 let rankedRematchReq = false;
+let rankedInvitePending = false;
+let rankedInviteIncoming = null;
 let rankedAutoContinue = localStorage.getItem("kkAutoRequeue") === "1";
 let rankedStreak = 0;
 let rankedBestStreak = 0;
@@ -629,6 +631,9 @@ function initSocket() {
     rankedAutoLeave = null;
     rankedQueued = false;
     rankedRematchReq = false;
+    rankedInvitePending = false;
+    rankedInviteIncoming = null;
+    hideRankedInviteBar();
     showRankedRematchBar(false, false);
     rankedMatchInfo = { opponent: data.opponent, opponentRating: data.opponentRating };
     gameState = data.state;
@@ -683,6 +688,58 @@ function initSocket() {
     if (!data || !data.from || currentMode !== "ranked") return;
     if (gameState && !gameState.finished) return;
     showMessage(`⚔ ${data.from}님이 복수전을 신청했습니다! [복수전] 버튼을 눌러 받아들이세요.`, "success");
+  });
+
+  /* -- 랭크 대결 초대 (2인전) -------------------------- */
+  socket.on("ranked:inviteSent", (data) => {
+    if (!data) return;
+    if (data.ok === false) {
+      showMessage(data.reason || "랭크 초대를 보내지 못했습니다.", "error");
+      return;
+    }
+    if (data.canceled) {
+      rankedInvitePending = false;
+      updateRankedInviteUI();
+      showMessage("랭크 초대를 취소했습니다.", "info");
+      return;
+    }
+    rankedInvitePending = true;
+    updateRankedInviteUI();
+    showMessage(`⚔ ${data.nickname || ""}님에게 랭크 대결을 신청했습니다. 상대의 수락을 기다립니다.`, "info");
+  });
+
+  socket.on("ranked:inviteReceived", (data) => {
+    if (!data || !data.from) return;
+    rankedInviteIncoming = data;
+    const wrap = $("#rankedInviteWrap");
+    if (wrap) {
+      const text = $("#rankedInviteText");
+      if (text) text.textContent = `⚔ ${data.from}님이 랭크 대결을 신청했습니다! (상대 랭크 ${data.fromRating != null ? data.fromRating : "-"})`;
+      wrap.classList.remove("hidden");
+    }
+    showMessage(`⚔ ${data.from}님이 랭크 대결을 신청했습니다! 수락하시겠습니까?`, "success");
+  });
+
+  socket.on("ranked:inviteStatus", (data) => {
+    if (!data) return;
+    if (data.ok === false) {
+      hideRankedInviteBar();
+      showMessage(data.reason || "요청을 처리하지 못했습니다.", "error");
+    } else if (data.rejected) {
+      hideRankedInviteBar();
+      showMessage("랭크 초대를 거절했습니다.", "info");
+    }
+  });
+
+  socket.on("ranked:inviteRejected", (data) => {
+    rankedInvitePending = false;
+    updateRankedInviteUI();
+    showMessage(`${data?.from || "상대"}님이 랭크 대결을 거절했습니다.`, "info");
+  });
+
+  socket.on("ranked:inviteCanceled", (data) => {
+    hideRankedInviteBar();
+    showMessage(`${data?.reason ? data.reason : (data?.from || "상대") + "님이 랭크 대결을 취소했습니다."}`, "info");
   });
 
   socket.on("money:received", (data) => {
@@ -1889,6 +1946,9 @@ function resetRankedBoard() {
   renderMistakes(0, 5);
   clearInput();
   rankedRematchReq = false;
+  rankedInvitePending = false;
+  hideRankedInviteBar();
+  updateRankedInviteUI();
   showRankedRematchBar(false, false);
   $("#rankedGame")?.classList.add("hidden");
   $("#rankedLobby")?.classList.remove("hidden");
@@ -1941,6 +2001,45 @@ function showRankedRematchBar(visible, requested) {
   const cancel = $("#rankedRematchCancelBtn");
   if (btn) btn.classList.toggle("hidden", !(visible && !requested));
   if (cancel) cancel.classList.toggle("hidden", !(visible && requested));
+}
+
+/* 랭크 대결 초대(2인전) — 수신 바 숨기기 및 초대 상태 갱신 */
+function hideRankedInviteBar() {
+  rankedInviteIncoming = null;
+  $("#rankedInviteWrap")?.classList.add("hidden");
+}
+
+function updateRankedInviteUI() {
+  const cancel = $("#rankedInviteCancelBtn");
+  if (cancel) cancel.classList.toggle("hidden", !rankedInvitePending);
+}
+
+function sendRankedInvite() {
+  if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+  if (!requireNickname()) return;
+  if (rankedQueued) { showMessage("매칭 대기 중에는 초대를 보낼 수 없습니다. 매칭을 먼저 취소해주세요.", "warning"); return; }
+  const input = $("#rankedInviteInput");
+  if (!input) return;
+  const nick = normalizeWord(input.value);
+  if (!nick) { showMessage("초대할 닉네임을 입력해주세요.", "error"); return; }
+  socket.emit("ranked:invite", { nickname: nick });
+}
+
+function cancelRankedInvite() {
+  if (!socket || !socketConnected) return;
+  socket.emit("ranked:inviteCancel");
+}
+
+function acceptRankedInvite() {
+  if (!socket || !socketConnected) return;
+  hideRankedInviteBar();
+  socket.emit("ranked:inviteAccept");
+}
+
+function rejectRankedInvite() {
+  if (!socket || !socketConnected) return;
+  hideRankedInviteBar();
+  socket.emit("ranked:inviteReject");
 }
 
 /* 짧은 애니메이션 클래스 토글 (VFX) */
@@ -3041,6 +3140,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
     if (!requireNickname()) return;
     rankedQueued = true;
+    rankedInvitePending = false;
+    hideRankedInviteBar();
+    updateRankedInviteUI();
     updateRankedQueueUI();
     socket.emit("ranked:queue");
   });
@@ -3093,6 +3195,11 @@ document.addEventListener("DOMContentLoaded", () => {
     leaveRoom();
     renderRoomInfo(null);
   });
+  $("#rankedInviteBtn")?.addEventListener("click", sendRankedInvite);
+  $("#rankedInviteCancelBtn")?.addEventListener("click", cancelRankedInvite);
+  $("#rankedInviteAcceptBtn")?.addEventListener("click", acceptRankedInvite);
+  $("#rankedInviteRejectBtn")?.addEventListener("click", rejectRankedInvite);
+  bindAdminEnter("#rankedInviteInput", sendRankedInvite);
   $("#loadLbRanked")?.addEventListener("click", toggleLeaderboardRanked);
 
   /* 출석체크 */

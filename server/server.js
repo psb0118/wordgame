@@ -534,6 +534,28 @@ const RANKED_QUEUE_MAP = new Map(); /* socketId -> true */
    같은 상대를 신청하면 즉시 그 둘끼리 새 랭크 매치를 시작한다 */
 const REMATCHES = new Map();
 
+/* 랭크 대결 초대(2인전) — inviterSocketId -> { targetSocketId, from, fromRating, at }.
+   친구에게 지명 랭크 대결을 신청하고 수락하면 그 둘끼리 새 랭크 매치를 시작한다 */
+const RANKED_INVITES = new Map();
+
+/* 소켓과 얽힌 랭크 초대를 모두 정리 — 내가 보낸 초대와 나를 대상으로 한 초대를
+   취소하고 상대에게 통지한다 (매칭 대기 진입/커넥션 종료 등에서 호출) */
+function cancelRankedInvitesFor(socketId) {
+  const outgoing = RANKED_INVITES.get(socketId);
+  if (outgoing) {
+    RANKED_INVITES.delete(socketId);
+    const tSocket = io.sockets.sockets.get(outgoing.targetSocketId);
+    if (tSocket) tSocket.emit("ranked:inviteCanceled", { from: outgoing.from, reason: "초대자가 초대를 취소했습니다." });
+  }
+  for (const [inviter, inv] of [...RANKED_INVITES]) {
+    if (inv.targetSocketId === socketId) {
+      RANKED_INVITES.delete(inviter);
+      const inviterSocket = io.sockets.sockets.get(inviter);
+      if (inviterSocket) inviterSocket.emit("ranked:inviteCanceled", { from: inv.from, reason: "상대가 닉네임을 변경하거나 연결이 종료되었습니다." });
+    }
+  }
+}
+
 function addToRankedQueue(socketId, nickname, rating) {
   if (RANKED_QUEUE_MAP.has(socketId)) return false;
   RANKED_QUEUE.push({ socketId, nickname, rating, joinedAt: Date.now() });
@@ -1949,6 +1971,7 @@ io.on("connection", (socket) => {
     console.log(`[DISCONNECT] ${socket.id} / ${reason}`);
     adminAuthed.delete(socket.id);
     REMATCHES.delete(socket.id);
+    cancelRankedInvitesFor(socket.id);
     removeFromRankedQueue(socket.id);
     broadcastRankedQueue();
     unregisterOnline(socket.id);
@@ -1982,6 +2005,7 @@ io.on("connection", (socket) => {
   socket.on("ranked:queue", async () => {
     try {
       REMATCHES.delete(socket.id);
+      cancelRankedInvitesFor(socket.id);
       const pd = await getPlayerData(socket.id);
       const nickname = String(pd.nickname || "플레이어").trim();
       if (!nickname) { socket.emit("ranked:queueStatus", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
@@ -2043,6 +2067,105 @@ io.on("connection", (socket) => {
   socket.on("ranked:rematchCancel", () => {
     REMATCHES.delete(socket.id);
     socket.emit("ranked:rematchStatus", { ok: true, waiting: false });
+  });
+
+  /* -- 랭크 대결 초대 (2인전) — 친구를 지명해 랭크 매치를 시작한다.
+     수락하면 기존 랭크 매치와 동일하게 레이팅/돈/일일 미션이 적용된다 ---------- */
+  socket.on("ranked:invite", async (data) => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const myNick = String(pd.nickname || "플레이어").trim();
+      const target = String(data?.nickname || "").trim();
+      if (!myNick) { socket.emit("ranked:inviteSent", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
+      if (!target) { socket.emit("ranked:inviteSent", { ok: false, reason: "초대할 닉네임을 입력해주세요." }); return; }
+      const tId = onlineNicks.get(normKey(target));
+      if (!tId || tId === socket.id || !io.sockets.sockets.has(tId)) {
+        socket.emit("ranked:inviteSent", { ok: false, reason: `'${target}' 님이 현재 온라인이 아닙니다.` });
+        return;
+      }
+      if (RANKED_QUEUE_MAP.has(socket.id)) {
+        socket.emit("ranked:inviteSent", { ok: false, reason: "매칭 대기 중에는 초대를 보낼 수 없습니다. 매칭을 먼저 취소해주세요." });
+        return;
+      }
+      if (RANKED_QUEUE_MAP.has(tId)) {
+        socket.emit("ranked:inviteSent", { ok: false, reason: `'${target}' 님이 현재 매칭 대기 중이라 초대를 받을 수 없습니다.` });
+        return;
+      }
+      if (RANKED_INVITES.has(socket.id)) {
+        socket.emit("ranked:inviteSent", { ok: false, reason: "이미 보낸 랭크 초대가 있습니다. 먼저 취소해주세요." });
+        return;
+      }
+      if ([...RANKED_INVITES.values()].some(inv => inv.targetSocketId === tId)) {
+        socket.emit("ranked:inviteSent", { ok: false, reason: `'${target}' 님에게 이미 도착한 랭크 초대가 있습니다.` });
+        return;
+      }
+
+      RANKED_INVITES.set(socket.id, { targetSocketId: tId, from: myNick, fromRating: pd.ranked.rating, at: Date.now() });
+      const tSocket = io.sockets.sockets.get(tId);
+      if (tSocket) tSocket.emit("ranked:inviteReceived", { from: myNick, fromRating: pd.ranked.rating });
+      socket.emit("ranked:inviteSent", { ok: true, nickname: target });
+      console.log(`[RANKED INVITE] '${myNick}'(${pd.ranked.rating}) → '${target}'`);
+    } catch (err) { console.error("랭크 초대 오류:", err); }
+  });
+
+  socket.on("ranked:inviteCancel", () => {
+    const inv = RANKED_INVITES.get(socket.id);
+    if (inv) {
+      RANKED_INVITES.delete(socket.id);
+      const tSocket = io.sockets.sockets.get(inv.targetSocketId);
+      if (tSocket) tSocket.emit("ranked:inviteCanceled", { from: inv.from });
+    }
+    socket.emit("ranked:inviteSent", { ok: true, canceled: true });
+  });
+
+  socket.on("ranked:inviteAccept", async () => {
+    try {
+      let found = null;
+      for (const [inviter, inv] of RANKED_INVITES) {
+        if (inv.targetSocketId === socket.id) { found = { inviter, inv }; break; }
+      }
+      if (!found) { socket.emit("ranked:inviteStatus", { ok: false, reason: "받은 랭크 초대가 없거나 이미 만료되었습니다." }); return; }
+
+      /* 초대 중 상대가 매칭 대기/게임에 들어갔을 수 있으므로 재확인 후 매치 시작 */
+      if (RANKED_QUEUE_MAP.has(found.inviter) || RANKED_QUEUE_MAP.has(socket.id)) {
+        RANKED_INVITES.delete(found.inviter);
+        socket.emit("ranked:inviteStatus", { ok: false, reason: "한쪽이 이미 매칭에 들어가 초대가 취소되었습니다." });
+        return;
+      }
+
+      const inviterSocket = io.sockets.sockets.get(found.inviter);
+      const meSocket = io.sockets.sockets.get(socket.id);
+      if (!inviterSocket || !meSocket) {
+        RANKED_INVITES.delete(found.inviter);
+        return;
+      }
+      RANKED_INVITES.delete(found.inviter);
+
+      const [pdInviter, pdMe] = await Promise.all([getPlayerData(found.inviter), getPlayerData(socket.id)]);
+      const inviterNick = String(pdInviter.nickname || found.inv.from || "플레이어").trim();
+      const meNick = String(pdMe.nickname || "플레이어").trim();
+      if (!inviterNick) {
+        socket.emit("ranked:inviteStatus", { ok: false, reason: "초대자가 닉네임을 설정하지 않았습니다." });
+        return;
+      }
+      startRankedGame(
+        { socketId: found.inviter, nickname: inviterNick, rating: pdInviter.ranked.rating },
+        { socketId: socket.id, nickname: meNick, rating: pdMe.ranked.rating }
+      );
+    } catch (err) { console.error("랭크 초대 수락 오류:", err); }
+  });
+
+  socket.on("ranked:inviteReject", () => {
+    for (const [inviter, inv] of RANKED_INVITES) {
+      if (inv.targetSocketId === socket.id) {
+        RANKED_INVITES.delete(inviter);
+        const inviterSocket = io.sockets.sockets.get(inviter);
+        if (inviterSocket) inviterSocket.emit("ranked:inviteRejected", { from: inv.from });
+        socket.emit("ranked:inviteStatus", { ok: true, rejected: true });
+        return;
+      }
+    }
+    socket.emit("ranked:inviteStatus", { ok: false, reason: "받은 랭크 초대가 없습니다." });
   });
 
   /* -- 출석체크 ----------------------------------------- */

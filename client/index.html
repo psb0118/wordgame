@@ -220,8 +220,18 @@
           <div class="onlineTop">
             <button id="rankedQueueBtn">🔍 매칭 시작</button>
             <button id="rankedCancelBtn" class="secondary hidden">매칭 취소</button>
+            <label>상대 닉네임<input id="rankedInviteInput" maxlength="12" placeholder="친구 닉네임" autocomplete="off"></label>
+            <button id="rankedInviteBtn" title="친구를 지명해 랭크 대결을 시작합니다. 수락 시 같은 규칙의 랭크 점수가 적용됩니다">대결 초대</button>
+            <button id="rankedInviteCancelBtn" class="secondary hidden">초대 취소</button>
           </div>
           <div id="rankedQueueInfo" class="ranked-queue-info"></div>
+          <div id="rankedInviteWrap" class="hidden" style="text-align:center;margin:10px 0;background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.4);border-radius:8px;padding:10px;">
+            <span id="rankedInviteText" style="font-weight:700;"></span>
+            <div style="margin-top:8px;">
+              <button id="rankedInviteAcceptBtn">⚔ 수락</button>
+              <button id="rankedInviteRejectBtn" class="secondary">거절</button>
+            </div>
+          </div>
           <label class="autoqueue-label">
             <input type="checkbox" id="rankedAutoContinue">
             <span>게임 후 자동으로 다음 매칭 이어가기</span>
