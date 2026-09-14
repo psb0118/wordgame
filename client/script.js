@@ -1954,6 +1954,29 @@ function resetRankedBoard() {
   $("#rankedLobby")?.classList.remove("hidden");
   updateRankedQueueUI();
   renderRankedStreakChip();
+  refreshSeasonBar();
+}
+
+/* 시즌제 랭킹 — 현재 시즌/종료까지 남은 기간/지난 시즌 1위/보상 정보를 표시 */
+async function refreshSeasonBar() {
+  const bar = $("#rankedSeasonBar");
+  if (!bar) return;
+  try {
+    const info = await (await fetch(`/api/season`)).json();
+    if (!info || info.ok === false) throw new Error("bad payload");
+    const reward = (info.rewards || []).map(r => `<span class="season-reward-item"><b>${escapeHtml(r.rank)}</b> ${escapeHtml(r.value)}</span>`).join("");
+    bar.innerHTML = `<div class="season-bar">
+        <div class="season-bar-top">
+          <b>시즌 ${escapeHtml(info.key)}</b>
+          <span>· 종료까지 <b>${Number(info.daysLeft || 0)}일</b></span>
+        </div>
+        <div class="season-bar-prev">${info.previous ? `🏆 지난 시즌(${escapeHtml(info.previous.season)}) 1위 <b>${escapeHtml(info.previous.champion)}</b>` : "아직 종료된 시즌이 없습니다."}</div>
+        <div class="season-bar-reward">${reward}</div>
+      </div>`;
+    bar.classList.remove("hidden");
+  } catch (err) {
+    bar.classList.add("hidden");
+  }
 }
 
 /* 온라인 보드/UI를 초기 상태로 정리 */
@@ -3016,6 +3039,7 @@ document.addEventListener("DOMContentLoaded", () => {
   updateStatsUI();
   initSideRanking();
   renderSoundToggle();
+  refreshSeasonBar();
 
   /* 소리/진동 토글 — 첫 조작 시 AudioContext 시작 (자동재생 정책 대응) */
   $("#soundToggle")?.addEventListener("click", () => {
@@ -3047,7 +3071,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!gameState || !roomId) setTimeout(startSingleGame, 100);
       } else if (currentMode === "ranked") {
         if (gameState && roomId && currentMode === "ranked") { /* in game */ }
-        else { $("#rankedLobby")?.classList.remove("hidden"); $("#rankedGame")?.classList.add("hidden"); }
+        else { $("#rankedLobby")?.classList.remove("hidden"); $("#rankedGame")?.classList.add("hidden"); refreshSeasonBar(); }
         updateRankedQueueUI();
         renderRankedStreakChip();
       } else if (currentMode === "shop") {

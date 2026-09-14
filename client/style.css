@@ -2041,6 +2041,45 @@ button:active:not(:disabled) {
   color: #92400e;
   font-weight: 800;
 }
+/* 시즌제 랭킹 — 현재 시즌/남은 기간/지난 시즌 1위/보상 테이블 */
+.season-bar {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card-soft);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  text-align: center;
+}
+.season-bar-top b {
+  color: var(--text);
+  font-size: 0.85rem;
+}
+.season-bar-prev {
+  margin-top: 4px;
+  color: var(--text-dim);
+}
+.season-bar-prev b {
+  color: #f59e0b;
+}
+.season-bar-reward {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: center;
+  margin-top: 6px;
+}
+.season-reward-item {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+.season-reward-item b {
+  color: var(--accent);
+}
 /* 랭크 자동 계속매칭 토글 */
 .autoqueue-label {
   display: flex;

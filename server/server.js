@@ -271,7 +271,8 @@ async function initDatabase() {
           single_wins INTEGER DEFAULT 0,
           single_losses INTEGER DEFAULT 0,
           created_at TIMESTAMP DEFAULT NOW(),
-          updated_at TIMESTAMP DEFAULT NOW()
+          updated_at TIMESTAMP DEFAULT NOW(),
+          season TEXT DEFAULT '{}'
         )
       `);
       await dbPool.query(`
@@ -292,7 +293,8 @@ async function initDatabase() {
           ADD COLUMN IF NOT EXISTS last_check_date TEXT DEFAULT '',
           ADD COLUMN IF NOT EXISTS attendance_streak INTEGER DEFAULT 0,
           ADD COLUMN IF NOT EXISTS recent_games TEXT DEFAULT '[]',
-          ADD COLUMN IF NOT EXISTS daily TEXT DEFAULT '{}'
+          ADD COLUMN IF NOT EXISTS daily TEXT DEFAULT '{}',
+          ADD COLUMN IF NOT EXISTS season TEXT DEFAULT '{}'
       `);
       dbMode = "pg";
       console.log("데이터베이스: PostgreSQL 연결 완료");
@@ -327,6 +329,15 @@ function migratePlayerData(p) {
   if (!Array.isArray(p.recentGames)) p.recentGames = [];
   else p.recentGames = p.recentGames.slice(-10).filter(g => g && typeof g === "object");
   p.daily = initDailyData(p.daily, getKstDate());
+  if (!p.season || typeof p.season !== "object") p.season = null;
+  else p.season = {
+    season: String(p.season.season || ""),
+    games: Math.max(0, Math.floor(Number(p.season.games) || 0)),
+    rating: Math.max(0, Math.floor(Number(p.season.rating) || 1000)),
+    wins: Math.max(0, Math.floor(Number(p.season.wins) || 0)),
+    losses: Math.max(0, Math.floor(Number(p.season.losses) || 0)),
+    bestStreak: Math.max(0, Math.floor(Number(p.season.bestStreak) || 0))
+  };
   return p;
 }
 
@@ -351,7 +362,8 @@ async function getPlayerData(playerId) {
           lastCheckDate: row.last_check_date || "",
           attendanceStreak: row.attendance_streak || 0,
           recentGames: (() => { try { return JSON.parse(row.recent_games || "[]"); } catch { return []; } })(),
-          daily: (() => { try { return JSON.parse(row.daily || "{}"); } catch { return {}; } })()
+          daily: (() => { try { return JSON.parse(row.daily || "{}"); } catch { return {}; } })(),
+          season: (() => { try { const v = JSON.parse(row.season || "null"); return v && typeof v === "object" ? v : null; } catch { return null; } })()
         };
         const migrated = migratePlayerData(data);
         playerCache.set(playerId, migrated);
@@ -397,8 +409,8 @@ async function savePlayerData(playerId, data) {
            ranked_rating, ranked_wins, ranked_losses, ranked_streak, ranked_best_streak,
            money, money_multiplier, rating_boost_games,
            titles, current_title, last_check_date, attendance_streak,
-           recent_games, daily, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW())
+           recent_games, daily, season, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,NOW())
         ON CONFLICT (id) DO UPDATE SET
           nickname=$2, rating=$3, wins=$4, losses=$5,
           single_rating=$6, single_wins=$7, single_losses=$8,
@@ -406,7 +418,7 @@ async function savePlayerData(playerId, data) {
           ranked_streak=$12, ranked_best_streak=$13,
           money=$14, money_multiplier=$15, rating_boost_games=$16,
           titles=$17, current_title=$18, last_check_date=$19, attendance_streak=$20,
-          recent_games=$21, daily=$22, updated_at=NOW()
+          recent_games=$21, daily=$22, season=$23, updated_at=NOW()
       `, [
         playerId, safe.nickname || "플레이어",
         safe.multi.rating, safe.multi.wins, safe.multi.losses,
@@ -416,7 +428,8 @@ async function savePlayerData(playerId, data) {
         safe.money, safe.moneyMultiplier, safe.ratingBoostGames,
         JSON.stringify(safe.titles), safe.currentTitle,
         safe.lastCheckDate, safe.attendanceStreak,
-        JSON.stringify(safe.recentGames), JSON.stringify(safe.daily)
+        JSON.stringify(safe.recentGames), JSON.stringify(safe.daily),
+        JSON.stringify(safe.season || {})
       ]);
     } catch (err) { console.error("DB 쓰기 오류:", err.message); }
   } else {
@@ -648,6 +661,180 @@ function bumpDaily(playerId, key) {
       await savePlayerData(playerId, pd);
     })
     .catch(err => console.error("일일 미션 누적 오류:", err.message));
+}
+
+/* =========================================================
+   시즌제 랭킹 — 매월 1일 00시(KST) 자동 전환.
+   시즌 중에는 현재 랭크 레이팅/연승을 그대로 사용하고, 시즌
+   종료 시 그 시즌에 1판 이상 랭크 게임을 한 플레이어의 순위
+   상위권에 코인 보상(1위는 전용 칭호)을 지급하며 전 시즌
+   기록을 남긴다. '지금' 시각은 SEASON_NOW_OVERRIDE로 대체
+   가능해 운영/테스트에서 시즌 전환을 직접 검증할 수 있다.
+========================================================= */
+
+const seasonJsonPath = path.join(DATA_DIR, "season.json");
+const SEA_TITLE = { id: "t_season", name: "시즌 챔피언" };
+let seasonStore = null;
+
+function nowForSeason() {
+  const v = Number(process.env.SEASON_NOW_OVERRIDE || 0);
+  return Number.isFinite(v) && v > 0 ? v : Date.now();
+}
+function seasonKeyOf(ms) {
+  const d = new Date(ms + 9 * 3600 * 1000);
+  return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0");
+}
+function seasonEndMs(key) {
+  const [y, m] = String(key).split("-").map(Number);
+  return Date.UTC(y, m, 1) - 9 * 3600 * 1000;
+}
+function currentSeasonKey() { return seasonKeyOf(nowForSeason()); }
+
+function loadSeasonStore() {
+  const empty = { lastClosed: null, history: [] };
+  try {
+    if (fs.existsSync(seasonJsonPath)) {
+      const d = JSON.parse(fs.readFileSync(seasonJsonPath, "utf8"));
+      if (d && typeof d === "object") {
+        empty.lastClosed = typeof d.lastClosed === "string" && d.lastClosed ? d.lastClosed : null;
+        empty.history = Array.isArray(d.history) ? d.history : [];
+      }
+    }
+  } catch (e) { console.warn("시즌 데이터 로드 실패:", e.message); }
+  return empty;
+}
+function saveSeasonStore() {
+  try { fs.writeFileSync(seasonJsonPath, JSON.stringify(seasonStore, null, 2)); }
+  catch (e) { console.warn("시즌 데이터 저장 실패:", e.message); }
+}
+function getSeasonStore() {
+  if (!seasonStore) seasonStore = loadSeasonStore();
+  return seasonStore;
+}
+
+/* 시즌 참가 누적 — 랭크 게임 종료 시 승/패 쌍으로 호출.
+   새 시즌이 시작된 뒤 처음 이기면 참가 기록을 그 시즌으로 초기화한다 */
+async function bumpSeasonFor(playerId, outcome) {
+  try {
+    const pd = await getPlayerData(playerId);
+    const key = currentSeasonKey();
+    const s = pd.season && pd.season.season === key
+      ? pd.season
+      : { season: key, games: 0, rating: pd.ranked.rating, wins: 0, losses: 0, bestStreak: 0 };
+    s.games++;
+    s.rating = pd.ranked.rating;
+    if (outcome === "win") {
+      s.wins++;
+      s.bestStreak = Math.max(s.bestStreak, pd.ranked.streak || 0);
+    } else {
+      s.losses++;
+    }
+    pd.season = s;
+    await savePlayerData(playerId, pd);
+  } catch (err) { console.error("시즌 참가 기록 오류:", err.message); }
+}
+
+/* 전체 플레이어 목록 — JSON 모드는 메모리 캐시 전체, PG 모드는 DB 스캔 */
+async function listAllPlayers() {
+  if (dbMode === "pg") {
+    const res = await dbPool.query("SELECT id FROM players WHERE id <> $1", [AI_PLAYER_ID]);
+    const out = [];
+    for (const row of res.rows) out.push(await getPlayerData(row.id));
+    return out;
+  }
+  return [...playerCache.values()].filter(p => p && p.id !== AI_PLAYER_ID);
+}
+
+function seasonRewardFor(rank) {
+  if (rank === 1) return { amount: 500000, title: SEA_TITLE };
+  if (rank <= 3) return { amount: 200000 };
+  if (rank <= 10) return { amount: 50000 };
+  if (rank <= 50) return { amount: 10000 };
+  return { amount: 1000 };
+}
+
+/* 종료된 시즌 집계 → 보상 지급 → 전 시즌 기록 저장 */
+async function closeSeason(key) {
+  try {
+    const players = await listAllPlayers();
+    const rows = [];
+    for (const p of players) {
+      const s = p.season;
+      if (!s || s.season !== key || (s.games || 0) === 0) continue;
+      rows.push({
+        id: p.id,
+        nickname: p.nickname || "플레이어",
+        rating: p.ranked && Number.isFinite(p.ranked.rating) ? p.ranked.rating : 1000,
+        wins: s.wins || 0,
+        losses: s.losses || 0
+      });
+    }
+    rows.sort((a, b) => (b.rating - a.rating) || (b.wins - a.wins) || String(a.nickname).localeCompare(String(b.nickname)));
+    rows.forEach((r, i) => { r.rank = i + 1; });
+    let awarded = 0;
+    for (const r of rows) {
+      const rew = seasonRewardFor(r.rank);
+      const pd = await getPlayerData(r.id);
+      pd.money += rew.amount;
+      if (rew.title && !pd.titles.some(t => t && t.id === rew.title.id)) {
+        pd.titles.push({ id: rew.title.id, name: rew.title.name });
+        if (!pd.currentTitle) pd.currentTitle = rew.title.name;
+      }
+      pd.season = null;
+      await savePlayerData(r.id, pd);
+      awarded++;
+    }
+    const store = getSeasonStore();
+    store.history.push({
+      season: key,
+      closedAt: new Date().toISOString(),
+      champion: rows.length ? rows[0].nickname : null,
+      participants: rows.length,
+      top: rows.slice(0, 10).map(r => ({ nickname: r.nickname, rank: r.rank, rating: r.rating, wins: r.wins, losses: r.losses }))
+    });
+    saveSeasonStore();
+    console.log(`[시즌 종료] ${key} — 참가 ${rows.length}명, 보상 지급 ${awarded}명`);
+  } catch (err) {
+    console.error("시즌 종료 처리 오류:", err.message);
+  }
+}
+
+/* 시즌 전환 감지 → 이전 시즌 종료 처리. 시작 직후/API/소켓/주기 타이머에서 호출 */
+async function ensureSeasonRollover() {
+  const key = currentSeasonKey();
+  const store = getSeasonStore();
+  if (!store.lastClosed) {
+    store.lastClosed = key;
+    saveSeasonStore();
+    return key;
+  }
+  if (store.lastClosed === key) return key;
+  const closed = store.lastClosed;
+  await closeSeason(closed);
+  store.lastClosed = key;
+  saveSeasonStore();
+  return key;
+}
+
+function buildSeasonInfo() {
+  const key = currentSeasonKey();
+  const store = getSeasonStore();
+  const hist = store.history.length ? store.history[store.history.length - 1] : null;
+  return {
+    ok: true,
+    key,
+    endsAt: seasonEndMs(key),
+    now: nowForSeason(),
+    daysLeft: Math.max(0, Math.ceil((seasonEndMs(key) - nowForSeason()) / 86400000)),
+    previous: hist ? { season: hist.season, champion: hist.champion, participants: hist.participants } : null,
+    rewards: [
+      { rank: "1위", value: "500,000원 + 🏆 시즌 챔피언 칭호" },
+      { rank: "2~3위", value: "200,000원" },
+      { rank: "4~10위", value: "50,000원" },
+      { rank: "11~50위", value: "10,000원" },
+      { rank: "참가", value: "1,000원" }
+    ]
+  };
 }
 
 /* 최근 10판 전적 기록 — 종료된 방의 각 인간 플레이어에 기록 */
@@ -1070,6 +1257,12 @@ async function finishGame(room, winnerIndex, loserIndex) {
           await savePlayerData(w.id, winnerData);
           const ws = io.sockets.sockets.get(w.socketId);
           if (ws) ws.emit("money:received", { amount: earned, base, multiplier: Math.round(earned / base), roomId: room.id });
+        }
+
+        /* 시즌 참가 누적 — 승/패 각각 현재 시즌에 기록 */
+        if (room.mode === "ranked") {
+          await bumpSeasonFor(w.id, "win");
+          await bumpSeasonFor(l.id, "lose");
         }
 
         /* 전적 기록은 레이팅/미션 저장이 모두 끝난 뒤에 — 동시 기록 시 덮어쓰기 손실 방지 */
@@ -1523,6 +1716,16 @@ app.get("/api/leaderboard", async (req, res) => {
   } catch (err) {
     console.error("리더보드 조회 오류:", err.message);
     res.status(500).json({ ok: false, error: "리더보드를 불러오지 못했습니다." });
+  }
+});
+
+app.get("/api/season", async (req, res) => {
+  try {
+    await ensureSeasonRollover();
+    res.json(buildSeasonInfo());
+  } catch (err) {
+    console.error("시즌 정보 조회 오류:", err.message);
+    res.status(500).json({ ok: false, error: "시즌 정보를 불러오지 못했습니다." });
   }
 });
 
@@ -2166,6 +2369,17 @@ io.on("connection", (socket) => {
       }
     }
     socket.emit("ranked:inviteStatus", { ok: false, reason: "받은 랭크 초대가 없습니다." });
+  });
+
+  /* -- 시즌 정보 ----------------------------------------- */
+  socket.on("season:info", async () => {
+    try {
+      await ensureSeasonRollover();
+      socket.emit("season:info", buildSeasonInfo());
+    } catch (err) {
+      console.error("시즌 정보 조회 오류:", err.message);
+      socket.emit("season:info", { ok: false, error: "시즌 정보를 불러오지 못했습니다." });
+    }
   });
 
   /* -- 출석체크 ----------------------------------------- */
@@ -3075,6 +3289,9 @@ initDatabase().then(() => {
   loadAdminConfig();
   loadFriends();
   loadBugReports();
+  ensureSeasonRollover().catch(err => console.error("시작 시 시즌 전환 오류:", err.message));
+  /* 한 시간마다 시즌 전환 감지 — 달이 바뀌는 순간을 놓치지 않도록 */
+  setInterval(() => { ensureSeasonRollover().catch(() => {}); }, 60 * 60 * 1000);
   server.listen(PORT, "0.0.0.0", () => {
     console.log("========================================");
     console.log(`끝말잇기 서버 실행 중: http://localhost:${PORT}`);
