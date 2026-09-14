@@ -114,6 +114,7 @@
         <label>방 코드<input id="roomCode" maxlength="6" placeholder="X8F2KD"></label>
         <button id="join">방 참가</button>
         <button id="roomListBtn">방 목록</button>
+        <button id="wordRequestBtn" title="사전에 없는 단어를 신청하면 관리자 승인 후 게임에 추가됩니다">단어 신청</button>
         <label>초대할 닉네임<input id="onlineInviteInput" maxlength="12" placeholder="친구 닉네임" autocomplete="off"></label>
         <button id="onlineInviteBtn">초대</button>
       </div>
@@ -128,6 +129,23 @@
           </span>
         </div>
         <div id="roomListBody"></div>
+      </div>
+
+      <div id="wordPanel" class="word-panel hidden">
+        <div class="room-list-head">
+          <strong>단어 신청</strong>
+          <span class="room-list-actions">
+            <button id="wordReqRefresh" class="secondary">새로고침</button>
+            <button id="wordReqClose" class="secondary">닫기</button>
+          </span>
+        </div>
+        <div class="admin-info">사전에 없는 한글 단어를 신청하면 관리자 승인 후 게임에서 사용할 수 있습니다. 승인 여부는 이 패널에서 확인할 수 있어요.</div>
+        <div class="admin-row">
+          <input type="text" id="wordReqInput" class="admin-text" maxlength="40" placeholder="예: 프로브설명단어" autocomplete="off" data-admin-enter="[data-word-req]">
+          <button type="button" class="admin-apply" id="wordReqSend" data-word-req="1">신청</button>
+        </div>
+        <div id="wordReqStatus"></div>
+        <div id="wordReqMyList"></div>
       </div>
 
       <div id="roomInfo" class="room"></div>

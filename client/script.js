@@ -192,6 +192,17 @@ function makeNickname(raw) {
   return n || "플레이어";
 }
 
+function bindAdminEnter(selector, fn) {
+  const inp = $(selector);
+  if (!inp) return;
+  inp.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    if (e.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    fn();
+  });
+}
+
 function initNicknameBar() {
   const input = $("#nickInput");
   if (input) input.value = myNickname;
@@ -892,6 +903,16 @@ function initSocket() {
     }
   });
 
+  socket.on("admin:words", (data) => {
+    if (!data) return;
+    if (data.ok) {
+      renderAdminWords(data);
+      if (data.message) setAdminStatus(data.message, "ok");
+    } else {
+      setAdminStatus(data.reason || "커스텀 사전을 불러오지 못했습니다.", "error");
+    }
+  });
+
   /* -- 방 이벤트 --------------------------------------- */
   socket.on("room:created", (data) => {
     if (!data.ok) { startingGame = false; return; }
@@ -1003,6 +1024,22 @@ function initSocket() {
     if (!data.ok) { roomListStatus(data.reason || "방 목록을 불러오지 못했습니다.", "error"); return; }
     roomListRooms = Array.isArray(data.rooms) ? data.rooms : [];
     renderRoomList();
+  });
+
+  /* -- 커스텀 사전 (단어 신청) ------------------------- */
+  socket.on("word:requestResult", (data) => {
+    if (!data) return;
+    if (data.ok) {
+      setWordReqStatus(data.message || "신청이 접수되었습니다.", "ok");
+    } else {
+      setWordReqStatus(data.reason || "신청에 실패했습니다.", "error");
+    }
+    fetchWordList();
+  });
+
+  socket.on("word:listResult", (data) => {
+    if (!data) return;
+    renderWordList(data);
   });
 
   socket.on("game:hint", (data) => {
@@ -1725,6 +1762,68 @@ function randomJoinRoom() {
   joinRoomFromList(rooms[Math.floor(Math.random() * rooms.length)].roomId);
 }
 
+/* -- 커스텀 사전 (단어 신청) --------------------------- */
+let wordReqOpen = false;
+
+function openWordPanel() {
+  wordReqOpen = true;
+  const panel = $("#wordPanel");
+  if (!panel) return;
+  panel.classList.remove("hidden");
+  fetchWordList();
+}
+
+function closeWordPanel() {
+  wordReqOpen = false;
+  const panel = $("#wordPanel");
+  if (panel) panel.classList.add("hidden");
+}
+
+function fetchWordList() {
+  if (!socket || !socketConnected) return;
+  socket.emit("word:list", { nickname: myNickname || undefined });
+}
+
+function setWordReqStatus(text, type) {
+  const el = $("#wordReqStatus");
+  if (!el) return;
+  el.innerHTML = `<div class="room-list-status ${type === "ok" ? "" : type === "error" ? "error" : ""}">${escapeHtml(text)}</div>`;
+}
+
+function submitWordRequest() {
+  if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+  if (!requireNickname()) return;
+  const input = $("#wordReqInput");
+  if (!input) return;
+  const word = normalizeWord(input.value);
+  if (!word) { setWordReqStatus("신청할 단어를 입력해주세요.", "error"); return; }
+  socket.emit("word:request", { word });
+  setWordReqStatus("신청 중...", "");
+  input.value = "";
+}
+
+function renderWordList(data) {
+  const el = $("#wordReqMyList");
+  if (!el) return;
+  const pending = Array.isArray(data.pending) ? data.pending : [];
+  const rejected = Array.isArray(data.rejected) ? data.rejected : [];
+  const total = Number(data.approvedTotal) || 0;
+
+  let html = "";
+  if (pending.length === 0 && rejected.length === 0) {
+    html = `<div class="room-list-status">아직 신청 내역이 없습니다.</div>`;
+  } else {
+    const items = [
+      ...pending.map(p => ({ text: p.word, cls: "word-pending", label: "대기 중" })),
+      ...rejected.map(r => ({ text: r.word, cls: "word-rejected", label: `거절 ${r.reason ? "· " + r.reason : ""}` }))
+    ];
+    html = `<div class="word-my-head">내 신청 내역</div>` +
+      items.map(it => `<div class="word-my-row ${it.cls}"><span class="word-my-word">${escapeHtml(it.text)}</span><span class="word-my-label">${escapeHtml(it.label)}</span></div>`).join("");
+  }
+  html += `<div class="room-list-status">🏆 승인된 커스텀 단어: <b>${total}</b>개</div>`;
+  el.innerHTML = html;
+}
+
 /* ---------------------------------------------------------
    온라인 / 랭크 — 단어 입력
 --------------------------------------------------------- */
@@ -2230,6 +2329,16 @@ function renderAdminBody(data) {
     </div>
   ` : "";
 
+  /* 관리자: 단어 승인 (커스텀 사전) — 최고 관리자 전용 */
+  const wordCard = isSuper ? `
+    <div class="admin-card">
+      <h4>단어 승인 (커스텀 사전)</h4>
+      <div class="admin-info">사용자가 신청한 단어를 승인하면 게임 사전에 추가되어 모든 유저가 쓸 수 있습니다.</div>
+      <button type="button" class="admin-apply" id="adminWordLoad">대기 목록 불러오기</button>
+      <div id="adminWordList"></div>
+    </div>
+  ` : "";
+
   body.innerHTML = `
     ${data.message ? `<div class="admin-msg ok">${escapeHtml(data.message)}</div>` : ""}
     ${statusLine}
@@ -2241,10 +2350,14 @@ function renderAdminBody(data) {
     ${dueumCard}
     ${statsCard}
     ${moneyCard}
+    ${wordCard}
     ${bugCard}
     <div class="admin-status" id="adminStatus"></div>
   `;
   bindAdminBody();
+
+  const wordLoad = $("#adminWordLoad");
+  if (wordLoad) wordLoad.addEventListener("click", () => socket.emit("admin:wordList"));
 
   const moneyApply = $("#adminMoneyApply");
   if (moneyApply) moneyApply.addEventListener("click", () => {
@@ -2258,6 +2371,41 @@ function renderAdminBody(data) {
 
   const bugLoad = $("#adminBugLoad");
   if (bugLoad) bugLoad.addEventListener("click", () => socket.emit("admin:getBugs"));
+}
+
+function renderAdminWords(data) {
+  const wrap = $("#adminWordList");
+  if (!wrap) return;
+  const pending = (data.pending || []);
+  const approved = (data.approved || []);
+  const rejected = (data.rejected || []);
+
+  let html = `<div class="admin-info">대기 <b>${pending.length}</b> · 승인 <b>${approved.length}</b> · 거절 <b>${rejected.length}</b></div>`;
+  if (pending.length === 0) {
+    html += `<div class="room-list-status">승인 대기 단어가 없습니다.</div>`;
+  } else {
+    html += pending.map(p => `
+      <div class="admin-word-row">
+        <span class="admin-word-text" title="${escapeHtml(p.by || "")}">${escapeHtml(p.word)}</span>
+        <input type="text" class="admin-word-reason" maxlength="50" placeholder="거절 사유 (선택)" autocomplete="off" data-word="${escapeHtml(p.word)}">
+        <button type="button" class="admin-apply" data-word-approve="${escapeHtml(p.word)}">승인</button>
+        <button type="button" class="admin-apply admin-reject" data-word-reject="${escapeHtml(p.word)}">거절</button>
+      </div>`).join("");
+  }
+  if (rejected.length > 0) {
+    html += `<div class="admin-info" style="margin-top:10px;">최근 거절: ${rejected.slice(-5).map(r => escapeHtml(r.word)).join(", ")}</div>`;
+  }
+  wrap.innerHTML = html;
+
+  wrap.querySelectorAll("[data-word-approve]").forEach(btn => {
+    btn.addEventListener("click", () => socket.emit("admin:wordApprove", { word: btn.dataset.wordApprove }));
+  });
+  wrap.querySelectorAll("[data-word-reject]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const reason = wrap.querySelector(`.admin-word-reason[data-word="${btn.dataset.wordReject}"]`)?.value || "";
+      socket.emit("admin:wordReject", { word: btn.dataset.wordReject, reason });
+    });
+  });
 }
 
 function renderAdminFound(data) {
@@ -2857,6 +3005,11 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#roomListRefresh")?.addEventListener("click", fetchRoomList);
   $("#roomListRandom")?.addEventListener("click", randomJoinRoom);
   $("#roomListClose")?.addEventListener("click", closeRoomList);
+  $("#wordRequestBtn")?.addEventListener("click", openWordPanel);
+  $("#wordReqRefresh")?.addEventListener("click", fetchWordList);
+  $("#wordReqClose")?.addEventListener("click", closeWordPanel);
+  $("#wordReqSend")?.addEventListener("click", submitWordRequest);
+  bindAdminEnter("#wordReqInput", submitWordRequest);
   $("#startOnline")?.addEventListener("click", () => {
     if (!socket || !socketConnected) return;
     socket.emit("game:start");

@@ -120,6 +120,49 @@ function loadAdminConfig() {
 const { WORD_SET, ATTACK_DEPTH, WORD_INDEX, ROOT_WORDS, RARE_ROOT_WORDS, DEFENSE_WORDS } = loadData(DATA_DIR, ROOT_DIR);
 
 /* =========================================================
+   커스텀 사전 — 사용자 단어 신청 → 관리자 승인 (JSON 영속)
+   - approved: 게임 사전(WORD_SET/WORD_INDEX)에 반영된 단어
+   - pending: 승인 대기 신청  / rejected: 거절된 신청
+========================================================= */
+
+const customWordsPath = path.join(DATA_DIR, "custom-words.json");
+let customWords = { pending: [], approved: [], rejected: [] };
+
+function loadCustomWords() {
+  try {
+    if (fs.existsSync(customWordsPath)) {
+      const data = JSON.parse(fs.readFileSync(customWordsPath, "utf8"));
+      customWords.pending = Array.isArray(data.pending) ? data.pending : [];
+      customWords.approved = Array.isArray(data.approved) ? data.approved : [];
+      customWords.rejected = Array.isArray(data.rejected) ? data.rejected : [];
+    }
+    /* 승인된 커스텀 단어를 게임 사전에 반영 — WORD_SET + WORD_INDEX(첫 글자 버킷) */
+    for (const w of customWords.approved) applyCustomWord(w);
+    console.log(`커스텀 사전 로드: 승인 ${customWords.approved.length} / 대기 ${customWords.pending.length} / 거절 ${customWords.rejected.length}`);
+  } catch (e) { console.warn("커스텀 사전 로드 실패:", e.message); }
+}
+
+function saveCustomWords() {
+  try {
+    fs.writeFileSync(customWordsPath, JSON.stringify(customWords, null, 2));
+  } catch (e) { console.warn("커스텀 사전 저장 실패:", e.message); }
+}
+
+/* 승인된 커스텀 단어를 WORD_SET/WORD_INDEX에 추가 — 이미 있으면 무시 */
+function applyCustomWord(word) {
+  const w = normalizeWord(word);
+  if (!w || WORD_SET.has(w)) return false;
+  WORD_SET.add(w);
+  const first = w.at(0);
+  if (!first) return false;
+  if (!WORD_INDEX.has(first)) WORD_INDEX.set(first, []);
+  WORD_INDEX.get(first).push(w);
+  return true;
+}
+
+loadCustomWords();
+
+/* =========================================================
    데이터베이스 — PostgreSQL 또는 JSON 파일 폴백
 ========================================================= */
 
@@ -1830,6 +1873,54 @@ io.on("connection", (socket) => {
     } catch (error) { console.error("room:leave 오류:", error); }
   });
 
+  /* 커스텀 사전 — 사용자가 새 단어를 신청한다. 신청 검증 후 pending에 추가하고,
+   관리자가 승인하면 게임 사전에 반영된다. */
+  socket.on("word:request", (data) => {
+    try {
+      const nickname = normalizeWord(socketNicks.get(socket.id) || data?.nickname || "");
+      if (!nickname) { socket.emit("word:requestResult", { ok: false, reason: "닉네임을 먼저 저장해주세요." }); return; }
+
+      const raw = normalizeWord(String(data?.word || ""));
+      if (raw.length < 2 || raw.length > 40) {
+        socket.emit("word:requestResult", { ok: false, reason: "단어는 2~40자 사이여야 합니다." }); return;
+      }
+      if (!/^[가-힣]+$/.test(raw)) {
+        socket.emit("word:requestResult", { ok: false, reason: "한글 단어만 신청할 수 있습니다." }); return;
+      }
+      if (hasWord(raw, WORD_SET) || customWords.approved.some(w => w === raw)) {
+        socket.emit("word:requestResult", { ok: false, reason: "이미 사전에 있는 단어입니다." }); return;
+      }
+      if (customWords.pending.some(p => p.word === raw)) {
+        socket.emit("word:requestResult", { ok: false, reason: "이미 승인 대기 중인 단어입니다." }); return;
+      }
+
+      customWords.pending.push({ word: raw, by: nickname, at: Date.now(), socketId: socket.id });
+      saveCustomWords();
+      socket.emit("word:requestResult", {
+        ok: true, word: raw, message: `'${raw}' 단어가 승인 대기 목록에 추가되었습니다.`,
+        pendingCount: customWords.pending.length
+      });
+      console.log(`[WORD REQUEST] ${nickname} → '${raw}' (대기 ${customWords.pending.length})`);
+    } catch (error) { console.error("word:request 오류:", error); }
+  });
+
+  /* 커스텀 사전 목록 — 내 신청 상태 + 승인된 단어 수를 제공한다 */
+  socket.on("word:list", (data) => {
+    try {
+      const nickname = normalizeWord(data?.nickname || socketNicks.get(socket.id) || "");
+      socket.emit("word:listResult", {
+        ok: true,
+        pending: nickname
+          ? customWords.pending.filter(p => normalizeWord(p.by) === normalizeWord(nickname)).map(p => ({ word: p.word, status: "pending", at: p.at }))
+          : [],
+        rejected: nickname
+          ? customWords.rejected.filter(r => normalizeWord(r.by) === normalizeWord(nickname)).map(r => ({ word: r.word, status: "rejected", at: r.at, reason: r.reason }))
+          : [],
+        approvedTotal: customWords.approved.length
+      });
+    } catch (error) { console.error("word:list 오류:", error); }
+  });
+
   /* 방 목록 브라우저 — 온라인 멀티 방(미종료)을 공개 목록으로 제공한다.
      AI(싱글) 방과 랭크 매칭 방은 제외하고, 호스트/인원/시작 여부만 노출한다. */
   socket.on("room:list", () => {
@@ -2184,6 +2275,70 @@ io.on("connection", (socket) => {
       saveBugReports();
       socket.emit("admin:bugs", { ok: true, reports: bugReports });
     } catch (err) { console.error("버그 삭제 오류:", err); }
+  });
+
+  /* 커스텀 사전 관리 — 승인 대기 목록 조회 + 승인/거절 (관리자 전용) */
+  const emitCustomWords = (socket) => socket.emit("admin:words", {
+    ok: true,
+    pending: customWords.pending.map(p => ({ word: p.word, by: p.by, at: p.at })),
+    approved: customWords.approved,
+    rejected: customWords.rejected.map(r => ({ word: r.word, by: r.by, at: r.at, reason: r.reason }))
+  });
+
+  socket.on("admin:wordList", async () => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:words", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") { socket.emit("admin:words", { ok: false, reason: "단어 승인은 최고 관리자만 가능합니다." }); return; }
+      emitCustomWords(socket);
+    } catch (err) { console.error("커스텀 사전 목록 오류:", err); }
+  });
+
+  socket.on("admin:wordApprove", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:words", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") { socket.emit("admin:words", { ok: false, reason: "단어 승인은 최고 관리자만 가능합니다." }); return; }
+      const word = normalizeWord(String(data?.word || ""));
+      if (!word) { socket.emit("admin:words", { ok: false, reason: "승인할 단어를 선택해주세요." }); return; }
+      const idx = customWords.pending.findIndex(p => p.word === word);
+      if (idx === -1) { socket.emit("admin:words", { ok: false, reason: "대기 목록에 없는 단어입니다." }); return; }
+      const req = customWords.pending.splice(idx, 1)[0];
+      if (hasWord(word, WORD_SET)) {
+        /* 이미 사전에 있는 단어는 승인 불필요 — 대기에서만 제거 */
+        console.log(`[WORD APPROVE] '${word}' — 이미 사전에 있어 대기에서만 제거`);
+      } else {
+        applyCustomWord(word);
+        customWords.approved.push(word);
+        console.log(`[WORD APPROVE] ${req.by} → '${word}' 승인 (커스텀 사전 ${customWords.approved.length})`);
+      }
+      saveCustomWords();
+      emitCustomWords(socket);
+    } catch (err) { console.error("커스텀 사전 승인 오류:", err); }
+  });
+
+  socket.on("admin:wordReject", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:words", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") { socket.emit("admin:words", { ok: false, reason: "단어 승인은 최고 관리자만 가능합니다." }); return; }
+      const word = normalizeWord(String(data?.word || ""));
+      const reason = String(data?.reason || "").trim().slice(0, 50);
+      if (!word) { socket.emit("admin:words", { ok: false, reason: "거절할 단어를 선택해주세요." }); return; }
+      const idx = customWords.pending.findIndex(p => p.word === word);
+      if (idx === -1) { socket.emit("admin:words", { ok: false, reason: "대기 목록에 없는 단어입니다." }); return; }
+      const req = customWords.pending.splice(idx, 1)[0];
+      customWords.rejected.push({ word, by: req.by, at: Date.now(), reason });
+      saveCustomWords();
+      socket.emit("admin:words", {
+        ok: true,
+        message: `'${word}' 단어를 거절했습니다.`,
+        pending: customWords.pending.map(p => ({ word: p.word, by: p.by, at: p.at })),
+        approved: customWords.approved,
+        rejected: customWords.rejected.map(r => ({ word: r.word, by: r.by, at: r.at, reason: r.reason }))
+      });
+      console.log(`[WORD REJECT] ${req.by} → '${word}' (${reason || "사유 없음"})`);
+    } catch (err) { console.error("커스텀 사전 거절 오류:", err); }
   });
 
   /* 추방 — 방장 또는 관리자만 가능 */

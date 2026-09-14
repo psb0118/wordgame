@@ -467,6 +467,79 @@ button:disabled {
   color: var(--red);
 }
 
+/* 단어 신청 패널 */
+.word-panel {
+  margin-bottom: 12px;
+  padding: 12px;
+  background: var(--card-soft);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.word-my-head {
+  font-weight: 700;
+  margin: 10px 0 6px;
+  font-size: 0.9rem;
+}
+
+.word-my-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 6px;
+  font-size: 0.9rem;
+}
+
+.word-my-row.word-pending {
+  border-color: var(--gold);
+  background: var(--gold-soft);
+}
+
+.word-my-row.word-rejected {
+  border-color: var(--red);
+  background: var(--red-soft);
+}
+
+.word-my-word {
+  font-weight: 600;
+}
+
+.word-my-label {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.admin-word-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-word-text {
+  font-weight: 700;
+  min-width: 100px;
+}
+
+.admin-word-reason {
+  flex: 1;
+  min-width: 120px;
+  padding: 6px 8px;
+  font-size: 0.85rem;
+}
+
+.admin-reject {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
 /* 방 정보 */
 .room {
   padding: 12px;
