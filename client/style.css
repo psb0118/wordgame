@@ -376,6 +376,170 @@ button:disabled {
   padding: 10px;
 }
 
+/* 방 목록 브라우저 */
+.room-list-panel {
+  margin-bottom: 12px;
+  padding: 12px;
+  background: var(--card-soft);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.room-list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 0.9rem;
+}
+
+.room-list-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+#roomListBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.room-list-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.9rem;
+  transition: border-color 0.15s;
+}
+
+.room-list-row:hover {
+  border-color: var(--accent);
+}
+
+.room-list-row .rl-code {
+  font-weight: 700;
+  color: var(--accent);
+  min-width: 60px;
+}
+
+.room-list-row .rl-host {
+  flex: 1;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-list-row .rl-count {
+  color: var(--text-dim);
+  min-width: 48px;
+}
+
+.room-list-row .rl-status {
+  color: var(--purple);
+  min-width: 52px;
+}
+
+.room-list-row .rl-join {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.room-list-status {
+  padding: 14px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 0.9rem;
+}
+
+.room-list-status.error {
+  color: var(--red);
+}
+
+/* 단어 신청 패널 */
+.word-panel {
+  margin-bottom: 12px;
+  padding: 12px;
+  background: var(--card-soft);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.word-my-head {
+  font-weight: 700;
+  margin: 10px 0 6px;
+  font-size: 0.9rem;
+}
+
+.word-my-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 6px;
+  font-size: 0.9rem;
+}
+
+.word-my-row.word-pending {
+  border-color: var(--gold);
+  background: var(--gold-soft);
+}
+
+.word-my-row.word-rejected {
+  border-color: var(--red);
+  background: var(--red-soft);
+}
+
+.word-my-word {
+  font-weight: 600;
+}
+
+.word-my-label {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.admin-word-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-word-text {
+  font-weight: 700;
+  min-width: 100px;
+}
+
+.admin-word-reason {
+  flex: 1;
+  min-width: 120px;
+  padding: 6px 8px;
+  font-size: 0.85rem;
+}
+
+.admin-reject {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
 /* 방 정보 */
 .room {
   padding: 12px;
@@ -1876,6 +2040,45 @@ button:active:not(:disabled) {
   border-color: #f59e0b;
   color: #92400e;
   font-weight: 800;
+}
+/* 시즌제 랭킹 — 현재 시즌/남은 기간/지난 시즌 1위/보상 테이블 */
+.season-bar {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card-soft);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  text-align: center;
+}
+.season-bar-top b {
+  color: var(--text);
+  font-size: 0.85rem;
+}
+.season-bar-prev {
+  margin-top: 4px;
+  color: var(--text-dim);
+}
+.season-bar-prev b {
+  color: #f59e0b;
+}
+.season-bar-reward {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: center;
+  margin-top: 6px;
+}
+.season-reward-item {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+.season-reward-item b {
+  color: var(--accent);
 }
 /* 랭크 자동 계속매칭 토글 */
 .autoqueue-label {

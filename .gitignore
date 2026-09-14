@@ -3,3 +3,5 @@ node_modules/
 player-data.json
 data/admin-config.json
 data/friends.json
+data/custom-words.json
+data/season.json

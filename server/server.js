@@ -166,6 +166,49 @@ function saveCustomDict() {
 }
 
 /* =========================================================
+   커스텀 사전 — 사용자 단어 신청 → 관리자 승인 (JSON 영속)
+   - approved: 게임 사전(WORD_SET/WORD_INDEX)에 반영된 단어
+   - pending: 승인 대기 신청  / rejected: 거절된 신청
+========================================================= */
+
+const customWordsPath = path.join(DATA_DIR, "custom-words.json");
+let customWords = { pending: [], approved: [], rejected: [] };
+
+function loadCustomWords() {
+  try {
+    if (fs.existsSync(customWordsPath)) {
+      const data = JSON.parse(fs.readFileSync(customWordsPath, "utf8"));
+      customWords.pending = Array.isArray(data.pending) ? data.pending : [];
+      customWords.approved = Array.isArray(data.approved) ? data.approved : [];
+      customWords.rejected = Array.isArray(data.rejected) ? data.rejected : [];
+    }
+    /* 승인된 커스텀 단어를 게임 사전에 반영 — WORD_SET + WORD_INDEX(첫 글자 버킷) */
+    for (const w of customWords.approved) applyCustomWord(w);
+    console.log(`커스텀 사전 로드: 승인 ${customWords.approved.length} / 대기 ${customWords.pending.length} / 거절 ${customWords.rejected.length}`);
+  } catch (e) { console.warn("커스텀 사전 로드 실패:", e.message); }
+}
+
+function saveCustomWords() {
+  try {
+    fs.writeFileSync(customWordsPath, JSON.stringify(customWords, null, 2));
+  } catch (e) { console.warn("커스텀 사전 저장 실패:", e.message); }
+}
+
+/* 승인된 커스텀 단어를 WORD_SET/WORD_INDEX에 추가 — 이미 있으면 무시 */
+function applyCustomWord(word) {
+  const w = normalizeWord(word);
+  if (!w || WORD_SET.has(w)) return false;
+  WORD_SET.add(w);
+  const first = w.at(0);
+  if (!first) return false;
+  if (!WORD_INDEX.has(first)) WORD_INDEX.set(first, []);
+  WORD_INDEX.get(first).push(w);
+  return true;
+}
+
+loadCustomWords();
+
+/* =========================================================
    데이터베이스 — PostgreSQL 또는 JSON 파일 폴백
 ========================================================= */
 
@@ -274,7 +317,8 @@ async function initDatabase() {
           single_wins INTEGER DEFAULT 0,
           single_losses INTEGER DEFAULT 0,
           created_at TIMESTAMP DEFAULT NOW(),
-          updated_at TIMESTAMP DEFAULT NOW()
+          updated_at TIMESTAMP DEFAULT NOW(),
+          season TEXT DEFAULT '{}'
         )
       `);
       await dbPool.query(`
@@ -333,6 +377,15 @@ function migratePlayerData(p) {
   if (!Array.isArray(p.recentGames)) p.recentGames = [];
   else p.recentGames = p.recentGames.slice(-10).filter(g => g && typeof g === "object");
   p.daily = initDailyData(p.daily, getKstDate());
+  if (!p.season || typeof p.season !== "object") p.season = null;
+  else p.season = {
+    season: String(p.season.season || ""),
+    games: Math.max(0, Math.floor(Number(p.season.games) || 0)),
+    rating: Math.max(0, Math.floor(Number(p.season.rating) || 1000)),
+    wins: Math.max(0, Math.floor(Number(p.season.wins) || 0)),
+    losses: Math.max(0, Math.floor(Number(p.season.losses) || 0)),
+    bestStreak: Math.max(0, Math.floor(Number(p.season.bestStreak) || 0))
+  };
   return p;
 }
 
@@ -358,7 +411,7 @@ async function getPlayerData(playerId) {
           attendanceStreak: row.attendance_streak || 0,
           recentGames: (() => { try { return JSON.parse(row.recent_games || "[]"); } catch { return []; } })(),
           daily: (() => { try { return JSON.parse(row.daily || "{}"); } catch { return {}; } })(),
-          season: (() => { try { return JSON.parse(row.season || "{}"); } catch { return {}; } })()
+          season: (() => { try { const v = JSON.parse(row.season || "null"); return v && typeof v === "object" ? v : null; } catch { return null; } })()
         };
         const migrated = migratePlayerData(data);
         playerCache.set(playerId, migrated);
@@ -424,7 +477,7 @@ async function savePlayerData(playerId, data) {
         JSON.stringify(safe.titles), safe.currentTitle,
         safe.lastCheckDate, safe.attendanceStreak,
         JSON.stringify(safe.recentGames), JSON.stringify(safe.daily),
-        JSON.stringify(safe.season)
+        JSON.stringify(safe.season || {})
       ]);
     } catch (err) { console.error("DB 쓰기 오류:", err.message); }
   } else {
@@ -724,6 +777,28 @@ const RANKED_QUEUE_MAP = new Map(); /* socketId -> true */
    같은 상대를 신청하면 즉시 그 둘끼리 새 랭크 매치를 시작한다 */
 const REMATCHES = new Map();
 
+/* 랭크 대결 초대(2인전) — inviterSocketId -> { targetSocketId, from, fromRating, at }.
+   친구에게 지명 랭크 대결을 신청하고 수락하면 그 둘끼리 새 랭크 매치를 시작한다 */
+const RANKED_INVITES = new Map();
+
+/* 소켓과 얽힌 랭크 초대를 모두 정리 — 내가 보낸 초대와 나를 대상으로 한 초대를
+   취소하고 상대에게 통지한다 (매칭 대기 진입/커넥션 종료 등에서 호출) */
+function cancelRankedInvitesFor(socketId) {
+  const outgoing = RANKED_INVITES.get(socketId);
+  if (outgoing) {
+    RANKED_INVITES.delete(socketId);
+    const tSocket = io.sockets.sockets.get(outgoing.targetSocketId);
+    if (tSocket) tSocket.emit("ranked:inviteCanceled", { from: outgoing.from, reason: "초대자가 초대를 취소했습니다." });
+  }
+  for (const [inviter, inv] of [...RANKED_INVITES]) {
+    if (inv.targetSocketId === socketId) {
+      RANKED_INVITES.delete(inviter);
+      const inviterSocket = io.sockets.sockets.get(inviter);
+      if (inviterSocket) inviterSocket.emit("ranked:inviteCanceled", { from: inv.from, reason: "상대가 닉네임을 변경하거나 연결이 종료되었습니다." });
+    }
+  }
+}
+
 function addToRankedQueue(socketId, nickname, rating) {
   if (RANKED_QUEUE_MAP.has(socketId)) return false;
   RANKED_QUEUE.push({ socketId, nickname, rating, joinedAt: Date.now() });
@@ -816,6 +891,180 @@ function bumpDaily(playerId, key) {
       await savePlayerData(playerId, pd);
     })
     .catch(err => console.error("일일 미션 누적 오류:", err.message));
+}
+
+/* =========================================================
+   시즌제 랭킹 — 매월 1일 00시(KST) 자동 전환.
+   시즌 중에는 현재 랭크 레이팅/연승을 그대로 사용하고, 시즌
+   종료 시 그 시즌에 1판 이상 랭크 게임을 한 플레이어의 순위
+   상위권에 코인 보상(1위는 전용 칭호)을 지급하며 전 시즌
+   기록을 남긴다. '지금' 시각은 SEASON_NOW_OVERRIDE로 대체
+   가능해 운영/테스트에서 시즌 전환을 직접 검증할 수 있다.
+========================================================= */
+
+const seasonJsonPath = path.join(DATA_DIR, "season.json");
+const SEA_TITLE = { id: "t_season", name: "시즌 챔피언" };
+let seasonStore = null;
+
+function nowForSeason() {
+  const v = Number(process.env.SEASON_NOW_OVERRIDE || 0);
+  return Number.isFinite(v) && v > 0 ? v : Date.now();
+}
+function seasonKeyOf(ms) {
+  const d = new Date(ms + 9 * 3600 * 1000);
+  return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0");
+}
+function seasonEndMs(key) {
+  const [y, m] = String(key).split("-").map(Number);
+  return Date.UTC(y, m, 1) - 9 * 3600 * 1000;
+}
+function currentSeasonKey() { return seasonKeyOf(nowForSeason()); }
+
+function loadSeasonStore() {
+  const empty = { lastClosed: null, history: [] };
+  try {
+    if (fs.existsSync(seasonJsonPath)) {
+      const d = JSON.parse(fs.readFileSync(seasonJsonPath, "utf8"));
+      if (d && typeof d === "object") {
+        empty.lastClosed = typeof d.lastClosed === "string" && d.lastClosed ? d.lastClosed : null;
+        empty.history = Array.isArray(d.history) ? d.history : [];
+      }
+    }
+  } catch (e) { console.warn("시즌 데이터 로드 실패:", e.message); }
+  return empty;
+}
+function saveSeasonStore() {
+  try { fs.writeFileSync(seasonJsonPath, JSON.stringify(seasonStore, null, 2)); }
+  catch (e) { console.warn("시즌 데이터 저장 실패:", e.message); }
+}
+function getSeasonStore() {
+  if (!seasonStore) seasonStore = loadSeasonStore();
+  return seasonStore;
+}
+
+/* 시즌 참가 누적 — 랭크 게임 종료 시 승/패 쌍으로 호출.
+   새 시즌이 시작된 뒤 처음 이기면 참가 기록을 그 시즌으로 초기화한다 */
+async function bumpSeasonFor(playerId, outcome) {
+  try {
+    const pd = await getPlayerData(playerId);
+    const key = currentSeasonKey();
+    const s = pd.season && pd.season.season === key
+      ? pd.season
+      : { season: key, games: 0, rating: pd.ranked.rating, wins: 0, losses: 0, bestStreak: 0 };
+    s.games++;
+    s.rating = pd.ranked.rating;
+    if (outcome === "win") {
+      s.wins++;
+      s.bestStreak = Math.max(s.bestStreak, pd.ranked.streak || 0);
+    } else {
+      s.losses++;
+    }
+    pd.season = s;
+    await savePlayerData(playerId, pd);
+  } catch (err) { console.error("시즌 참가 기록 오류:", err.message); }
+}
+
+/* 전체 플레이어 목록 — JSON 모드는 메모리 캐시 전체, PG 모드는 DB 스캔 */
+async function listAllPlayers() {
+  if (dbMode === "pg") {
+    const res = await dbPool.query("SELECT id FROM players WHERE id <> $1", [AI_PLAYER_ID]);
+    const out = [];
+    for (const row of res.rows) out.push(await getPlayerData(row.id));
+    return out;
+  }
+  return [...playerCache.values()].filter(p => p && p.id !== AI_PLAYER_ID);
+}
+
+function seasonRewardFor(rank) {
+  if (rank === 1) return { amount: 500000, title: SEA_TITLE };
+  if (rank <= 3) return { amount: 200000 };
+  if (rank <= 10) return { amount: 50000 };
+  if (rank <= 50) return { amount: 10000 };
+  return { amount: 1000 };
+}
+
+/* 종료된 시즌 집계 → 보상 지급 → 전 시즌 기록 저장 */
+async function closeSeason(key) {
+  try {
+    const players = await listAllPlayers();
+    const rows = [];
+    for (const p of players) {
+      const s = p.season;
+      if (!s || s.season !== key || (s.games || 0) === 0) continue;
+      rows.push({
+        id: p.id,
+        nickname: p.nickname || "플레이어",
+        rating: p.ranked && Number.isFinite(p.ranked.rating) ? p.ranked.rating : 1000,
+        wins: s.wins || 0,
+        losses: s.losses || 0
+      });
+    }
+    rows.sort((a, b) => (b.rating - a.rating) || (b.wins - a.wins) || String(a.nickname).localeCompare(String(b.nickname)));
+    rows.forEach((r, i) => { r.rank = i + 1; });
+    let awarded = 0;
+    for (const r of rows) {
+      const rew = seasonRewardFor(r.rank);
+      const pd = await getPlayerData(r.id);
+      pd.money += rew.amount;
+      if (rew.title && !pd.titles.some(t => t && t.id === rew.title.id)) {
+        pd.titles.push({ id: rew.title.id, name: rew.title.name });
+        if (!pd.currentTitle) pd.currentTitle = rew.title.name;
+      }
+      pd.season = null;
+      await savePlayerData(r.id, pd);
+      awarded++;
+    }
+    const store = getSeasonStore();
+    store.history.push({
+      season: key,
+      closedAt: new Date().toISOString(),
+      champion: rows.length ? rows[0].nickname : null,
+      participants: rows.length,
+      top: rows.slice(0, 10).map(r => ({ nickname: r.nickname, rank: r.rank, rating: r.rating, wins: r.wins, losses: r.losses }))
+    });
+    saveSeasonStore();
+    console.log(`[시즌 종료] ${key} — 참가 ${rows.length}명, 보상 지급 ${awarded}명`);
+  } catch (err) {
+    console.error("시즌 종료 처리 오류:", err.message);
+  }
+}
+
+/* 시즌 전환 감지 → 이전 시즌 종료 처리. 시작 직후/API/소켓/주기 타이머에서 호출 */
+async function ensureSeasonRollover() {
+  const key = currentSeasonKey();
+  const store = getSeasonStore();
+  if (!store.lastClosed) {
+    store.lastClosed = key;
+    saveSeasonStore();
+    return key;
+  }
+  if (store.lastClosed === key) return key;
+  const closed = store.lastClosed;
+  await closeSeason(closed);
+  store.lastClosed = key;
+  saveSeasonStore();
+  return key;
+}
+
+function buildSeasonInfo() {
+  const key = currentSeasonKey();
+  const store = getSeasonStore();
+  const hist = store.history.length ? store.history[store.history.length - 1] : null;
+  return {
+    ok: true,
+    key,
+    endsAt: seasonEndMs(key),
+    now: nowForSeason(),
+    daysLeft: Math.max(0, Math.ceil((seasonEndMs(key) - nowForSeason()) / 86400000)),
+    previous: hist ? { season: hist.season, champion: hist.champion, participants: hist.participants } : null,
+    rewards: [
+      { rank: "1위", value: "500,000원 + 🏆 시즌 챔피언 칭호" },
+      { rank: "2~3위", value: "200,000원" },
+      { rank: "4~10위", value: "50,000원" },
+      { rank: "11~50위", value: "10,000원" },
+      { rank: "참가", value: "1,000원" }
+    ]
+  };
 }
 
 /* 최근 10판 전적 기록 — 종료된 방의 각 인간 플레이어에 기록 */
@@ -1267,6 +1516,12 @@ async function finishGame(room, winnerIndex, loserIndex) {
           await savePlayerData(w.id, winnerData);
           const ws = io.sockets.sockets.get(w.socketId);
           if (ws) ws.emit("money:received", { amount: earned, base, multiplier: Math.round(earned / base), roomId: room.id });
+        }
+
+        /* 시즌 참가 누적 — 승/패 각각 현재 시즌에 기록 */
+        if (room.mode === "ranked") {
+          await bumpSeasonFor(w.id, "win");
+          await bumpSeasonFor(l.id, "lose");
         }
 
         /* 전적 기록은 레이팅/미션 저장이 모두 끝난 뒤에 — 동시 기록 시 덮어쓰기 손실 방지 */
@@ -1781,6 +2036,16 @@ app.get("/api/leaderboard", async (req, res) => {
   }
 });
 
+app.get("/api/season", async (req, res) => {
+  try {
+    await ensureSeasonRollover();
+    res.json(buildSeasonInfo());
+  } catch (err) {
+    console.error("시즌 정보 조회 오류:", err.message);
+    res.status(500).json({ ok: false, error: "시즌 정보를 불러오지 못했습니다." });
+  }
+});
+
 /* =========================================================
    Socket.IO 이벤트
 ========================================================= */
@@ -2199,10 +2464,83 @@ io.on("connection", (socket) => {
     } catch (error) { console.error("room:leave 오류:", error); }
   });
 
+  /* 커스텀 사전 — 사용자가 새 단어를 신청한다. 신청 검증 후 pending에 추가하고,
+   관리자가 승인하면 게임 사전에 반영된다. */
+  socket.on("word:request", (data) => {
+    try {
+      const nickname = normalizeWord(socketNicks.get(socket.id) || data?.nickname || "");
+      if (!nickname) { socket.emit("word:requestResult", { ok: false, reason: "닉네임을 먼저 저장해주세요." }); return; }
+
+      const raw = normalizeWord(String(data?.word || ""));
+      if (raw.length < 2 || raw.length > 40) {
+        socket.emit("word:requestResult", { ok: false, reason: "단어는 2~40자 사이여야 합니다." }); return;
+      }
+      if (!/^[가-힣]+$/.test(raw)) {
+        socket.emit("word:requestResult", { ok: false, reason: "한글 단어만 신청할 수 있습니다." }); return;
+      }
+      if (hasWord(raw, WORD_SET) || customWords.approved.some(w => w === raw)) {
+        socket.emit("word:requestResult", { ok: false, reason: "이미 사전에 있는 단어입니다." }); return;
+      }
+      if (customWords.pending.some(p => p.word === raw)) {
+        socket.emit("word:requestResult", { ok: false, reason: "이미 승인 대기 중인 단어입니다." }); return;
+      }
+
+      customWords.pending.push({ word: raw, by: nickname, at: Date.now(), socketId: socket.id });
+      saveCustomWords();
+      socket.emit("word:requestResult", {
+        ok: true, word: raw, message: `'${raw}' 단어가 승인 대기 목록에 추가되었습니다.`,
+        pendingCount: customWords.pending.length
+      });
+      console.log(`[WORD REQUEST] ${nickname} → '${raw}' (대기 ${customWords.pending.length})`);
+    } catch (error) { console.error("word:request 오류:", error); }
+  });
+
+  /* 커스텀 사전 목록 — 내 신청 상태 + 승인된 단어 수를 제공한다 */
+  socket.on("word:list", (data) => {
+    try {
+      const nickname = normalizeWord(data?.nickname || socketNicks.get(socket.id) || "");
+      socket.emit("word:listResult", {
+        ok: true,
+        pending: nickname
+          ? customWords.pending.filter(p => normalizeWord(p.by) === normalizeWord(nickname)).map(p => ({ word: p.word, status: "pending", at: p.at }))
+          : [],
+        rejected: nickname
+          ? customWords.rejected.filter(r => normalizeWord(r.by) === normalizeWord(nickname)).map(r => ({ word: r.word, status: "rejected", at: r.at, reason: r.reason }))
+          : [],
+        approvedTotal: customWords.approved.length
+      });
+    } catch (error) { console.error("word:list 오류:", error); }
+  });
+
+  /* 방 목록 브라우저 — 온라인 멀티 방(미종료)을 공개 목록으로 제공한다.
+     AI(싱글) 방과 랭크 매칭 방은 제외하고, 호스트/인원/시작 여부만 노출한다. */
+  socket.on("room:list", () => {
+    try {
+      const rooms = [...ROOMS.values()]
+        .filter(r => r && r.mode === "online" && !r.finished)
+        .map(r => {
+          const humans = r.players.filter(p => !p.isBot);
+          const host = humans.find(p => p.socketId === r.hostSocketId) || humans[0] || null;
+          return {
+            roomId: r.id,
+            host: host ? host.nickname : "플레이어",
+            playerCount: r.players.filter(p => !p.isBot && !p.waiting).length,
+            maxPlayers: MAX_PLAYERS,
+            started: !!r.started
+          };
+        });
+      socket.emit("room:list", { ok: true, rooms });
+    } catch (error) {
+      console.error("room:list 오류:", error);
+      socket.emit("room:list", { ok: false, reason: "방 목록을 불러오지 못했습니다." });
+    }
+  });
+
   socket.on("disconnect", (reason) => {
     console.log(`[DISCONNECT] ${socket.id} / ${reason}`);
     adminAuthed.delete(socket.id);
     REMATCHES.delete(socket.id);
+    cancelRankedInvitesFor(socket.id);
     removeFromRankedQueue(socket.id);
     broadcastRankedQueue();
     unregisterOnline(socket.id);
@@ -2236,6 +2574,7 @@ io.on("connection", (socket) => {
   socket.on("ranked:queue", async () => {
     try {
       REMATCHES.delete(socket.id);
+      cancelRankedInvitesFor(socket.id);
       const pd = await getPlayerData(socket.id);
       const nickname = String(pd.nickname || "플레이어").trim();
       if (!nickname) { socket.emit("ranked:queueStatus", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
@@ -2297,6 +2636,116 @@ io.on("connection", (socket) => {
   socket.on("ranked:rematchCancel", () => {
     REMATCHES.delete(socket.id);
     socket.emit("ranked:rematchStatus", { ok: true, waiting: false });
+  });
+
+  /* -- 랭크 대결 초대 (2인전) — 친구를 지명해 랭크 매치를 시작한다.
+     수락하면 기존 랭크 매치와 동일하게 레이팅/돈/일일 미션이 적용된다 ---------- */
+  socket.on("ranked:invite", async (data) => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const myNick = String(pd.nickname || "플레이어").trim();
+      const target = String(data?.nickname || "").trim();
+      if (!myNick) { socket.emit("ranked:inviteSent", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
+      if (!target) { socket.emit("ranked:inviteSent", { ok: false, reason: "초대할 닉네임을 입력해주세요." }); return; }
+      const tId = onlineNicks.get(normKey(target));
+      if (!tId || tId === socket.id || !io.sockets.sockets.has(tId)) {
+        socket.emit("ranked:inviteSent", { ok: false, reason: `'${target}' 님이 현재 온라인이 아닙니다.` });
+        return;
+      }
+      if (RANKED_QUEUE_MAP.has(socket.id)) {
+        socket.emit("ranked:inviteSent", { ok: false, reason: "매칭 대기 중에는 초대를 보낼 수 없습니다. 매칭을 먼저 취소해주세요." });
+        return;
+      }
+      if (RANKED_QUEUE_MAP.has(tId)) {
+        socket.emit("ranked:inviteSent", { ok: false, reason: `'${target}' 님이 현재 매칭 대기 중이라 초대를 받을 수 없습니다.` });
+        return;
+      }
+      if (RANKED_INVITES.has(socket.id)) {
+        socket.emit("ranked:inviteSent", { ok: false, reason: "이미 보낸 랭크 초대가 있습니다. 먼저 취소해주세요." });
+        return;
+      }
+      if ([...RANKED_INVITES.values()].some(inv => inv.targetSocketId === tId)) {
+        socket.emit("ranked:inviteSent", { ok: false, reason: `'${target}' 님에게 이미 도착한 랭크 초대가 있습니다.` });
+        return;
+      }
+
+      RANKED_INVITES.set(socket.id, { targetSocketId: tId, from: myNick, fromRating: pd.ranked.rating, at: Date.now() });
+      const tSocket = io.sockets.sockets.get(tId);
+      if (tSocket) tSocket.emit("ranked:inviteReceived", { from: myNick, fromRating: pd.ranked.rating });
+      socket.emit("ranked:inviteSent", { ok: true, nickname: target });
+      console.log(`[RANKED INVITE] '${myNick}'(${pd.ranked.rating}) → '${target}'`);
+    } catch (err) { console.error("랭크 초대 오류:", err); }
+  });
+
+  socket.on("ranked:inviteCancel", () => {
+    const inv = RANKED_INVITES.get(socket.id);
+    if (inv) {
+      RANKED_INVITES.delete(socket.id);
+      const tSocket = io.sockets.sockets.get(inv.targetSocketId);
+      if (tSocket) tSocket.emit("ranked:inviteCanceled", { from: inv.from });
+    }
+    socket.emit("ranked:inviteSent", { ok: true, canceled: true });
+  });
+
+  socket.on("ranked:inviteAccept", async () => {
+    try {
+      let found = null;
+      for (const [inviter, inv] of RANKED_INVITES) {
+        if (inv.targetSocketId === socket.id) { found = { inviter, inv }; break; }
+      }
+      if (!found) { socket.emit("ranked:inviteStatus", { ok: false, reason: "받은 랭크 초대가 없거나 이미 만료되었습니다." }); return; }
+
+      /* 초대 중 상대가 매칭 대기/게임에 들어갔을 수 있으므로 재확인 후 매치 시작 */
+      if (RANKED_QUEUE_MAP.has(found.inviter) || RANKED_QUEUE_MAP.has(socket.id)) {
+        RANKED_INVITES.delete(found.inviter);
+        socket.emit("ranked:inviteStatus", { ok: false, reason: "한쪽이 이미 매칭에 들어가 초대가 취소되었습니다." });
+        return;
+      }
+
+      const inviterSocket = io.sockets.sockets.get(found.inviter);
+      const meSocket = io.sockets.sockets.get(socket.id);
+      if (!inviterSocket || !meSocket) {
+        RANKED_INVITES.delete(found.inviter);
+        return;
+      }
+      RANKED_INVITES.delete(found.inviter);
+
+      const [pdInviter, pdMe] = await Promise.all([getPlayerData(found.inviter), getPlayerData(socket.id)]);
+      const inviterNick = String(pdInviter.nickname || found.inv.from || "플레이어").trim();
+      const meNick = String(pdMe.nickname || "플레이어").trim();
+      if (!inviterNick) {
+        socket.emit("ranked:inviteStatus", { ok: false, reason: "초대자가 닉네임을 설정하지 않았습니다." });
+        return;
+      }
+      startRankedGame(
+        { socketId: found.inviter, nickname: inviterNick, rating: pdInviter.ranked.rating },
+        { socketId: socket.id, nickname: meNick, rating: pdMe.ranked.rating }
+      );
+    } catch (err) { console.error("랭크 초대 수락 오류:", err); }
+  });
+
+  socket.on("ranked:inviteReject", () => {
+    for (const [inviter, inv] of RANKED_INVITES) {
+      if (inv.targetSocketId === socket.id) {
+        RANKED_INVITES.delete(inviter);
+        const inviterSocket = io.sockets.sockets.get(inviter);
+        if (inviterSocket) inviterSocket.emit("ranked:inviteRejected", { from: inv.from });
+        socket.emit("ranked:inviteStatus", { ok: true, rejected: true });
+        return;
+      }
+    }
+    socket.emit("ranked:inviteStatus", { ok: false, reason: "받은 랭크 초대가 없습니다." });
+  });
+
+  /* -- 시즌 정보 ----------------------------------------- */
+  socket.on("season:info", async () => {
+    try {
+      await ensureSeasonRollover();
+      socket.emit("season:info", buildSeasonInfo());
+    } catch (err) {
+      console.error("시즌 정보 조회 오류:", err.message);
+      socket.emit("season:info", { ok: false, error: "시즌 정보를 불러오지 못했습니다." });
+    }
   });
 
   /* -- 출석체크 ----------------------------------------- */
@@ -2529,6 +2978,70 @@ io.on("connection", (socket) => {
       saveBugReports();
       socket.emit("admin:bugs", { ok: true, reports: bugReports });
     } catch (err) { console.error("버그 삭제 오류:", err); }
+  });
+
+  /* 커스텀 사전 관리 — 승인 대기 목록 조회 + 승인/거절 (관리자 전용) */
+  const emitCustomWords = (socket) => socket.emit("admin:words", {
+    ok: true,
+    pending: customWords.pending.map(p => ({ word: p.word, by: p.by, at: p.at })),
+    approved: customWords.approved,
+    rejected: customWords.rejected.map(r => ({ word: r.word, by: r.by, at: r.at, reason: r.reason }))
+  });
+
+  socket.on("admin:wordList", async () => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:words", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") { socket.emit("admin:words", { ok: false, reason: "단어 승인은 최고 관리자만 가능합니다." }); return; }
+      emitCustomWords(socket);
+    } catch (err) { console.error("커스텀 사전 목록 오류:", err); }
+  });
+
+  socket.on("admin:wordApprove", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:words", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") { socket.emit("admin:words", { ok: false, reason: "단어 승인은 최고 관리자만 가능합니다." }); return; }
+      const word = normalizeWord(String(data?.word || ""));
+      if (!word) { socket.emit("admin:words", { ok: false, reason: "승인할 단어를 선택해주세요." }); return; }
+      const idx = customWords.pending.findIndex(p => p.word === word);
+      if (idx === -1) { socket.emit("admin:words", { ok: false, reason: "대기 목록에 없는 단어입니다." }); return; }
+      const req = customWords.pending.splice(idx, 1)[0];
+      if (hasWord(word, WORD_SET)) {
+        /* 이미 사전에 있는 단어는 승인 불필요 — 대기에서만 제거 */
+        console.log(`[WORD APPROVE] '${word}' — 이미 사전에 있어 대기에서만 제거`);
+      } else {
+        applyCustomWord(word);
+        customWords.approved.push(word);
+        console.log(`[WORD APPROVE] ${req.by} → '${word}' 승인 (커스텀 사전 ${customWords.approved.length})`);
+      }
+      saveCustomWords();
+      emitCustomWords(socket);
+    } catch (err) { console.error("커스텀 사전 승인 오류:", err); }
+  });
+
+  socket.on("admin:wordReject", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:words", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") { socket.emit("admin:words", { ok: false, reason: "단어 승인은 최고 관리자만 가능합니다." }); return; }
+      const word = normalizeWord(String(data?.word || ""));
+      const reason = String(data?.reason || "").trim().slice(0, 50);
+      if (!word) { socket.emit("admin:words", { ok: false, reason: "거절할 단어를 선택해주세요." }); return; }
+      const idx = customWords.pending.findIndex(p => p.word === word);
+      if (idx === -1) { socket.emit("admin:words", { ok: false, reason: "대기 목록에 없는 단어입니다." }); return; }
+      const req = customWords.pending.splice(idx, 1)[0];
+      customWords.rejected.push({ word, by: req.by, at: Date.now(), reason });
+      saveCustomWords();
+      socket.emit("admin:words", {
+        ok: true,
+        message: `'${word}' 단어를 거절했습니다.`,
+        pending: customWords.pending.map(p => ({ word: p.word, by: p.by, at: p.at })),
+        approved: customWords.approved,
+        rejected: customWords.rejected.map(r => ({ word: r.word, by: r.by, at: r.at, reason: r.reason }))
+      });
+      console.log(`[WORD REJECT] ${req.by} → '${word}' (${reason || "사유 없음"})`);
+    } catch (err) { console.error("커스텀 사전 거절 오류:", err); }
   });
 
   /* 추방 — 방장 또는 관리자만 가능 */
@@ -3255,6 +3768,9 @@ initDatabase().then(() => {
   rebuildWordViews();
   loadSeasonFiles();
   touchSeason();
+  ensureSeasonRollover().catch(err => console.error("시작 시 시즌 전환 오류:", err.message));
+  /* 한 시간마다 시즌 전환 감지 — 달이 바뀌는 순간을 놓치지 않도록 */
+  setInterval(() => { ensureSeasonRollover().catch(() => {}); }, 60 * 60 * 1000);
   server.listen(PORT, "0.0.0.0", () => {
     console.log("========================================");
     console.log(`끝말잇기 서버 실행 중: http://localhost:${PORT}`);

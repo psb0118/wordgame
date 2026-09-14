@@ -113,6 +113,8 @@
         <button id="create">방 만들기</button>
         <label>방 코드<input id="roomCode" maxlength="6" placeholder="X8F2KD"></label>
         <button id="join">방 참가</button>
+        <button id="roomListBtn">방 목록</button>
+        <button id="wordRequestBtn" title="사전에 없는 단어를 신청하면 관리자 승인 후 게임에 추가됩니다">단어 신청</button>
         <label>초대할 닉네임<input id="onlineInviteInput" maxlength="12" placeholder="친구 닉네임" autocomplete="off"></label>
         <button id="onlineInviteBtn">초대</button>
       </div>
@@ -127,6 +129,33 @@
           <button id="roomRefreshBtn" class="room-browser-refresh">🔄 새로고침</button>
         </div>
         <div id="roomList" class="room-browser-list"><div class="room-browser-empty">새로고침을 눌러 방을 확인하세요.</div></div>
+      <div id="roomListPanel" class="room-list-panel hidden">
+        <div class="room-list-head">
+          <strong>열린 방</strong>
+          <span class="room-list-actions">
+            <button id="roomListRefresh" class="secondary">새로고침</button>
+            <button id="roomListRandom">랜덤 입장</button>
+            <button id="roomListClose" class="secondary">닫기</button>
+          </span>
+        </div>
+        <div id="roomListBody"></div>
+      </div>
+
+      <div id="wordPanel" class="word-panel hidden">
+        <div class="room-list-head">
+          <strong>단어 신청</strong>
+          <span class="room-list-actions">
+            <button id="wordReqRefresh" class="secondary">새로고침</button>
+            <button id="wordReqClose" class="secondary">닫기</button>
+          </span>
+        </div>
+        <div class="admin-info">사전에 없는 한글 단어를 신청하면 관리자 승인 후 게임에서 사용할 수 있습니다. 승인 여부는 이 패널에서 확인할 수 있어요.</div>
+        <div class="admin-row">
+          <input type="text" id="wordReqInput" class="admin-text" maxlength="40" placeholder="예: 프로브설명단어" autocomplete="off" data-admin-enter="[data-word-req]">
+          <button type="button" class="admin-apply" id="wordReqSend" data-word-req="1">신청</button>
+        </div>
+        <div id="wordReqStatus"></div>
+        <div id="wordReqMyList"></div>
       </div>
 
       <div id="roomInfo" class="room"></div>
@@ -201,8 +230,18 @@
           <div class="onlineTop">
             <button id="rankedQueueBtn">🔍 매칭 시작</button>
             <button id="rankedCancelBtn" class="secondary hidden">매칭 취소</button>
+            <label>상대 닉네임<input id="rankedInviteInput" maxlength="12" placeholder="친구 닉네임" autocomplete="off"></label>
+            <button id="rankedInviteBtn" title="친구를 지명해 랭크 대결을 시작합니다. 수락 시 같은 규칙의 랭크 점수가 적용됩니다">대결 초대</button>
+            <button id="rankedInviteCancelBtn" class="secondary hidden">초대 취소</button>
           </div>
           <div id="rankedQueueInfo" class="ranked-queue-info"></div>
+          <div id="rankedInviteWrap" class="hidden" style="text-align:center;margin:10px 0;background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.4);border-radius:8px;padding:10px;">
+            <span id="rankedInviteText" style="font-weight:700;"></span>
+            <div style="margin-top:8px;">
+              <button id="rankedInviteAcceptBtn">⚔ 수락</button>
+              <button id="rankedInviteRejectBtn" class="secondary">거절</button>
+            </div>
+          </div>
           <label class="autoqueue-label">
             <input type="checkbox" id="rankedAutoContinue">
             <span>게임 후 자동으로 다음 매칭 이어가기</span>
@@ -212,6 +251,7 @@
           <span>5,000</span><span>10,000</span><span>25,000</span><span>50,000</span><span>100,000</span><span>500,000</span><span>1,000,000</span><span style="color:#fbbf24;font-weight:700;">5,000,000</span>
         </div>
         <div id="rankedStreakChip" class="ranked-streak-chip hidden">🔥 연승 <b id="rankedStreakNum">0</b>연승 · 최대 <b id="rankedBestStreakNum">0</b></div>
+        <div id="rankedSeasonBar" class="hidden"></div>
       </div>
 
       <div id="rankedGame" class="hidden">

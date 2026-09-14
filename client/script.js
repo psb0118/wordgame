@@ -41,6 +41,8 @@ let rankedQueued = false;
 let rankedMatchInfo = null;
 let rankedAutoLeave = null;
 let rankedRematchReq = false;
+let rankedInvitePending = false;
+let rankedInviteIncoming = null;
 let rankedAutoContinue = localStorage.getItem("kkAutoRequeue") === "1";
 let rankedStreak = 0;
 let rankedBestStreak = 0;
@@ -190,6 +192,17 @@ function showMessage(text, type) {
 function makeNickname(raw) {
   const n = normalizeWord(raw != null ? raw : myNickname);
   return n || "플레이어";
+}
+
+function bindAdminEnter(selector, fn) {
+  const inp = $(selector);
+  if (!inp) return;
+  inp.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    if (e.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    fn();
+  });
 }
 
 function initNicknameBar() {
@@ -618,6 +631,9 @@ function initSocket() {
     rankedAutoLeave = null;
     rankedQueued = false;
     rankedRematchReq = false;
+    rankedInvitePending = false;
+    rankedInviteIncoming = null;
+    hideRankedInviteBar();
     showRankedRematchBar(false, false);
     rankedMatchInfo = { opponent: data.opponent, opponentRating: data.opponentRating };
     gameState = data.state;
@@ -672,6 +688,58 @@ function initSocket() {
     if (!data || !data.from || currentMode !== "ranked") return;
     if (gameState && !gameState.finished) return;
     showMessage(`⚔ ${data.from}님이 복수전을 신청했습니다! [복수전] 버튼을 눌러 받아들이세요.`, "success");
+  });
+
+  /* -- 랭크 대결 초대 (2인전) -------------------------- */
+  socket.on("ranked:inviteSent", (data) => {
+    if (!data) return;
+    if (data.ok === false) {
+      showMessage(data.reason || "랭크 초대를 보내지 못했습니다.", "error");
+      return;
+    }
+    if (data.canceled) {
+      rankedInvitePending = false;
+      updateRankedInviteUI();
+      showMessage("랭크 초대를 취소했습니다.", "info");
+      return;
+    }
+    rankedInvitePending = true;
+    updateRankedInviteUI();
+    showMessage(`⚔ ${data.nickname || ""}님에게 랭크 대결을 신청했습니다. 상대의 수락을 기다립니다.`, "info");
+  });
+
+  socket.on("ranked:inviteReceived", (data) => {
+    if (!data || !data.from) return;
+    rankedInviteIncoming = data;
+    const wrap = $("#rankedInviteWrap");
+    if (wrap) {
+      const text = $("#rankedInviteText");
+      if (text) text.textContent = `⚔ ${data.from}님이 랭크 대결을 신청했습니다! (상대 랭크 ${data.fromRating != null ? data.fromRating : "-"})`;
+      wrap.classList.remove("hidden");
+    }
+    showMessage(`⚔ ${data.from}님이 랭크 대결을 신청했습니다! 수락하시겠습니까?`, "success");
+  });
+
+  socket.on("ranked:inviteStatus", (data) => {
+    if (!data) return;
+    if (data.ok === false) {
+      hideRankedInviteBar();
+      showMessage(data.reason || "요청을 처리하지 못했습니다.", "error");
+    } else if (data.rejected) {
+      hideRankedInviteBar();
+      showMessage("랭크 초대를 거절했습니다.", "info");
+    }
+  });
+
+  socket.on("ranked:inviteRejected", (data) => {
+    rankedInvitePending = false;
+    updateRankedInviteUI();
+    showMessage(`${data?.from || "상대"}님이 랭크 대결을 거절했습니다.`, "info");
+  });
+
+  socket.on("ranked:inviteCanceled", (data) => {
+    hideRankedInviteBar();
+    showMessage(`${data?.reason ? data.reason : (data?.from || "상대") + "님이 랭크 대결을 취소했습니다."}`, "info");
   });
 
   socket.on("money:received", (data) => {
@@ -899,6 +967,13 @@ function initSocket() {
       setAdminStatus(data.message, data.ok ? "ok" : "error");
     } else if (data.ok === false && data.reason) {
       setAdminStatus(data.reason, "error");
+  socket.on("admin:words", (data) => {
+    if (!data) return;
+    if (data.ok) {
+      renderAdminWords(data);
+      if (data.message) setAdminStatus(data.message, "ok");
+    } else {
+      setAdminStatus(data.reason || "커스텀 사전을 불러오지 못했습니다.", "error");
     }
   });
 
@@ -1045,6 +1120,28 @@ function initSocket() {
     if (appr && typeof data.approvedTotal === "number") appr.textContent = data.approvedTotal.toLocaleString();
     const can = $("#dictSubmitBtn");
     if (can && typeof data.canSubmit === "boolean") can.disabled = !data.canSubmit;
+  /* -- 방 목록 브라우저 -------------------------------- */
+  socket.on("room:list", (data) => {
+    if (!data) return;
+    if (!data.ok) { roomListStatus(data.reason || "방 목록을 불러오지 못했습니다.", "error"); return; }
+    roomListRooms = Array.isArray(data.rooms) ? data.rooms : [];
+    renderRoomList();
+  });
+
+  /* -- 커스텀 사전 (단어 신청) ------------------------- */
+  socket.on("word:requestResult", (data) => {
+    if (!data) return;
+    if (data.ok) {
+      setWordReqStatus(data.message || "신청이 접수되었습니다.", "ok");
+    } else {
+      setWordReqStatus(data.reason || "신청에 실패했습니다.", "error");
+    }
+    fetchWordList();
+  });
+
+  socket.on("word:listResult", (data) => {
+    if (!data) return;
+    renderWordList(data);
   });
 
   socket.on("game:hint", (data) => {
@@ -1694,8 +1791,139 @@ function joinOnlineRoom() {
   if (!requireNickname()) return;
   const code = normalizeWord($("#roomCode")?.value);
   if (!code) { showMessage("방 코드를 입력해주세요.", "error"); return; }
+  closeRoomList();
   socket.emit("room:join", { roomId: code, nickname: makeNickname() });
   showMessage("방에 입장하는 중...", "waiting");
+}
+
+/* -- 방 목록 브라우저 ----------------------------------- */
+let roomListRooms = [];
+let roomListTimer = null;
+
+function openRoomList() {
+  const panel = $("#roomListPanel");
+  if (!panel) return;
+  panel.classList.remove("hidden");
+  if (roomListTimer) clearInterval(roomListTimer);
+  roomListTimer = setInterval(fetchRoomList, 10000);
+  fetchRoomList();
+}
+
+function closeRoomList() {
+  const panel = $("#roomListPanel");
+  if (panel) panel.classList.add("hidden");
+  if (roomListTimer) { clearInterval(roomListTimer); roomListTimer = null; }
+}
+
+function fetchRoomList() {
+  if (!socket || !socketConnected) return;
+  socket.emit("room:list");
+}
+
+function roomListStatus(text, type) {
+  const body = $("#roomListBody");
+  if (!body) return;
+  body.innerHTML = `<div class="room-list-status ${type}">${escapeHtml(text)}</div>`;
+}
+
+function renderRoomList() {
+  const body = $("#roomListBody");
+  if (!body) return;
+  const rooms = roomListRooms.filter(r => r && r.roomId !== roomId);
+  if (rooms.length === 0) {
+    body.innerHTML = `<div class="room-list-status">현재 열린 방이 없습니다. 방을 만들면 여기에 표시됩니다.</div>`;
+    return;
+  }
+  const rows = rooms.map(r => `
+    <button class="room-list-row" data-id="${escapeHtml(String(r.roomId))}">
+      <span class="rl-code">${escapeHtml(String(r.roomId))}</span>
+      <span class="rl-host">${escapeHtml(String(r.host || "플레이어"))}</span>
+      <span class="rl-count">${Number(r.playerCount) || 0}/${Number(r.maxPlayers) || 0}</span>
+      <span class="rl-status">${r.started ? "진행 중" : "대기 중"}</span>
+      <span class="rl-join">입장 →</span>
+    </button>`).join("");
+  body.innerHTML = rows;
+  body.querySelectorAll(".room-list-row").forEach(row => {
+    row.addEventListener("click", () => joinRoomFromList(row.dataset.id));
+  });
+}
+
+function joinRoomFromList(roomIdToJoin) {
+  if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+  if (!requireNickname()) return;
+  closeRoomList();
+  socket.emit("room:join", { roomId: roomIdToJoin, nickname: makeNickname() });
+  showMessage("방에 입장하는 중...", "waiting");
+}
+
+function randomJoinRoom() {
+  if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+  if (!requireNickname()) return;
+  const rooms = roomListRooms.filter(r => r && r.roomId !== roomId);
+  if (rooms.length === 0) { roomListStatus("입장할 수 있는 방이 없습니다.", "error"); return; }
+  joinRoomFromList(rooms[Math.floor(Math.random() * rooms.length)].roomId);
+}
+
+/* -- 커스텀 사전 (단어 신청) --------------------------- */
+let wordReqOpen = false;
+
+function openWordPanel() {
+  wordReqOpen = true;
+  const panel = $("#wordPanel");
+  if (!panel) return;
+  panel.classList.remove("hidden");
+  fetchWordList();
+}
+
+function closeWordPanel() {
+  wordReqOpen = false;
+  const panel = $("#wordPanel");
+  if (panel) panel.classList.add("hidden");
+}
+
+function fetchWordList() {
+  if (!socket || !socketConnected) return;
+  socket.emit("word:list", { nickname: myNickname || undefined });
+}
+
+function setWordReqStatus(text, type) {
+  const el = $("#wordReqStatus");
+  if (!el) return;
+  el.innerHTML = `<div class="room-list-status ${type === "ok" ? "" : type === "error" ? "error" : ""}">${escapeHtml(text)}</div>`;
+}
+
+function submitWordRequest() {
+  if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+  if (!requireNickname()) return;
+  const input = $("#wordReqInput");
+  if (!input) return;
+  const word = normalizeWord(input.value);
+  if (!word) { setWordReqStatus("신청할 단어를 입력해주세요.", "error"); return; }
+  socket.emit("word:request", { word });
+  setWordReqStatus("신청 중...", "");
+  input.value = "";
+}
+
+function renderWordList(data) {
+  const el = $("#wordReqMyList");
+  if (!el) return;
+  const pending = Array.isArray(data.pending) ? data.pending : [];
+  const rejected = Array.isArray(data.rejected) ? data.rejected : [];
+  const total = Number(data.approvedTotal) || 0;
+
+  let html = "";
+  if (pending.length === 0 && rejected.length === 0) {
+    html = `<div class="room-list-status">아직 신청 내역이 없습니다.</div>`;
+  } else {
+    const items = [
+      ...pending.map(p => ({ text: p.word, cls: "word-pending", label: "대기 중" })),
+      ...rejected.map(r => ({ text: r.word, cls: "word-rejected", label: `거절 ${r.reason ? "· " + r.reason : ""}` }))
+    ];
+    html = `<div class="word-my-head">내 신청 내역</div>` +
+      items.map(it => `<div class="word-my-row ${it.cls}"><span class="word-my-word">${escapeHtml(it.text)}</span><span class="word-my-label">${escapeHtml(it.label)}</span></div>`).join("");
+  }
+  html += `<div class="room-list-status">🏆 승인된 커스텀 단어: <b>${total}</b>개</div>`;
+  el.innerHTML = html;
 }
 
 /* ---------------------------------------------------------
@@ -1878,11 +2106,37 @@ function resetRankedBoard() {
   renderMistakes(0, 5);
   clearInput();
   rankedRematchReq = false;
+  rankedInvitePending = false;
+  hideRankedInviteBar();
+  updateRankedInviteUI();
   showRankedRematchBar(false, false);
   $("#rankedGame")?.classList.add("hidden");
   $("#rankedLobby")?.classList.remove("hidden");
   updateRankedQueueUI();
   renderRankedStreakChip();
+  refreshSeasonBar();
+}
+
+/* 시즌제 랭킹 — 현재 시즌/종료까지 남은 기간/지난 시즌 1위/보상 정보를 표시 */
+async function refreshSeasonBar() {
+  const bar = $("#rankedSeasonBar");
+  if (!bar) return;
+  try {
+    const info = await (await fetch(`/api/season`)).json();
+    if (!info || info.ok === false) throw new Error("bad payload");
+    const reward = (info.rewards || []).map(r => `<span class="season-reward-item"><b>${escapeHtml(r.rank)}</b> ${escapeHtml(r.value)}</span>`).join("");
+    bar.innerHTML = `<div class="season-bar">
+        <div class="season-bar-top">
+          <b>시즌 ${escapeHtml(info.key)}</b>
+          <span>· 종료까지 <b>${Number(info.daysLeft || 0)}일</b></span>
+        </div>
+        <div class="season-bar-prev">${info.previous ? `🏆 지난 시즌(${escapeHtml(info.previous.season)}) 1위 <b>${escapeHtml(info.previous.champion)}</b>` : "아직 종료된 시즌이 없습니다."}</div>
+        <div class="season-bar-reward">${reward}</div>
+      </div>`;
+    bar.classList.remove("hidden");
+  } catch (err) {
+    bar.classList.add("hidden");
+  }
 }
 
 /* 온라인 보드/UI를 초기 상태로 정리 */
@@ -1930,6 +2184,45 @@ function showRankedRematchBar(visible, requested) {
   const cancel = $("#rankedRematchCancelBtn");
   if (btn) btn.classList.toggle("hidden", !(visible && !requested));
   if (cancel) cancel.classList.toggle("hidden", !(visible && requested));
+}
+
+/* 랭크 대결 초대(2인전) — 수신 바 숨기기 및 초대 상태 갱신 */
+function hideRankedInviteBar() {
+  rankedInviteIncoming = null;
+  $("#rankedInviteWrap")?.classList.add("hidden");
+}
+
+function updateRankedInviteUI() {
+  const cancel = $("#rankedInviteCancelBtn");
+  if (cancel) cancel.classList.toggle("hidden", !rankedInvitePending);
+}
+
+function sendRankedInvite() {
+  if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+  if (!requireNickname()) return;
+  if (rankedQueued) { showMessage("매칭 대기 중에는 초대를 보낼 수 없습니다. 매칭을 먼저 취소해주세요.", "warning"); return; }
+  const input = $("#rankedInviteInput");
+  if (!input) return;
+  const nick = normalizeWord(input.value);
+  if (!nick) { showMessage("초대할 닉네임을 입력해주세요.", "error"); return; }
+  socket.emit("ranked:invite", { nickname: nick });
+}
+
+function cancelRankedInvite() {
+  if (!socket || !socketConnected) return;
+  socket.emit("ranked:inviteCancel");
+}
+
+function acceptRankedInvite() {
+  if (!socket || !socketConnected) return;
+  hideRankedInviteBar();
+  socket.emit("ranked:inviteAccept");
+}
+
+function rejectRankedInvite() {
+  if (!socket || !socketConnected) return;
+  hideRankedInviteBar();
+  socket.emit("ranked:inviteReject");
 }
 
 /* 짧은 애니메이션 클래스 토글 (VFX) */
@@ -2324,6 +2617,13 @@ function renderAdminBody(data) {
       <h4>단어 사전 관리 (유저 단어 신청 승인/반려)</h4>
       <button type="button" class="admin-apply" data-admin-dict-load="1">승인 대기 불러오기</button>
       <div id="adminDictList"><div class="admin-info">유저가 신청한 새 단어를 승인하면 게임 사전 전체에 즉시 반영됩니다. (승인 단어 수: <span id="dictApprovedTotal">-</span>)</div></div>
+  /* 관리자: 단어 승인 (커스텀 사전) — 최고 관리자 전용 */
+  const wordCard = isSuper ? `
+    <div class="admin-card">
+      <h4>단어 승인 (커스텀 사전)</h4>
+      <div class="admin-info">사용자가 신청한 단어를 승인하면 게임 사전에 추가되어 모든 유저가 쓸 수 있습니다.</div>
+      <button type="button" class="admin-apply" id="adminWordLoad">대기 목록 불러오기</button>
+      <div id="adminWordList"></div>
     </div>
   ` : "";
 
@@ -2339,10 +2639,14 @@ function renderAdminBody(data) {
     ${statsCard}
     ${moneyCard}
     ${dictCard}
+    ${wordCard}
     ${bugCard}
     <div class="admin-status" id="adminStatus"></div>
   `;
   bindAdminBody();
+
+  const wordLoad = $("#adminWordLoad");
+  if (wordLoad) wordLoad.addEventListener("click", () => socket.emit("admin:wordList"));
 
   const moneyApply = $("#adminMoneyApply");
   if (moneyApply) moneyApply.addEventListener("click", () => {
@@ -2359,6 +2663,41 @@ function renderAdminBody(data) {
 
   const dictLoadBtn = modal.querySelector("[data-admin-dict-load]");
   if (dictLoadBtn) dictLoadBtn.addEventListener("click", () => socket.emit("admin:dictionaryList"));
+}
+
+function renderAdminWords(data) {
+  const wrap = $("#adminWordList");
+  if (!wrap) return;
+  const pending = (data.pending || []);
+  const approved = (data.approved || []);
+  const rejected = (data.rejected || []);
+
+  let html = `<div class="admin-info">대기 <b>${pending.length}</b> · 승인 <b>${approved.length}</b> · 거절 <b>${rejected.length}</b></div>`;
+  if (pending.length === 0) {
+    html += `<div class="room-list-status">승인 대기 단어가 없습니다.</div>`;
+  } else {
+    html += pending.map(p => `
+      <div class="admin-word-row">
+        <span class="admin-word-text" title="${escapeHtml(p.by || "")}">${escapeHtml(p.word)}</span>
+        <input type="text" class="admin-word-reason" maxlength="50" placeholder="거절 사유 (선택)" autocomplete="off" data-word="${escapeHtml(p.word)}">
+        <button type="button" class="admin-apply" data-word-approve="${escapeHtml(p.word)}">승인</button>
+        <button type="button" class="admin-apply admin-reject" data-word-reject="${escapeHtml(p.word)}">거절</button>
+      </div>`).join("");
+  }
+  if (rejected.length > 0) {
+    html += `<div class="admin-info" style="margin-top:10px;">최근 거절: ${rejected.slice(-5).map(r => escapeHtml(r.word)).join(", ")}</div>`;
+  }
+  wrap.innerHTML = html;
+
+  wrap.querySelectorAll("[data-word-approve]").forEach(btn => {
+    btn.addEventListener("click", () => socket.emit("admin:wordApprove", { word: btn.dataset.wordApprove }));
+  });
+  wrap.querySelectorAll("[data-word-reject]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const reason = wrap.querySelector(`.admin-word-reason[data-word="${btn.dataset.wordReject}"]`)?.value || "";
+      socket.emit("admin:wordReject", { word: btn.dataset.wordReject, reason });
+    });
+  });
 }
 
 function renderAdminFound(data) {
@@ -2918,6 +3257,7 @@ document.addEventListener("DOMContentLoaded", () => {
   updateStatsUI();
   initSideRanking();
   renderSoundToggle();
+  refreshSeasonBar();
 
   /* 소리/진동 토글 — 첫 조작 시 AudioContext 시작 (자동재생 정책 대응) */
   $("#soundToggle")?.addEventListener("click", () => {
@@ -2949,7 +3289,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!gameState || !roomId) setTimeout(startSingleGame, 100);
       } else if (currentMode === "ranked") {
         if (gameState && roomId && currentMode === "ranked") { /* in game */ }
-        else { $("#rankedLobby")?.classList.remove("hidden"); $("#rankedGame")?.classList.add("hidden"); }
+        else { $("#rankedLobby")?.classList.remove("hidden"); $("#rankedGame")?.classList.add("hidden"); refreshSeasonBar(); }
         updateRankedQueueUI();
         renderRankedStreakChip();
       } else if (currentMode === "shop") {
@@ -3010,6 +3350,15 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#roomRefreshBtn")?.addEventListener("click", refreshRoomBrowser);
   setInterval(refreshRoomBrowser, 6000);
+  $("#roomListBtn")?.addEventListener("click", openRoomList);
+  $("#roomListRefresh")?.addEventListener("click", fetchRoomList);
+  $("#roomListRandom")?.addEventListener("click", randomJoinRoom);
+  $("#roomListClose")?.addEventListener("click", closeRoomList);
+  $("#wordRequestBtn")?.addEventListener("click", openWordPanel);
+  $("#wordReqRefresh")?.addEventListener("click", fetchWordList);
+  $("#wordReqClose")?.addEventListener("click", closeWordPanel);
+  $("#wordReqSend")?.addEventListener("click", submitWordRequest);
+  bindAdminEnter("#wordReqInput", submitWordRequest);
   $("#startOnline")?.addEventListener("click", () => {
     if (!socket || !socketConnected) return;
     socket.emit("game:start");
@@ -3041,6 +3390,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
     if (!requireNickname()) return;
     rankedQueued = true;
+    rankedInvitePending = false;
+    hideRankedInviteBar();
+    updateRankedInviteUI();
     updateRankedQueueUI();
     socket.emit("ranked:queue");
   });
@@ -3093,6 +3445,11 @@ document.addEventListener("DOMContentLoaded", () => {
     leaveRoom();
     renderRoomInfo(null);
   });
+  $("#rankedInviteBtn")?.addEventListener("click", sendRankedInvite);
+  $("#rankedInviteCancelBtn")?.addEventListener("click", cancelRankedInvite);
+  $("#rankedInviteAcceptBtn")?.addEventListener("click", acceptRankedInvite);
+  $("#rankedInviteRejectBtn")?.addEventListener("click", rejectRankedInvite);
+  bindAdminEnter("#rankedInviteInput", sendRankedInvite);
   $("#loadLbRanked")?.addEventListener("click", toggleLeaderboardRanked);
 
   /* 출석체크 */
