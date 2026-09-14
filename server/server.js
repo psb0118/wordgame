@@ -51,7 +51,7 @@ const HINTS_PER_GAME = 5;
 
 let adminPassword = null;
 let subAdmins = [];
-const ADMIN_NICKNAME = "blossomIng_0";
+const ADMIN_NICKNAME = "blossomlng_0";
 /* 접속 중인 소켓이 관리자 계정(닉네임+비밀번호) 인증을 통과했는지 — 닉네임만으로 관리자가 되지 못하게 함 */
 const adminAuthed = new Map();
 const adminConfigPath = path.join(DATA_DIR, "admin-config.json");
