@@ -9,7 +9,8 @@ const {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
   loadData, hasWord, getAttackDepth, isAttackWord,
   getCandidates, isOneShot, getStartCandidates, chooseStartWord,
-  chooseAIWord, chooseAIStartWord, calculateRank, calculateElo
+  chooseAIWord, chooseAIStartWord, calculateRank, calculateElo,
+  mergeCustomWords
 } = require("./game.js");
 
 /* =========================================================
@@ -30,6 +31,13 @@ const DATA_DIR = path.join(ROOT_DIR, "data");
 let MAX_HEARTS = 2;
 let TURN_TIME = 20;
 let MAX_PLAYERS = 10;
+/* 2v2 파티(팀전) — 파티 모드 상수. 기존 온라인/랭크/싱글 흐름과 완전히 분리되어
+   복귀 검사(smoke 61종)에는 절대 영향을 주지 않는다.
+   팀은 2명씩 2팀(총 4명)이며, 하트는 팀 단위로 공유한다. */
+const PARTY_TEAM_SIZE = 2;     /* 팀당 인원 */
+const PARTY_TEAM_COUNT = 2;    /* 2팀 */
+const PARTY_PLAYERS = PARTY_TEAM_SIZE * PARTY_TEAM_COUNT; /* 4 */
+const TEAM_HEARTS = 2;         /* 팀 하트 MAX_HEARTS(2)와 동일 — 한방 2회면 팀 탈락 */
 let ONESHOT_FREE_TURNS = 1;
 let MISTAKES_PER_LIFE = 5;
 const AI_PLAYER_ID = "ai";
@@ -117,7 +125,45 @@ function loadAdminConfig() {
    데이터 로드
 ========================================================= */
 
-const { WORD_SET, ATTACK_DEPTH, WORD_INDEX, ROOT_WORDS, RARE_ROOT_WORDS, DEFENSE_WORDS } = loadData(DATA_DIR, ROOT_DIR);
+const baseWordData = loadData(DATA_DIR, ROOT_DIR);
+/* 게임 검색 뷰 — 커스텀 사전 승인 단어가 합쳐진다. 관리자 승인 시 rebuildWordViews()로 재구성 */
+let WORD_SET = baseWordData.WORD_SET;
+let WORD_INDEX = baseWordData.WORD_INDEX;
+const BASE_WORD_SET = baseWordData.WORD_SET;
+const { ATTACK_DEPTH, ROOT_WORDS, RARE_ROOT_WORDS, DEFENSE_WORDS } = baseWordData;
+
+function rebuildWordViews() {
+  const merged = mergeCustomWords(BASE_WORD_SET, baseWordData.WORD_INDEX, customDict.approved);
+  WORD_SET = merged.WORD_SET;
+  WORD_INDEX = merged.WORD_INDEX;
+}
+
+/* =========================================================
+   커스텀 사전 — 유저 단어 신청 → 관리자 승인 시 게임 사전에 포함
+========================================================= */
+const customDictPath = path.join(ROOT_DIR, "custom-words.json");
+let customDict = { nextId: 1, pending: [], approved: [], rejected: [] };
+
+function loadCustomDict() {
+  try {
+    if (fs.existsSync(customDictPath)) {
+      const data = JSON.parse(fs.readFileSync(customDictPath, "utf8"));
+      customDict = {
+        nextId: Number(data.nextId) || 1,
+        pending: Array.isArray(data.pending) ? data.pending : [],
+        approved: Array.isArray(data.approved) ? data.approved : [],
+        rejected: Array.isArray(data.rejected) ? data.rejected : []
+      };
+      console.log(`커스텀 사전 로드: 승인 ${customDict.approved.length}개 / 대기 ${customDict.pending.length}개`);
+    }
+  } catch (e) { console.warn("커스텀 사전 로드 실패:", e.message); }
+}
+
+function saveCustomDict() {
+  try {
+    fs.writeFileSync(customDictPath, JSON.stringify(customDict, null, 2));
+  } catch (e) { console.warn("커스텀 사전 저장 실패:", e.message); }
+}
 
 /* =========================================================
    데이터베이스 — PostgreSQL 또는 JSON 파일 폴백
@@ -249,7 +295,8 @@ async function initDatabase() {
           ADD COLUMN IF NOT EXISTS last_check_date TEXT DEFAULT '',
           ADD COLUMN IF NOT EXISTS attendance_streak INTEGER DEFAULT 0,
           ADD COLUMN IF NOT EXISTS recent_games TEXT DEFAULT '[]',
-          ADD COLUMN IF NOT EXISTS daily TEXT DEFAULT '{}'
+          ADD COLUMN IF NOT EXISTS daily TEXT DEFAULT '{}',
+          ADD COLUMN IF NOT EXISTS season TEXT DEFAULT '{}'
       `);
       dbMode = "pg";
       console.log("데이터베이스: PostgreSQL 연결 완료");
@@ -264,11 +311,13 @@ async function initDatabase() {
 }
 
 const MODE_DEFAULT = { rating: 1000, wins: 0, losses: 0 };
+const SEASON_DEFAULT = { rating: 1000, wins: 0, losses: 0, games: 0, streak: 0, bestStreak: 0 };
 
 function migratePlayerData(p) {
   p.single = Object.assign({ ...MODE_DEFAULT }, p.single || {});
   p.multi = Object.assign({ ...MODE_DEFAULT }, p.multi || {});
   p.ranked = Object.assign({ ...MODE_DEFAULT }, p.ranked || {});
+  p.season = Object.assign({ ...SEASON_DEFAULT }, p.season && typeof p.season === "object" ? p.season : {});
   p.ranked.streak = Number.isFinite(p.ranked.streak) ? Math.max(0, Math.floor(p.ranked.streak)) : 0;
   p.ranked.bestStreak = Number.isFinite(p.ranked.bestStreak) ? Math.max(0, Math.floor(p.ranked.bestStreak)) : 0;
   if (typeof p.money !== "number" || !Number.isFinite(p.money)) p.money = typeof p.money === "number" ? Math.max(0, p.money) : 0;
@@ -308,7 +357,8 @@ async function getPlayerData(playerId) {
           lastCheckDate: row.last_check_date || "",
           attendanceStreak: row.attendance_streak || 0,
           recentGames: (() => { try { return JSON.parse(row.recent_games || "[]"); } catch { return []; } })(),
-          daily: (() => { try { return JSON.parse(row.daily || "{}"); } catch { return {}; } })()
+          daily: (() => { try { return JSON.parse(row.daily || "{}"); } catch { return {}; } })(),
+          season: (() => { try { return JSON.parse(row.season || "{}"); } catch { return {}; } })()
         };
         const migrated = migratePlayerData(data);
         playerCache.set(playerId, migrated);
@@ -354,8 +404,8 @@ async function savePlayerData(playerId, data) {
            ranked_rating, ranked_wins, ranked_losses, ranked_streak, ranked_best_streak,
            money, money_multiplier, rating_boost_games,
            titles, current_title, last_check_date, attendance_streak,
-           recent_games, daily, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW())
+           recent_games, daily, season, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,NOW())
         ON CONFLICT (id) DO UPDATE SET
           nickname=$2, rating=$3, wins=$4, losses=$5,
           single_rating=$6, single_wins=$7, single_losses=$8,
@@ -363,7 +413,7 @@ async function savePlayerData(playerId, data) {
           ranked_streak=$12, ranked_best_streak=$13,
           money=$14, money_multiplier=$15, rating_boost_games=$16,
           titles=$17, current_title=$18, last_check_date=$19, attendance_streak=$20,
-          recent_games=$21, daily=$22, updated_at=NOW()
+          recent_games=$21, daily=$22, season=$23, updated_at=NOW()
       `, [
         playerId, safe.nickname || "플레이어",
         safe.multi.rating, safe.multi.wins, safe.multi.losses,
@@ -373,7 +423,8 @@ async function savePlayerData(playerId, data) {
         safe.money, safe.moneyMultiplier, safe.ratingBoostGames,
         JSON.stringify(safe.titles), safe.currentTitle,
         safe.lastCheckDate, safe.attendanceStreak,
-        JSON.stringify(safe.recentGames), JSON.stringify(safe.daily)
+        JSON.stringify(safe.recentGames), JSON.stringify(safe.daily),
+        JSON.stringify(safe.season)
       ]);
     } catch (err) { console.error("DB 쓰기 오류:", err.message); }
   } else {
@@ -385,6 +436,10 @@ async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mo
   const key = mode === "ranked" ? "ranked" : "multi";
   const winner = await getPlayerData(winnerId);
   const loser = await getPlayerData(loserId);
+  touchSeason();
+  const seasonIdNow = getSeasonInfo().id;
+  winner.season = initSeasonData(seasonIdNow, winner.season);
+  loser.season = initSeasonData(seasonIdNow, loser.season);
   const { newWinnerRating, newLoserRating } = calculateElo(winner[key].rating, loser[key].rating);
   let wGain = newWinnerRating - winner[key].rating;
   let lChange = newLoserRating - loser[key].rating;
@@ -403,12 +458,190 @@ async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mo
   if (!Number.isFinite(loser[key].rating)) loser[key].rating = 1000;
   if (opts.decBoostWinner) winner.ratingBoostGames = Math.max(0, (winner.ratingBoostGames || 0) - 1);
   if (opts.decBoostLoser) loser.ratingBoostGames = Math.max(0, (loser.ratingBoostGames || 0) - 1);
+
+  /* 시즌 포인트(2주 사이클) — 온라인/랭크 경기 공통 집계, 랭크 부스트 배율 동일 적용 */
+  if (opts.trackSeason) {
+    const ew = 1 / (1 + Math.pow(10, (loser.season.rating - winner.season.rating) / 400));
+    const el = 1 / (1 + Math.pow(10, (winner.season.rating - loser.season.rating) / 400));
+    const K = 32;
+    winner.season.rating = Math.round(winner.season.rating + K * (1 - ew) * wBoost);
+    loser.season.rating = Math.round(loser.season.rating + K * (0 - el) * lBoost);
+    winner.season.wins += 1;
+    loser.season.losses += 1;
+    winner.season.games += 1;
+    loser.season.games += 1;
+    winner.season.streak = Math.max(0, (winner.season.streak || 0)) + 1;
+    winner.season.bestStreak = Math.max(winner.season.bestStreak || 0, winner.season.streak);
+    loser.season.streak = 0;
+    if (!Number.isFinite(winner.season.rating)) winner.season.rating = 1000;
+    if (!Number.isFinite(loser.season.rating)) loser.season.rating = 1000;
+    upsertSeasonBoard(winner, winnerNickname || winner.nickname);
+    upsertSeasonBoard(loser, loserNickname || loser.nickname);
+  }
+
   await savePlayerData(winnerId, winner);
   await savePlayerData(loserId, loser);
   return {
     winner: { ...winner, rank: calculateRank(winner[key].rating) },
     loser: { ...loser, rank: calculateRank(loser[key].rating) }
   };
+}
+
+/* =========================================================
+   시즌제 랭킹 — 2주 시즌 사이클
+   - 시즌 포인트(ELO)는 플레이어 데이터의 season에 누적된다
+   - 시즌 피크 집계(season-board.json)와 종료 시 아카이브(season-history.json) 유지
+   - 시즌이 종료되면 상위권(3경기 이상)에게 시즌 칭호를 지급한다
+   - 테스트용: SEASON_NOW_MS(현재 시각), SEASON_EPOCH_MS(기준 에폭) 환경변수 지원
+========================================================= */
+
+const SEASON_LENGTH_WEEKS = 2;
+const SEASON_EPOCH_DEFAULT = Date.UTC(2026, 0, 5); /* 2026-01-05(월) KST 기준 월요일 */
+const SEASON_WEEK_MS = 7 * 86400000;
+
+const seasonBoardPath = path.join(ROOT_DIR, "season-board.json");
+const seasonHistoryPath = path.join(ROOT_DIR, "season-history.json");
+let seasonBoard = { seasonId: "", entries: new Map() };
+let seasonArchives = [];
+
+function getSeasonNowMs() {
+  const v = Number(process.env.SEASON_NOW_MS);
+  return Number.isFinite(v) && v > 0 ? v : Date.now();
+}
+
+function getSeasonInfo(dateMs) {
+  const ms = dateMs == null ? getSeasonNowMs() : Number(dateMs);
+  const kst = ms + 9 * 3600000;
+  const dow = (new Date(kst).getUTCDay() + 6) % 7; /* 0 = 월요일 */
+  const monday = kst - dow * 86400000;
+  const m0 = new Date(monday);
+  m0.setUTCHours(0, 0, 0, 0);
+  const epoch = Number(process.env.SEASON_EPOCH_MS) || SEASON_EPOCH_DEFAULT;
+  const weekIdx = Math.floor((m0.getTime() - epoch) / SEASON_WEEK_MS);
+  const seasonIdx = Math.floor(weekIdx / SEASON_LENGTH_WEEKS);
+  const start = epoch + seasonIdx * SEASON_LENGTH_WEEKS * SEASON_WEEK_MS;
+  const end = start + SEASON_LENGTH_WEEKS * SEASON_WEEK_MS;
+  return { id: String(seasonIdx), name: `시즌 ${seasonIdx + 1}`, start, end, now: ms };
+}
+
+function initSeasonData(seasonId, season) {
+  const cur = season && typeof season === "object" ? season : {};
+  /* 시즌이 바뀌면(리셋) 새 시즌 기본값으로 시작, 같은 시즌이면 기존 통계 유지 */
+  const base = String(cur.seasonId || "") === String(seasonId) ? cur : {};
+  const s = Object.assign({}, SEASON_DEFAULT, base);
+  s.seasonId = String(seasonId);
+  if (!Number.isFinite(s.rating)) s.rating = 1000;
+  s.rating = Math.max(0, Math.round(s.rating));
+  s.wins = Math.max(0, Math.floor(Number(s.wins) || 0));
+  s.losses = Math.max(0, Math.floor(Number(s.losses) || 0));
+  s.games = Math.max(0, Math.floor(Number(s.games) || 0));
+  s.streak = Math.max(0, Math.floor(Number(s.streak) || 0));
+  s.bestStreak = Math.max(0, Math.floor(Number(s.bestStreak) || 0));
+  return s;
+}
+
+function loadSeasonFiles() {
+  try {
+    const t = getSeasonInfo();
+    seasonBoard = { seasonId: t.id, entries: new Map() };
+    if (fs.existsSync(seasonBoardPath)) {
+      const raw = JSON.parse(fs.readFileSync(seasonBoardPath, "utf8"));
+      if (raw && raw.seasonId && Array.isArray(raw.entries)) {
+        seasonBoard = {
+          seasonId: String(raw.seasonId),
+          entries: new Map(raw.entries.map(e => [String(e.id), e]))
+        };
+      }
+    }
+    if (fs.existsSync(seasonHistoryPath)) {
+      const h = JSON.parse(fs.readFileSync(seasonHistoryPath, "utf8"));
+      if (Array.isArray(h)) seasonArchives = h;
+    }
+  } catch (e) { console.warn("시즌 데이터 로드 실패:", e.message); }
+}
+
+function saveSeasonBoard() {
+  try {
+    fs.writeFileSync(seasonBoardPath, JSON.stringify({ seasonId: seasonBoard.seasonId, entries: [...seasonBoard.entries.values()] }, null, 2));
+  } catch (e) { console.warn("시즌 보드 저장 실패:", e.message); }
+}
+
+function saveSeasonHistory() {
+  try {
+    fs.writeFileSync(seasonHistoryPath, JSON.stringify(seasonArchives, null, 2));
+  } catch (e) { console.warn("시즌 히스토리 저장 실패:", e.message); }
+}
+
+/* 경기 반영 직전 호출 — 시즌 경계를 넘었으면 종료 처리 후 새 시즌 보드로 교체 */
+function touchSeason() {
+  const t = getSeasonInfo();
+  if (seasonBoard.seasonId === t.id) return false;
+  if (seasonBoard.seasonId) finalizeSeason(seasonBoard);
+  seasonBoard = { seasonId: t.id, entries: new Map() };
+  saveSeasonBoard();
+  return true;
+}
+
+function finalizeSeason(board) {
+  const entries = [...board.entries.values()];
+  if (entries.length === 0) {
+    seasonArchives.push({
+      seasonId: String(board.seasonId), name: `시즌 ${Number(board.seasonId) + 1}`,
+      endedAt: Date.now(), entries: []
+    });
+    if (seasonArchives.length > 30) seasonArchives.splice(0, seasonArchives.length - 30);
+    saveSeasonHistory();
+    return;
+  }
+  const sorted = entries
+    .sort((a, b) => (b.rating - a.rating) || (b.games - a.games) || String(a.id).localeCompare(String(b.id)));
+  const ranked = sorted.map((e, i) => ({ ...e, rank: i + 1 }));
+  const name = `시즌 ${Number(board.seasonId) + 1}`;
+  seasonArchives.push({
+    seasonId: String(board.seasonId), name, endedAt: Date.now(),
+    entries: ranked.map(e => ({ id: e.id, nickname: e.nickname, rating: e.rating, wins: e.wins, losses: e.losses, games: e.games, rank: e.rank }))
+  });
+  if (seasonArchives.length > 30) seasonArchives.splice(0, seasonArchives.length - 30);
+  saveSeasonHistory();
+  /* 시즌 칭호 — 3경기 이상 참가자만, 상위 10명 */
+  const honorable = ranked.filter(e => (e.games || 0) >= 3).slice(0, 10);
+  for (const e of honorable) {
+    const titleName = e.rank <= 3
+      ? (e.rank === 1 ? `${name} 챔피언` : e.rank === 2 ? `${name} 준우승` : `${name} 3위`)
+      : `${name} TOP 10`;
+    grantSeasonTitle(e.id, `t_season_${board.seasonId}_${e.rank}`, titleName);
+  }
+}
+
+function grantSeasonTitle(playerId, titleId, titleName) {
+  getPlayerData(playerId)
+    .then(pd => {
+      if (!pd || String(pd.id) === AI_PLAYER_ID) return;
+      if ((pd.titles || []).some(t => t && t.id === titleId)) return;
+      pd.titles.push({ id: titleId, name: titleName });
+      if (!pd.currentTitle) pd.currentTitle = titleName;
+      return savePlayerData(playerId, pd);
+    })
+    .catch(err => console.error("시즌 칭호 지급 오류:", err.message));
+}
+
+function upsertSeasonBoard(pd, nickname) {
+  const s = pd.season || {};
+  const id = String(pd.id || "");
+  const entry = seasonBoard.entries.get(id);
+  if (entry) {
+    entry.nickname = nickname;
+    entry.rating = s.rating; entry.wins = s.wins; entry.losses = s.losses;
+    entry.games = s.games; entry.streak = s.streak; entry.bestStreak = s.bestStreak;
+    entry.updatedAt = Date.now();
+  } else {
+    seasonBoard.entries.set(id, {
+      id, nickname,
+      rating: s.rating, wins: s.wins, losses: s.losses, games: s.games,
+      streak: s.streak, bestStreak: s.bestStreak, updatedAt: Date.now()
+    });
+  }
+  saveSeasonBoard();
 }
 
 /* =========================================================
@@ -710,6 +943,10 @@ function createRoom(socketId, nickname, mode, opts = {}) {
     id: roomId,
     hostSocketId: socketId,
     mode: mode || "online",
+    modeId: opts.modeId || null,
+    teamOf: null,
+    partyId: null,
+    createdAt: Date.now(),
     players: [],
     currentWord: null,
     turnPlayerIndex: 0,
@@ -735,15 +972,40 @@ function createRoom(socketId, nickname, mode, opts = {}) {
   return room;
 }
 
-function addPlayer(room, socketId, nickname) {
+function addPlayer(room, socketId, nickname, opts = {}) {
   if (room.players.length >= MAX_PLAYERS) return null;
+  if (room.mode === "party") {
+    /* 2v2 파티 — 좌석을 A1,B1,A2,B2 순서로 배치(인터리브)해서 기존의 선형
+       턴 순회(findNextAlivePlayer)가 자동으로 팀이 번갈아 가며 차례를 갖게 한다.
+       즉 '한방'은 항상 상대 팀(다음 살아있는 상대)을 노리게 되므로 턴/한방/종료
+       엔진을 전혀 건드리지 않고 2v2가 성립한다. teamOf는 0 또는 1. */
+    const teamOf = opts.teamOf == null ? (typeof room.partyTeamCounts === "object" ? (room.players.filter(p => p.teamOf === 1).length < PARTY_TEAM_COUNT ? 1 : 0) : 1) : opts.teamOf;
+    const teamMemberCount = teamOf === 1
+      ? room.players.filter(p => p.teamOf === 1).length
+      : room.players.filter(p => p.teamOf === 0).length;
+    if (teamMemberCount >= PARTY_TEAM_SIZE) return null;
+    /* 인터리브 좌석: 팀 0은 짝수(0,2), 팀 1은 홀수(1,3) 자리에 앉는다 */
+    const targetSeat = teamOf === 0 ? (teamMemberCount * 2) : (teamMemberCount * 2 + 1);
+    const player = {
+      id: socketId, socketId, playerIndex: targetSeat,
+      nickname: nickname || `플레이어 ${targetSeat + 1}`,
+      isBot: false, alive: true, connected: true,
+      hearts: MAX_HEARTS, eliminated: false, mistakes: 0,
+      waiting: false, teamOf
+    };
+    room.players.push(player);
+    /* playerIndex를 좌석 순서(0,1,2,3)로 정렬해 인터리브 순서를 항상 유지 */
+    room.players.sort((a, b) => a.playerIndex - b.playerIndex);
+    room.players.forEach((p, i) => { p.playerIndex = i; });
+    return room.players.find(p => p.id === socketId) || null;
+  }
   const playerIndex = room.players.length;
   const player = {
     id: socketId, socketId, playerIndex,
     nickname: nickname || `플레이어 ${playerIndex + 1}`,
     isBot: false, alive: true, connected: true,
     hearts: MAX_HEARTS, eliminated: false, mistakes: 0,
-    waiting: false
+    waiting: false, teamOf: null
   };
   room.players.push(player);
   return player;
@@ -973,7 +1235,7 @@ async function finishGame(room, winnerIndex, loserIndex) {
   const humanOnly = w && l && !w.isBot && !l.isBot;
   if (w && l && w.id !== l.id && (room.mode === "online" || room.mode === "ranked") && humanOnly) {
     const mode = room.mode === "ranked" ? "ranked" : "multi";
-    const updateOpts = {};
+    const updateOpts = { trackSeason: true };
     if (room.mode === "ranked") {
       const [wData, lData] = await Promise.all([getPlayerData(w.id), getPlayerData(l.id)]);
       updateOpts.winnerBoost = ((wData.ratingBoostGames || 0) > 0) ? 2 : 1;
@@ -1371,7 +1633,31 @@ app.get("/", (req, res) => {
 });
 
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length, rooms: ROOMS.size, uptime: process.uptime() });
+  res.json({ ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length, rooms: ROOMS.size, customApproved: customDict.approved.length, customPending: customDict.pending.length, seasonId: getSeasonInfo().id, uptime: process.uptime() });
+});
+
+/* 시즌 정보 — 현재 시즌 번호, 기간, 종료 시한, 참가자 수, TOP3, 지난 시즌 목록 */
+app.get("/api/season", (req, res) => {
+  try {
+    touchSeason();
+    const t = getSeasonInfo();
+    const current = [...seasonBoard.entries.values()]
+      .sort((a, b) => ((b.rating || 0) - (a.rating || 0)) || ((b.games || 0) - (a.games || 0)))
+      .slice(0, 3)
+      .map((e, i) => ({ rank: i + 1, nickname: e.nickname, rating: e.rating, games: e.games }));
+    res.json({
+      ok: true,
+      id: t.id, name: t.name,
+      start: t.start, end: t.end,
+      endsInMs: Math.max(0, t.end - t.now),
+      players: seasonBoard.entries.size,
+      top3: current,
+      history: seasonArchives.slice(-12).map(a => ({ id: a.seasonId, name: a.name, endedAt: a.endedAt, entries: a.entries.length }))
+    });
+  } catch (err) {
+    console.error("시즌 조회 오류:", err.message);
+    res.status(500).json({ ok: false, error: "시즌 정보를 불러오지 못했습니다." });
+  }
 });
 
 app.get("/api/leaderboard", async (req, res) => {
@@ -1380,6 +1666,40 @@ app.get("/api/leaderboard", async (req, res) => {
     const mode = ["multi", "single", "ranked", "money", "streak"].includes(rawMode)
       ? rawMode : (rawMode === "ai" ? "single" : "multi");
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit || "10"), 10) || 10));
+
+    /* 시즌 모드 — 현재 시즌(season) 또는 지난 시즌 아카이브(시즌id 지정) */
+    if (rawMode === "season" || rawMode === "seasonHistory") {
+      touchSeason();
+      const seasonId = String(req.query.seasonId || "");
+      let entries;
+      if (seasonId) {
+        const arch = seasonArchives.find(a => String(a.seasonId) === seasonId);
+        entries = arch ? arch.entries.map(e => ({ ...e })) : [];
+      } else {
+        entries = [...seasonBoard.entries.values()];
+      }
+      const seenNicks = new Set();
+      const rows = entries
+        .filter(r => {
+          const k = String(r.nickname || "").trim();
+          if (!k) return true;
+          if (seenNicks.has(k)) return false;
+          seenNicks.add(k);
+          return true;
+        })
+        .sort((a, b) => ((b.rating || 0) - (a.rating || 0)) || ((b.games || 0) - (a.games || 0)))
+        .slice(0, limit)
+        .map((r, i) => ({
+          id: r.id, nickname: r.nickname,
+          mode: seasonId ? "seasonHistory" : "season",
+          ranking: r.rating || 0, wins: r.wins || 0, losses: r.losses || 0,
+          money: 0, streak: r.streak || 0, bestStreak: r.bestStreak || 0,
+          games: r.games || 0, rank: i + 1,
+          tier: calculateRank(r.rating || 0)
+        }));
+      return res.json(rows);
+    }
+
     let rows = [];
     if (dbMode === "pg") {
       let sql;
@@ -1470,7 +1790,8 @@ io.on("connection", (socket) => {
 
   socket.emit("server:ready", {
     ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length,
-    maxPlayers: MAX_PLAYERS, turnTime: TURN_TIME, maxHearts: MAX_HEARTS
+    maxPlayers: MAX_PLAYERS, turnTime: TURN_TIME, maxHearts: MAX_HEARTS,
+    customApproved: customDict.approved.length, customPending: customDict.pending.length
   });
 
   socket.on("room:create", async (data) => {
@@ -1598,6 +1919,54 @@ io.on("connection", (socket) => {
     } catch (error) {
       console.error("room:join 오류:", error);
       socket.emit("room:error", { ok: false, reason: "방에 입장하지 못했습니다." });
+    }
+  });
+
+  /* -- 방 목록 브라우저 ---------------------------------- */
+  socket.on("room:list", () => {
+    try {
+      const rooms = [];
+      for (const room of ROOMS.values()) {
+        if (room.mode !== "online") continue;
+        if (room.started || room.finished) continue;
+        const humans = room.players.filter(p => !p.isBot);
+        if (humans.length >= MAX_PLAYERS) continue;
+        if (humans.some(p => p.socketId === socket.id)) continue;
+        rooms.push({
+          roomId: room.id,
+          host: room.players[0] ? room.players[0].nickname : "",
+          playerCount: humans.length,
+          max: MAX_PLAYERS,
+          createdAt: room.createdAt || 0
+        });
+      }
+      rooms.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+      socket.emit("room:list", { ok: true, rooms });
+    } catch (error) {
+      console.error("room:list 오류:", error);
+    }
+  });
+
+  socket.on("room:joinRandom", () => {
+    try {
+      const candidates = [];
+      for (const room of ROOMS.values()) {
+        if (room.mode !== "online") continue;
+        if (room.started || room.finished) continue;
+        const humans = room.players.filter(p => !p.isBot);
+        if (humans.length >= MAX_PLAYERS) continue;
+        if (humans.some(p => p.socketId === socket.id)) continue;
+        if (room.modeId === "ranked") continue;
+        candidates.push(room);
+      }
+      if (candidates.length === 0) {
+        socket.emit("room:joinRandom", { ok: false, reason: "현재 입장 가능한 방이 없습니다. 방을 만들어 보세요!" });
+        return;
+      }
+      const room = candidates[Math.floor(Math.random() * candidates.length)];
+      socket.emit("room:joinRandom", { ok: true, roomId: room.id, host: room.players[0] ? room.players[0].nickname : "" });
+    } catch (error) {
+      console.error("room:joinRandom 오류:", error);
     }
   });
 
@@ -2523,6 +2892,115 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("서브 관리자 비밀번호 오류:", err); }
   });
 
+  /* -- 커스텀 사전 — 유저 단어 신청 → 관리자 승인 시 게임 반영 -- */
+  socket.on("dictionary:status", async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const nickname = String(pd.nickname || "").trim();
+      const mine = customDict.pending
+        .filter(p => String(p.requester || "") === nickname)
+        .map(p => ({ id: p.id, word: p.word, at: p.at }));
+      socket.emit("dictionary:status", {
+        ok: true, mine, nickname,
+        approvedTotal: customDict.approved.length,
+        pendingTotal: customDict.pending.length,
+        canSubmit: mine.length < 3
+      });
+    } catch (err) { console.error("사전 상태 오류:", err); }
+  });
+
+  socket.on("dictionary:submit", async (data) => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const nickname = String(pd.nickname || "").trim();
+      if (!nickname) { socket.emit("dictionary:status", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
+      const word = normalizeWord(data?.word);
+      if (!word || word.length < 2 || word.length > 15) {
+        socket.emit("dictionary:status", { ok: false, reason: "단어는 한글 2~15자여야 합니다." }); return;
+      }
+      if (WORD_SET.has(word) || customDict.approved.includes(word)) {
+        socket.emit("dictionary:status", { ok: false, reason: `'${word}'는 이미 등록된 단어입니다.` }); return;
+      }
+      const mineCount = customDict.pending.filter(p => String(p.requester || "") === nickname).length;
+      if (mineCount >= 3) {
+        socket.emit("dictionary:status", { ok: false, reason: "진행 중인 신청이 3개 이상입니다. 처리 후 다시 시도해주세요." }); return;
+      }
+      if (customDict.pending.some(p => p.word === word)) {
+        socket.emit("dictionary:status", { ok: false, reason: `'${word}'는 이미 신청 대기 중인 단어입니다.` }); return;
+      }
+      if (customDict.pending.length >= 200) {
+        socket.emit("dictionary:status", { ok: false, reason: "승인 대기 목록이 꽉 찼습니다. 잠시 후 다시 시도해주세요." }); return;
+      }
+      customDict.pending.push({ id: String(customDict.nextId++), word, requester: nickname, at: Date.now() });
+      saveCustomDict();
+      socket.emit("dictionary:status", { ok: true, message: `'${word}' 등록을 신청했습니다. 관리자 승인 후 게임에 반영됩니다.` });
+      console.log(`[DICT] ${nickname} 단어 신청: ${word}`);
+    } catch (err) { console.error("사전 신청 오류:", err); }
+  });
+
+  socket.on("dictionary:cancel", async (data) => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const nickname = String(pd.nickname || "").trim();
+      const id = String(data?.id || "");
+      const idx = customDict.pending.findIndex(p => String(p.id) === id && String(p.requester || "") === nickname);
+      if (idx === -1) { socket.emit("dictionary:status", { ok: false, reason: "본인의 신청만 취소할 수 있습니다." }); return; }
+      customDict.pending.splice(idx, 1);
+      saveCustomDict();
+      socket.emit("dictionary:status", { ok: true, message: "단어 신청을 취소했습니다." });
+    } catch (err) { console.error("사전 신청 취소 오류:", err); }
+  });
+
+  const notifyRequester = (requester, msg) => {
+    const targetSocketId = onlineNicks.get(normKey(requester));
+    if (!targetSocketId) return;
+    const ts = io.sockets.sockets.get(targetSocketId);
+    if (ts) ts.emit("dictionary:status", { ok: true, message: msg, refreshed: true });
+  };
+
+  socket.on("admin:dictionaryList", async () => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:dictionary", { ok: false, reason: reg.reason }); return; }
+      socket.emit("admin:dictionary", { ok: true, pending: customDict.pending, approved: customDict.approved });
+    } catch (err) { console.error("관리자 사전 목록 오류:", err); }
+  });
+
+  socket.on("admin:dictionaryApprove", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:dictionary", { ok: false, reason: reg.reason }); return; }
+      const id = String(data?.id || "");
+      const idx = customDict.pending.findIndex(p => String(p.id) === id);
+      if (idx === -1) { socket.emit("admin:dictionary", { ok: false, reason: "승인 대기 신청을 찾을 수 없습니다." }); return; }
+      const [item] = customDict.pending.splice(idx, 1);
+      customDict.approved.push(item.word);
+      customDict.rejected = customDict.rejected.filter(r => r.word !== item.word);
+      saveCustomDict();
+      rebuildWordViews();
+      notifyRequester(item.requester, `'${item.word}' 단어가 승인되어 게임에 반영되었습니다!`);
+      socket.emit("admin:dictionary", { ok: true, pending: customDict.pending, approved: customDict.approved, message: `'${item.word}' 승인 완료` });
+      console.log(`[DICT] ${reg.nickname} 승인: ${item.word} (by ${item.requester})`);
+    } catch (err) { console.error("사전 승인 오류:", err); }
+  });
+
+  socket.on("admin:dictionaryReject", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:dictionary", { ok: false, reason: reg.reason }); return; }
+      const id = String(data?.id || "");
+      const idx = customDict.pending.findIndex(p => String(p.id) === id);
+      if (idx === -1) { socket.emit("admin:dictionary", { ok: false, reason: "승인 대기 신청을 찾을 수 없습니다." }); return; }
+      const [item] = customDict.pending.splice(idx, 1);
+      customDict.rejected.push({ word: item.word, by: item.requester, at: Date.now() });
+      if (customDict.rejected.length > 200) customDict.rejected.splice(0, customDict.rejected.length - 200);
+      saveCustomDict();
+      notifyRequester(item.requester, `'${item.word}' 단어 신청이 반려되었습니다.`);
+      socket.emit("admin:dictionary", { ok: true, pending: customDict.pending, approved: customDict.approved, message: `'${item.word}' 반려 완료` });
+      console.log(`[DICT] ${reg.nickname} 반려: ${item.word} (by ${item.requester})`);
+    } catch (err) { console.error("사전 반려 오류:", err); }
+  });
+
   /* 최고 관리자가 서브 관리자 계정의 비밀번호를 재설정 — 계정별 비밀번호를 직접 관리 */
   socket.on("admin:resetSubPassword", async (data) => {
     try {
@@ -2773,6 +3251,10 @@ initDatabase().then(() => {
   loadAdminConfig();
   loadFriends();
   loadBugReports();
+  loadCustomDict();
+  rebuildWordViews();
+  loadSeasonFiles();
+  touchSeason();
   server.listen(PORT, "0.0.0.0", () => {
     console.log("========================================");
     console.log(`끝말잇기 서버 실행 중: http://localhost:${PORT}`);

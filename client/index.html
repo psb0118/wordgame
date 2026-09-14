@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=15">
+  <link rel="stylesheet" href="style.css?v=18">
 </head>
 <body>
   <main class="wrap">
@@ -115,6 +115,18 @@
         <button id="join">방 참가</button>
         <label>초대할 닉네임<input id="onlineInviteInput" maxlength="12" placeholder="친구 닉네임" autocomplete="off"></label>
         <button id="onlineInviteBtn">초대</button>
+      </div>
+
+      <div class="room-browser-row">
+        <button id="roomBrowserBtn" class="wide secondary">🧭 방 목록 보기</button>
+        <button id="joinRandomBtn" class="wide secondary">🎲 랜덤 입장</button>
+      </div>
+      <div id="roomBrowser" class="room-browser hidden">
+        <div class="room-browser-head">
+          <span>입장 가능한 방</span>
+          <button id="roomRefreshBtn" class="room-browser-refresh">🔄 새로고침</button>
+        </div>
+        <div id="roomList" class="room-browser-list"><div class="room-browser-empty">새로고침을 눌러 방을 확인하세요.</div></div>
       </div>
 
       <div id="roomInfo" class="room"></div>
@@ -284,6 +296,7 @@
     <div class="side-rank-tabs">
       <button data-side-mode="multi" class="active">멀티</button>
       <button data-side-mode="ranked">랭크</button>
+      <button data-side-mode="season">시즌</button>
       <button data-side-mode="money">돈</button>
       <button data-side-mode="streak">연승</button>
     </div>
@@ -383,6 +396,16 @@
         <div class="acc-change-title">최근 10판 전적</div>
         <div id="recentGamesList" class="acc-recent-list"></div>
       </div>
+      <div id="dictBox" class="acc-change hidden">
+        <div class="acc-change-title">단어 등록 신청 (유저 신청 단어 → 관리자 승인)</div>
+        <div class="acc-row">
+          <input id="dictWordInput" maxlength="15" placeholder="등록 신청할 단어 (한글 2~15자)" autocomplete="off">
+          <button id="dictSubmitBtn" class="wide">신청</button>
+        </div>
+        <div class="acc-change-help">승인되면 게임 사전에 반영되어 같은 단어를 쓸 수 있습니다. 사전에 없는 새 단어만 신청할 수 있어요.</div>
+        <div id="dictMsg" class="friends-msg"></div>
+        <div id="dictMineList" class="acc-mission-list"></div>
+      </div>
       <div id="accTitleBox" class="acc-change hidden">
         <div class="acc-change-title">칭호 선택 (보유한 칭호를 클릭하면 게임과 리더보드에 표시됩니다)</div>
         <div id="accTitleList" class="acc-title-list"></div>
@@ -440,6 +463,6 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="script.js?v=15"></script>
+  <script src="script.js?v=18"></script>
 </body>
 </html>

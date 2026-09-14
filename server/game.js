@@ -782,9 +782,28 @@ function estimateAIVictoryProbability(currentWord, usedWords, WORD_INDEX, ATTACK
   return Math.max(2, Math.min(98, Math.round(p)));
 }
 
+/* 커스텀 사전(유저 등록 단어)을 배치에 합친 합성 뷰 반환 — baseSet/baseIndex는 그대로 두고,
+   새 검색 뷰만 만든다. 희귀(수시) 승인 시 호출하므로 성능 부담이 크지 않다 */
+function mergeCustomWords(baseSet, baseIndex, customWords) {
+  const mergedSet = new Set(baseSet);
+  const mergedIndex = new Map();
+  for (const [k, arr] of baseIndex) mergedIndex.set(k, arr.slice());
+  for (const raw of customWords || []) {
+    const word = normalizeWord(raw);
+    if (!word) continue;
+    if (mergedSet.has(word)) continue;
+    mergedSet.add(word);
+    const first = word[0];
+    if (!mergedIndex.has(first)) mergedIndex.set(first, []);
+    mergedIndex.get(first).push(word);
+  }
+  return { WORD_SET: mergedSet, WORD_INDEX: mergedIndex };
+}
+
 module.exports = {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
   loadData, hasWord, getAttackDepth, isAttackWord,
   getCandidates, isOneShot, getStartCandidates, chooseStartWord,
-  chooseAIWord, chooseAIStartWord, calculateRank, calculateElo
+  chooseAIWord, chooseAIStartWord, calculateRank, calculateElo,
+  mergeCustomWords
 };
