@@ -177,6 +177,7 @@ function loadData(dataDir, rootDir) {
   const ROOT_WORDS = new Set();
   const RARE_ROOT_WORDS = new Set();
   const DEFENSE_WORDS = new Set();
+  const DOLRIM_WORDS = new Set();
 
   const wordFile = findExistingFile([
     path.join(dataDir, "word.txt"),
@@ -300,6 +301,24 @@ function loadData(dataDir, rootDir) {
     console.log(`방어 단어 로딩 완료: ${DEFENSE_WORDS.size.toLocaleString()}개`);
   }
 
+  /* 돌림 단어 — 끝 음절로 되돌아와 순환시키는 회전 단어. AI가 유리할 때 활용하도록
+     전용 셋으로 로드한다. 라인 형식: `단어A, 단어B` (양쪽 모두 돌림 단어) */
+  const dolrimFile = findExistingFile([
+    path.join(dataDir, "끄글_돌림 단어_20260823005523.txt"),
+  ]);
+  if (dolrimFile) {
+    const text = fs.readFileSync(dolrimFile, "utf8");
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      for (const part of trimmed.split(",")) {
+        const nw = normalizeWord(part);
+        if (nw) DOLRIM_WORDS.add(nw);
+      }
+    }
+    console.log(`돌림 단어 로딩 완료: ${DOLRIM_WORDS.size.toLocaleString()}개`);
+  }
+
   WORD_INDEX.clear();
   for (const word of WORD_SET) {
     const first = word.at(0);
@@ -310,7 +329,7 @@ function loadData(dataDir, rootDir) {
 
   console.log(`단어 인덱스 생성 완료: ${WORD_INDEX.size}개 시작 글자`);
 
-  return { WORD_SET, ATTACK_DEPTH, WORD_INDEX, ROOT_WORDS, RARE_ROOT_WORDS, DEFENSE_WORDS };
+  return { WORD_SET, ATTACK_DEPTH, WORD_INDEX, ROOT_WORDS, RARE_ROOT_WORDS, DEFENSE_WORDS, DOLRIM_WORDS };
 }
 
 /* =========================================================
@@ -424,15 +443,18 @@ function chooseStartWord(usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
    - 우선순위:
      1. 희귀 루트 단어 (상대가 받아치기 어려운 시작)
      2. 루트 단어
-     3. 값 루트 단어 (~~값)
-     4. 일반 단어 (희귀한 끝 음절 우선)
+     3. 돌림 단어 (유리한 순환 흐름을 만드는 시작)
+     4. 값 루트 단어 (~~값)
+     5. 일반 단어 (희귀한 끝 음절 우선)
+   - 어떤 경우에도 방어 단어는 시작으로 절대 두지 않는다
 ========================================================= */
 
-function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS) {
+function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS) {
   const used = usedWords instanceof Set ? usedWords : new Set();
   const defenseSet = DEFENSE_WORDS || new Set();
   const rootSet = ROOT_WORDS || new Set();
   const rareRootSet = RARE_ROOT_WORDS || new Set();
+  const dolrimSet = DOLRIM_WORDS || new Set();
   const syllableF = normalizeWord(syllable);
   if (!syllableF) return null;
   const legal = [];
@@ -461,6 +483,17 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
     return pick(rootPool.slice(0, Math.min(3, rootPool.length)));
   }
 
+  /* 돌림 단어 — 루트가 없으면 돌림 단어로 유리한 순환 시작 (방어 표기와 겹쳐도 전용 셋) */
+  const dolrims = legal.filter(w => dolrimSet.has(normalizeWord(w)) && !normalizeWord(w).endsWith("값"));
+  if (dolrims.length > 0) {
+    const countLast = w => {
+      const bucket = WORD_INDEX.get(normalizeWord(w).at(-1));
+      return bucket ? bucket.length : 9999;
+    };
+    dolrims.sort((a, b) => countLast(a) - countLast(b));
+    return pick(dolrims.slice(0, Math.min(3, dolrims.length)));
+  }
+
   /* 값 루트 (~~값) */
   const values = legal.filter(w => normalizeWord(w).endsWith("값"));
   if (values.length > 0) return pick(values);
@@ -478,12 +511,17 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
 }
 
 /* =========================================================
-   강제 승리(유도) 탐색 — 뒤에 가능한 루트 단어가 적은 끝밭침으로
-   상대를 몰아 넣는 "끝물" 승리 라인을 찾는다
-   - isWinningMove : 이 단어를 지금 두면 내가 확정 승리인가
-   - canForceWin   : 지금 이 말에서 해당 차례가 확정 승리를 강제할 수 있는가
-   - 가지가 너무 넓으면(null) "증명 불가"로 판정해 빠르게 포기
+   강제 승리/패배 탐색 — 제한 깊이 네가맥스
+   solveWin(word, usedSet, depth, budget, WORD_INDEX, cap):
+   - word를 방금 두어 차례가 넘어온 상태에서, "이제 움직일 쪽"이
+     정확한 수뒤놓기로 이길 수 있는지(-1=움직일 쪽 패배, 1=움직일 쪽 승리, 0=증명 불가) 판정
+   - 가지가 너무 넓거나 깊이 예산을 넘으면 0(증명 불가) — 빠르게 포기
    - 공유 used Set을 add/delete로 재활용해 검색 속도를 확보
+   - AI가 수를 고를 때:
+       * 후보 w를 두고 상대 차례로 solveWin(w) = -1 → AI 강제 승리 수
+       * 후보 w를 두고 상대 차례로 solveWin(w) =  1 → AI가 지는(=상대가 이기는) 수
+     꾼처럼 2개뿐인 좁은 말밭에서는 상대의 응수가 1개뿐이므로 증명이 쉽게
+     열리고, AI는 그런 "확정 패배" 라인을 능동적으로 피하게 된다
 ========================================================= */
 
 const WIN_NODE_CAP = 12000;   /* 탐색 노드 예산 */
@@ -495,34 +533,19 @@ const WIN_BRANCH = 64;        /* 한 위치에서 고려할 최대 가지 수 */
 let _winBranch = WIN_BRANCH;
 let _winDepth = WIN_MAX_DEPTH;
 
-function canForceWin(word, usedSet, depth, budget, WORD_INDEX) {
-  if (depth > _winDepth) return null;
-  if (--budget.nodes < 0) return null;
-  usedSet.add(word);
+function solveWin(word, usedSet, depth, budget, WORD_INDEX) {
+  if (depth > _winDepth) return 0;
+  if (--budget.nodes < 0) return 0;
   const moves = getCandidates(word, usedSet, WORD_INDEX);
-  if (moves.length === 0) { usedSet.delete(word); return false; }
-  if (moves.length > _winBranch) { usedSet.delete(word); return null; }
+  if (moves.length === 0) return -1;             /* 움직일 쪽 수 없음 → 패배 */
+  if (moves.length > _winBranch) return 0;       /* 가지가 넓어 증명 불가 */
   for (const m of moves) {
-    const r = isWinningMove(m, usedSet, depth + 1, budget, WORD_INDEX);
-    if (r === true) { usedSet.delete(word); return true; }
-    if (r === null) { usedSet.delete(word); return null; }
+    usedSet.add(m);
+    const r = solveWin(m, usedSet, depth + 1, budget, WORD_INDEX);
+    usedSet.delete(m);
+    if (r !== 1) return r === -1 ? 1 : 0;        /* -1 → 상대 차례 패배 = 내 승리, 0 → 불가 */
   }
-  usedSet.delete(word);
-  return false;
-}
-
-function isWinningMove(m, usedSet, depth, budget, WORD_INDEX) {
-  usedSet.add(m);
-  const opp = getCandidates(m, usedSet, WORD_INDEX);
-  if (opp.length === 0) { usedSet.delete(m); return true; }
-  if (opp.length > _winBranch) { usedSet.delete(m); return null; }
-  for (const o of opp) {
-    const r = canForceWin(o, usedSet, depth + 1, budget, WORD_INDEX);
-    if (r === true) { usedSet.delete(m); return false; } /* 상대가 확정 승리 → 이 수는 승리 수 아님 */
-    if (r === null) { usedSet.delete(m); return null; }
-  }
-  usedSet.delete(m);
-  return true;
+  return -1;                                     /* 어느 수를 둬도 상대가 이김 → 패배 */
 }
 
 /* =========================================================
@@ -543,7 +566,7 @@ function isWinningMove(m, usedSet, depth, budget, WORD_INDEX) {
    - 상대가 이 단어를 받아친 뒤에도 AI가 이길 수 있는지 여러 수 먼저 내다본다
 ========================================================= */
 
-function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS, opts) {
+function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, opts) {
   const candidates = getCandidates(currentWord, usedWords, WORD_INDEX);
   if (!candidates.length) return null;
 
@@ -553,9 +576,10 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   const newUsed = new Set([...usedWords]);
   const defenseSet = DEFENSE_WORDS || new Set();
   const rareRootSet = RARE_ROOT_WORDS || new Set();
+  const dolrimSet = DOLRIM_WORDS || new Set();
 
-  const EVAL_CAP = 80;
-  const OPP_CAP = 12;
+  const EVAL_CAP = 220;
+  const OPP_CAP = 14;
   const OPP_PLY_CAP = 4;
 
   const lastChar = normalizeWord(currentWord).at(-1);
@@ -575,6 +599,7 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
       isRoot: !!(ROOT_WORDS && ROOT_WORDS.has(w)),
       isRareRoot: !!rareRootSet.has(w),
       isDefense: !!defenseSet.has(w),
+      isDolrim: !!dolrimSet.has(w),
       isValue: w.endsWith("값"),
       lastSyl,
       rarityCount
@@ -597,6 +622,7 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     let score = 0;
     if (info.isValue) score += 90;
     if (info.isRoot) score += 35;
+    if (info.isDolrim) score += 18; /* 돌림 단어 — 순환이나 상대 빗겨가기에 유리해 보너스 */
     /* 유도 보너스 — 끝밭침 뒤에 남은 단어가 적을수록 상대를 좁은 골목으로 몰아넣는다
        (꾼·늬처럼 남은 단어 1~2개뿐인 끝밭침이면 사실상 확정 승리 도미노) */
     if (info.rarityCount <= 2) score += 60;
@@ -643,10 +669,13 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   const wins = list.filter(i => i.nextCount === 0);
   if (wins.length) return pick(wins).w;
 
-  /* 2. 강제 승리(유도) 라인 — 뒤에 가능한 루트 단어가 적은 끝밭침(꾼·늬 등)으로
-        상대를 몰아 넣어 확정 승리까지 끌고 가는 수가 있으면 무조건 그 수를 둔다
-        (증명 불가한 넓은 지점은 빠르게 포기하고 기존 전략으로 내려감.
-         nextCount가 16 Cap으로 계산되므로 리스트가 너무 크면 스킵) */
+  /* 2. 승리/패배 증명 — 좁은 말밭(꾼·늬 등)에서 제한 네가맥스(canForceWin 품질 교체)로
+        (a) 상대 차례가 지는 수(내 강제 승리)가 있으면 무조건 그 수를 둔다
+        (b) 상대가 증명 가능하게 이기는 수(내 확정 패배)는 선택지에서 배제한다
+        넓은 지점은 빠르게 포기하고 기존 전략으로 내려간다. nextCount가 16 Cap이라
+        리스트가 너무 크면 스킵. */
+  const provenWins = [];
+  const provenLosses = new Set();
   if (list.length <= 160) {
     const winUsed = new Set(usedWords);
     const prevBranch = _winBranch;
@@ -657,14 +686,22 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
       for (const item of list) {
         const oppAll = getCandidates(item.w, winUsed, WORD_INDEX, strong ? 200 : WIN_BRANCH + 1);
         if (oppAll.length > (strong ? 200 : WIN_BRANCH)) continue; /* 상대 응수가 넓어 증명 불가 */
-        const r = isWinningMove(item.w, winUsed, 0, budget, WORD_INDEX);
-        if (r === true) return item.w;
+        winUsed.add(item.w);
+        const r = solveWin(item.w, winUsed, 0, budget, WORD_INDEX);
+        winUsed.delete(item.w);
+        if (r === -1) provenWins.push(item.w);      /* 상대 차례 패배 → 내 강제 승리 */
+        else if (r === 1) provenLosses.add(item.w); /* 상대 차례 승리 → 내 확정 패배 수 */
         if (budget.nodes <= 0) break;
       }
     } finally {
       _winBranch = prevBranch;
       _winDepth = prevDepth;
     }
+  }
+  if (provenWins.length) return pick(provenWins);
+  if (provenLosses.size) {
+    const safe = list.filter(i => !provenLosses.has(i.w));
+    if (safe.length) list = safe;
   }
 
   /* 3. 값 루트 — ~~값/값표/표준값. 받아치기 어려운 강력한 수 */
@@ -698,11 +735,18 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   const roots = list.filter(i => i.isRoot && !i.isRareRoot);
   if (roots.length) return pickFree(roots);
 
-  /* 6. 공격 단어 — 깊이 최저만 사용 */
+  /* 5-1. 돌림 단어 — 끝 음절로 되돌리는 회전 단어. 루트가 없으면 돌림 단어로
+         유리한 흐름을 만든다 (방어 파일의 '돌림' 표기와 겹쳐도 전용 셋이면 활용.
+         증명상의 확정 패배 수는 이미 위 리스트 필터에서 제외되어 있음) */
+  const dolrims = list.filter(i => i.isDolrim && !i.isRareRoot && !i.isValue);
+  if (dolrims.length) return bestFrom(dolrims);
+
+  /* 6. 공격 단어 — 공격 깊이 낮은 순 우선. 어려움은 최저 깊이만, 보통은 ±1 대역에서 다양하게 */
   const attacks = list.filter(i => i.isAttack);
   if (attacks.length) {
     const minDepth = Math.min(...attacks.map(i => i.depth));
-    return bestFrom(attacks.filter(i => i.depth === minDepth));
+    const depthBand = strong ? 0 : 1;
+    return bestFrom(attacks.filter(i => i.depth <= minDepth + depthBand));
   }
 
   /* 7. 일반(비방어) 단어 — 지지 않는 최선 */

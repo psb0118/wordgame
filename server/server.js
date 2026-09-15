@@ -145,7 +145,7 @@ const baseWordData = loadData(DATA_DIR, ROOT_DIR);
 let WORD_SET = baseWordData.WORD_SET;
 let WORD_INDEX = baseWordData.WORD_INDEX;
 const BASE_WORD_SET = baseWordData.WORD_SET;
-const { ATTACK_DEPTH, ROOT_WORDS, RARE_ROOT_WORDS, DEFENSE_WORDS } = baseWordData;
+const { ATTACK_DEPTH, ROOT_WORDS, RARE_ROOT_WORDS, DEFENSE_WORDS, DOLRIM_WORDS } = baseWordData;
 
 function rebuildWordViews() {
   const merged = mergeCustomWords(BASE_WORD_SET, baseWordData.WORD_INDEX, customDict.approved);
@@ -1904,12 +1904,18 @@ function runAI(room, gameSessionId) {
   const difficulty = room.difficulty || "normal";
   if (room.turnNumber === 0) {
     if (difficulty === "easy") {
-      /* 쉬움: 시작 음절에 맞는 안전한 단어를 무작위로 — 희귀 루트/공격·한방 단어를 노리지 않음 */
+      /* 쉬움: 시작 음절에 맞는 안전한 단어를 무작위로 — 희귀 루트/공격·한방 단어를 노리지 않고
+         방어 단어는 절대 시작하지 않는다. 돌림 단어면 그것을 우선한다 */
       const legal = getCandidates(room.startSyllable || "", room.usedWords, WORD_INDEX)
-        .filter(w => w.startsWith(room.startSyllable) && !isAttackWord(w, ATTACK_DEPTH) && !isOneShot(w, room.usedWords, WORD_INDEX));
-      word = legal.length > 0 ? legal[Math.floor(Math.random() * legal.length)] : null;
+        .filter(w => w.startsWith(room.startSyllable)
+          && !isAttackWord(w, ATTACK_DEPTH)
+          && !isOneShot(w, room.usedWords, WORD_INDEX)
+          && !DEFENSE_WORDS.has(w));
+      const dolrimStart = legal.filter(w => DOLRIM_WORDS.has(w));
+      const pool = dolrimStart.length > 0 ? dolrimStart : legal;
+      word = pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : null;
     } else {
-      word = chooseAIStartWord(room.startSyllable || "", room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS);
+      word = chooseAIStartWord(room.startSyllable || "", room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS);
     }
   } else {
     if (difficulty === "easy") {
@@ -1925,7 +1931,7 @@ function runAI(room, gameSessionId) {
       }
     } else {
       /* 보통: 기존 최강 전략. 어려움: 강제 승리 탐색을 더 넓게/깊게 하고 최선의 수에 가깝게 결정 */
-      word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS, difficulty === "hard" ? { strong: true } : undefined);
+      word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, difficulty === "hard" ? { strong: true } : undefined);
     }
   }
 
@@ -1945,7 +1951,7 @@ function runAI(room, gameSessionId) {
       /* 이미 시도한 단어를 피해 다른 시작 단어로 재시도 */
       const blocked = new Set(room.usedWords);
       blocked.add(word);
-      const retry = chooseAIStartWord(room.startSyllable || "", blocked, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS);
+      const retry = chooseAIStartWord(room.startSyllable || "", blocked, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS);
       if (retry) playWord(room, player, retry, gameSessionId);
     } else {
       const fallbackPool = getCandidates(room.currentWord || "", room.usedWords, WORD_INDEX)
