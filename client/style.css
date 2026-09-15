@@ -1468,6 +1468,42 @@ button:disabled {
   display: none;
 }
 
+.friends-req-badge {
+  display: inline-block;
+  min-width: 18px;
+  height: 18px;
+  line-height: 18px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 800;
+  animation: pulse-soft 1.6s ease-in-out infinite;
+}
+
+.friends-req-badge.hidden {
+  display: none;
+}
+
+@keyframes pulse-soft {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
+}
+
+.friends-req-title {
+  font-size: 0.74rem;
+  font-weight: 800;
+  color: #f59e0b;
+  margin: 2px 0 4px;
+  padding-top: 4px;
+}
+
+.friend-row.req {
+  background: rgba(251, 191, 36, 0.08);
+}
+
 .friends-panel {
   position: absolute;
   top: 46px;
@@ -1757,6 +1793,13 @@ button:disabled {
   color: var(--accent-2);
 }
 
+.acc-wl {
+  margin-left: 8px;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
 .acc-change {
   border-top: 1px dashed var(--border);
   margin-top: 8px;
@@ -1970,6 +2013,23 @@ button:active:not(:disabled) {
   line-height: normal;
 }
 .sound-chip:hover { background: rgba(148, 163, 184, 0.3); }
+
+/* 일일 미션 미니 칩 (머니바) */
+.mission-mini {
+  margin-left: 6px;
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  color: #a7f3d0;
+  line-height: normal;
+}
+.mission-mini b {
+  color: #6ee7b7;
+}
+.mission-mini:hover { background: rgba(16, 185, 129, 0.28); }
 
 /* AI 승률 바 */
 .ai-winrate {
@@ -2216,6 +2276,31 @@ button:active:not(:disabled) {
 .shop-bug {
   text-align: center;
   padding-top: 10px;
+}
+
+/* 상점 하단 — 단어 신청 (버그 제보와 함께 지원 메뉴) */
+.shop-support {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.6);
+}
+.shop-support .admin-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.shop-support .admin-text {
+  flex: 1;
+  min-width: 0;
+}
+.shop-support .word-my-list {
+  margin-top: 8px;
+  font-size: 0.8rem;
+}
+.shop-support .word-my-list .room-list-status {
+  font-size: 0.78rem;
 }
 
 /* 랭크 상세 패널 (래랭크 매칭) */

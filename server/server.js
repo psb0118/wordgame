@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const http = require("http");
 const fs = require("fs");
@@ -51,7 +51,20 @@ const HINTS_PER_GAME = 5;
 
 let adminPassword = null;
 let subAdmins = [];
+let watchNicks = [];
 const ADMIN_NICKNAME = "blossomlng_0";
+/* 기다림 없이 연결이 끊겼을 때 패배 처리까지 유예하는 시간 (온라인·랭크 재접속용) */
+const RECONNECT_GRACE_MS = 30000;
+/* 연결이 끊긴 진행 중 게임 — socketId -> { roomId, nickname, timer } */
+const disconnectedPlayers = new Map();
+
+function notifySuperAdmins(payload) {
+  for (const [sid, authed] of adminAuthed) {
+    if (authed && authed.role === "super" && io.sockets.sockets.has(sid)) {
+      io.to(sid).emit("admin:loginNotice", payload);
+    }
+  }
+}
 /* 접속 중인 소켓이 관리자 계정(닉네임+비밀번호) 인증을 통과했는지 — 닉네임만으로 관리자가 되지 못하게 함 */
 const adminAuthed = new Map();
 const adminConfigPath = path.join(DATA_DIR, "admin-config.json");
@@ -98,7 +111,7 @@ function applyConfigValue(key, raw) {
 
 function saveAdminConfig() {
   try {
-    fs.writeFileSync(adminConfigPath, JSON.stringify({ adminPassword, subAdmins, config: getConfig() }, null, 2));
+    fs.writeFileSync(adminConfigPath, JSON.stringify({ adminPassword, subAdmins, watchlist: watchNicks, config: getConfig() }, null, 2));
   } catch (e) { console.warn("관리자 설정 저장 실패:", e.message); }
 }
 
@@ -108,10 +121,12 @@ function loadAdminConfig() {
       const data = JSON.parse(fs.readFileSync(adminConfigPath, "utf8"));
       if (typeof data.adminPassword === "string" && data.adminPassword) adminPassword = data.adminPassword;
       if (Array.isArray(data.subAdmins)) {
+        /* 관리자는 닉네임 이름으로만 등록 — 계정 비밀번호는 본인이 계정 탭에서 설정/변경한다 */
         subAdmins = data.subAdmins
-          .filter(s => s && String(s.nickname || "").trim() && String(s.password || "").length >= 4)
-          .map(s => ({ nickname: String(s.nickname).trim(), password: String(s.password) }));
+          .filter(s => s && String(s.nickname || "").trim())
+          .map(s => ({ nickname: String(s.nickname).trim(), password: String(s.password || "") }));
       }
+      if (Array.isArray(data.watchlist)) watchNicks = data.watchlist.map(w => String(w || "").trim()).filter(Boolean);
       const c = data.config || {};
       for (const key of Object.keys(CONFIG_RANGES)) {
         if (typeof c[key] === "number") applyConfigValue(key, c[key]);
@@ -217,12 +232,70 @@ let dbMode = null;
 const playerCache = new Map();
 const jsonPath = path.join(ROOT_DIR, "player-data.json");
 
+/* 실사용자 이름이 없는 레코드(소켓 ID 키 + '플레이어' 닉네임)는 고스트로 분류 —
+   랭킹/리더보드에서 제외하고, 계정을 만들면 사라진다 */
+function isGhostRecord(p) {
+  const n = String(p?.nickname || "").trim();
+  return !(n.length > 0 && normKey(n) !== normKey("플레이어"));
+}
+
+/* 같은 닉네임(단일 계정) 레코드 2개를 하나로 병합 — 과거 소켓 ID 기준 저장 데이터 정규화용 */
+function mergePlayerRecords(a, b) {
+  const sumMode = (x, y) => ({
+    rating: Math.max(Number(x?.rating) || 1000, Number(y?.rating) || 1000),
+    wins: (Number(x?.wins) || 0) + (Number(y?.wins) || 0),
+    losses: (Number(x?.losses) || 0) + (Number(y?.losses) || 0)
+  });
+  const ra = a.ranked || {}, rb = b.ranked || {};
+  const titles = [...(Array.isArray(a.titles) ? a.titles : []), ...(Array.isArray(b.titles) ? b.titles : [])]
+    .filter(t => t && typeof t === "object" && t.id)
+    .filter((t, i, arr) => arr.findIndex(x => x.id === t.id) === i);
+  const realNickA = !isGhostRecord(a) ? a.nickname : "";
+  const realNickB = !isGhostRecord(b) ? b.nickname : "";
+  const merged = Object.assign({}, a, b);
+  merged.id = normKey(String(realNickB || realNickA || "").trim());
+  merged.nickname = realNickB || realNickA || "플레이어";
+  merged.single = sumMode(a.single, b.single);
+  merged.multi = sumMode(a.multi, b.multi);
+  merged.ranked = {
+    rating: Math.max(Number(ra.rating) || 1000, Number(rb.rating) || 1000),
+    wins: (Number(ra.wins) || 0) + (Number(rb.wins) || 0),
+    losses: (Number(ra.losses) || 0) + (Number(rb.losses) || 0),
+    streak: Math.max(Number(ra.streak) || 0, Number(rb.streak) || 0),
+    bestStreak: Math.max(Number(ra.bestStreak) || 0, Number(rb.bestStreak) || 0)
+  };
+  merged.money = Math.max(Number(a.money) || 0, Number(b.money) || 0);
+  merged.moneyMultiplier = Math.max(Number(a.moneyMultiplier) || 1, Number(b.moneyMultiplier) || 1);
+  merged.ratingBoostGames = Math.max(Number(a.ratingBoostGames) || 0, Number(b.ratingBoostGames) || 0);
+  merged.titles = titles;
+  merged.currentTitle = b.currentTitle || a.currentTitle || "";
+  merged.attendanceStreak = Math.max(Number(a.attendanceStreak) || 0, Number(b.attendanceStreak) || 0);
+  merged.lastCheckDate = b.lastCheckDate || a.lastCheckDate || "";
+  const ra2 = Array.isArray(a.recentGames) ? a.recentGames : [];
+  const rb2 = Array.isArray(b.recentGames) ? b.recentGames : [];
+  merged.recentGames = rb2.length >= ra2.length ? rb2 : ra2;
+  merged.daily = b.daily || a.daily || {};
+  merged.season = b.season || a.season || null;
+  return migratePlayerData(merged);
+}
+
 function loadJsonDb() {
   try {
     if (fs.existsSync(jsonPath)) {
       const data = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
-      for (const [k, v] of Object.entries(data)) playerCache.set(k, v);
-      console.log(`JSON DB 로드: ${playerCache.size}명`);
+      const merged = new Map();
+      let ghosts = 0;
+      for (const [k, v] of Object.entries(data)) {
+        if (!v || typeof v !== "object") continue;
+        if (isGhostRecord(v)) { merged.set(k, migratePlayerData(v)); ghosts++; continue; }
+        const nk = normKey(String(v.nickname || "").trim());
+        const existing = merged.get(nk);
+        merged.set(nk, existing ? mergePlayerRecords(existing, v) : migratePlayerData(v));
+      }
+      playerCache.clear();
+      for (const [k, v] of merged) playerCache.set(k, v);
+      console.log(`JSON DB 로드: ${playerCache.size}명 (닉네임 단일 계정, 고스트 ${ghosts}개)`);
+      saveJsonDb();
     }
   } catch (e) { console.warn("JSON DB 로드 실패:", e.message); }
 }
@@ -232,6 +305,7 @@ function loadJsonDb() {
 ========================================================= */
 const friendsJsonPath = path.join(DATA_DIR, "friends.json");
 const friendsMap = new Map();            /* 정규화 닉네임 -> Set<정규화 닉네임> */
+const friendRequests = new Map();        /* 신청한 쪽 정규화 닉네임 -> Set<받는 쪽 정규화 닉네임> */
 const onlineNicks = new Map();           /* 정규화 닉네임 -> socketId(접속 중) */
 const socketNicks = new Map();           /* socketId -> 등록된 닉네임 (닉네임 재적용 전 새 소켓 구분) */
 const normKey = (nick) => String(nick || "").replace(/\s+/g, "").toLowerCase();
@@ -241,9 +315,19 @@ function loadFriends() {
     if (fs.existsSync(friendsJsonPath)) {
       const data = JSON.parse(fs.readFileSync(friendsJsonPath, "utf8"));
       for (const [k, arr] of Object.entries(data)) {
+        if (!Array.isArray(arr)) continue;
+        if (k === "_requests") {
+          for (const [from, to] of arr) {
+            const f = normKey(from), t = normKey(to);
+            if (!f || !t) continue;
+            if (!friendRequests.has(f)) friendRequests.set(f, new Set());
+            friendRequests.get(f).add(t);
+          }
+          continue;
+        }
         friendsMap.set(normKey(k), new Set((arr || []).map(f => normKey(f))));
       }
-      console.log(`친구 데이터 로드: ${friendsMap.size}명`);
+      console.log(`친구 데이터 로드: 친구 ${friendsMap.size}명, 대기 신청 ${friendRequests.size}명`);
     }
   } catch (e) { console.warn("친구 데이터 로드 실패:", e.message); }
 }
@@ -251,7 +335,10 @@ function loadFriends() {
 function saveFriends() {
   try {
     const obj = {};
-    for (const [k, set] of friendsMap) obj[k] = [...set];
+    for (const [k, set] of friendsMap) if (set.size) obj[k] = [...set];
+    const reqs = [];
+    for (const [from, set] of friendRequests) for (const to of set) reqs.push([from, to]);
+    if (reqs.length) obj["_requests"] = reqs;
     fs.writeFileSync(friendsJsonPath, JSON.stringify(obj, null, 2));
   } catch (e) { console.warn("친구 데이터 저장 실패:", e.message); }
 }
@@ -276,6 +363,16 @@ function nicknameKnown(nickname) {
     if (normKey(p?.nickname) === key) return true;
   }
   return false;
+}
+
+/* 정규화 키 → 실제 표시 닉네임 (케이스 보존). 기록이 없으면 원래 키 그대로 반환 */
+function nicknameDisplay(key) {
+  const k = normKey(key);
+  if (!k) return key || "";
+  for (const p of playerCache.values()) {
+    if (p && p.nickname && normKey(p.nickname) === k) return p.nickname;
+  }
+  return key || "";
 }
 
 function saveJsonDb() {
@@ -389,11 +486,19 @@ function migratePlayerData(p) {
   return p;
 }
 
+/* 소켓 ID를 닉네임 정규화 키로 변환 — 닉네임이 곧 계정 키다.
+   닉네임 미설정 소켓은 원래 ID를 그대로 쓴다(고스트로는 영속되지 않는다). */
+function resolvePlayerId(playerId) {
+  const nm = socketNicks.get(playerId);
+  return nm ? normKey(nm) : playerId;
+}
+
 async function getPlayerData(playerId) {
-  if (playerCache.has(playerId)) return migratePlayerData({ ...playerCache.get(playerId) });
+  const key = resolvePlayerId(playerId);
+  if (playerCache.has(key)) return migratePlayerData({ ...playerCache.get(key) });
   if (dbMode === "pg") {
     try {
-      const result = await dbPool.query("SELECT * FROM players WHERE id = $1", [playerId]);
+      const result = await dbPool.query("SELECT * FROM players WHERE id = $1", [key]);
       if (result.rows.length > 0) {
         const row = result.rows[0];
         const data = {
@@ -414,18 +519,25 @@ async function getPlayerData(playerId) {
           season: (() => { try { const v = JSON.parse(row.season || "null"); return v && typeof v === "object" ? v : null; } catch { return null; } })()
         };
         const migrated = migratePlayerData(data);
-        playerCache.set(playerId, migrated);
+        playerCache.set(key, migrated);
         return { ...migrated };
       }
     } catch (err) { console.error("DB 읽기 오류:", err.message); }
   }
-  const defaultData = migratePlayerData({ id: playerId, nickname: "플레이어" });
-  playerCache.set(playerId, defaultData);
+  /* 이름 없는 소켓 기본값 — 고스트를 캐시에 쌓지 않는다 (랭킹 초기화/중복의 원인이었음) */
+  const defaultData = migratePlayerData({ id: key, nickname: "플레이어" });
   return { ...defaultData };
 }
 
 async function savePlayerData(playerId, data) {
   const safe = migratePlayerData(data);
+  const nk = normKey(String(safe.nickname || "").trim());
+  const hasRealNick = nk.length > 0 && nk !== normKey("플레이어");
+  /* 저장 키는 닉네임(계정) 키를 우선 — 소켓 ID와 무관하게 한 명당 한 레코드 */
+  let key = hasRealNick ? nk : (socketNicks.has(playerId) ? normKey(socketNicks.get(playerId)) : playerId);
+  safe.id = key;
+  if (key !== playerId && playerCache.has(playerId)) playerCache.delete(playerId);
+  if (!hasRealNick) return;   /* 이름 없는 고스트 소켓은 영속하지 않는다 */
   const num = (v, fallback) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };
   const rankedStreak = Math.max(0, Math.floor(num(data.ranked && data.ranked.streak, 0)));
   const rankedBestStreak = Math.max(0, Math.floor(num(data.ranked && data.ranked.bestStreak, 0)));
@@ -448,7 +560,7 @@ async function savePlayerData(playerId, data) {
   safe.attendanceStreak = Math.max(0, Math.floor(num(safe.attendanceStreak, 0)));
   safe.recentGames = Array.isArray(safe.recentGames) ? safe.recentGames.slice(-10).filter(g => g && typeof g === "object") : [];
   safe.daily = initDailyData(safe.daily, getKstDate());
-  playerCache.set(playerId, safe);
+  playerCache.set(key, safe);
   if (dbMode === "pg") {
     try {
       await dbPool.query(`
@@ -468,7 +580,7 @@ async function savePlayerData(playerId, data) {
           titles=$17, current_title=$18, last_check_date=$19, attendance_streak=$20,
           recent_games=$21, daily=$22, season=$23, updated_at=NOW()
       `, [
-        playerId, safe.nickname || "플레이어",
+        key, safe.nickname || "플레이어",
         safe.multi.rating, safe.multi.wins, safe.multi.losses,
         safe.single.rating, safe.single.wins, safe.single.losses,
         safe.ranked.rating, safe.ranked.wins, safe.ranked.losses,
@@ -483,6 +595,25 @@ async function savePlayerData(playerId, data) {
   } else {
     saveJsonDb();
   }
+}
+
+function updateSingleResult(playerId, won) {
+  return (async () => {
+    const pd = await getPlayerData(playerId);
+    if (won) pd.single.wins = (pd.single.wins || 0) + 1;
+    else pd.single.losses = (pd.single.losses || 0) + 1;
+    const r = Number(pd.single.rating) || 1000;
+    const expected = 1 / (1 + Math.pow(10, (1000 - r) / 400));
+    const next = Math.round(r + 32 * ((won ? 1 : 0) - expected));
+    pd.single.rating = Number.isFinite(next) ? next : 1000;
+    await savePlayerData(playerId, pd);
+    const s = io.sockets.sockets.get(playerId);
+    if (s) s.emit("player:ranking", {
+      ...pd,
+      single: { ...pd.single, rank: calculateRank(pd.single.rating) }
+    });
+    return pd;
+  })();
 }
 
 async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mode = "multi", opts = {}) {
@@ -976,11 +1107,11 @@ async function listAllPlayers() {
 }
 
 function seasonRewardFor(rank) {
-  if (rank === 1) return { amount: 500000, title: SEA_TITLE };
-  if (rank <= 3) return { amount: 200000 };
-  if (rank <= 10) return { amount: 50000 };
-  if (rank <= 50) return { amount: 10000 };
-  return { amount: 1000 };
+  if (rank === 1) return { amount: 1000000, title: SEA_TITLE };
+  if (rank <= 3) return { amount: 500000 };
+  if (rank <= 10) return { amount: 150000 };
+  if (rank <= 50) return { amount: 30000 };
+  return { amount: 2000 };
 }
 
 /* 종료된 시즌 집계 → 보상 지급 → 전 시즌 기록 저장 */
@@ -1276,10 +1407,10 @@ function getPlayerBySocket(room, socketId) {
   return room.players.find(p => p.socketId === socketId) || null;
 }
 
-/* 플레이어가 장착 중인 칭호 — 저장된 계정 데이터에서 조회 */
+/* 플레이어가 장착 중인 칭호 — 저장된 계정 데이터에서 조회 (소켓 ID → 닉네임 키) */
 function playerTitle(player) {
   if (!player || player.isBot) return "";
-  return (playerCache.get(player.id)?.currentTitle) || "";
+  return (playerCache.get(resolvePlayerId(player.id))?.currentTitle) || "";
 }
 
 function getPlayerByIndex(room, index) {
@@ -1362,7 +1493,7 @@ function getPublicRoomState(room) {
       const o = {};
       for (const p of room.players) {
         if (p.isBot) continue;
-        const d = playerCache.get(p.id);
+        const d = playerCache.get(resolvePlayerId(p.id));
         if (d && d.ranked && typeof d.ranked.rating === "number") o[p.playerIndex] = d.ranked.rating;
       }
       return o;
@@ -1531,6 +1662,14 @@ async function finishGame(room, winnerIndex, loserIndex) {
   } else {
     /* 레이팅 미반영 경기(AI/싱글, 방장 이탈 등)는 즉시 전적 기록 */
     recordMatchHistory(room, winnerIndex, loserIndex).catch(err => console.error("전적 기록 오류:", err.message));
+    /* 싱글(AI) — 인간 플레이어의 승/패와 레이팅을 서버에 누적 (계정 통계 3모드 통일) */
+    if (room.mode === "ai" && winnerIndex !== null) {
+      const human = room.players.find(p => !p.isBot);
+      if (human && human.playerIndex !== undefined) {
+        updateSingleResult(human.id, human.playerIndex === winnerIndex)
+          .catch(err => console.error("싱글 레이팅 반영 오류:", err.message));
+      }
+    }
   }
 
   /* 방장이 탈락/이탈했으면 생존자에게 방장 이전 (재시작 데드락 방지) */
@@ -1714,14 +1853,6 @@ function playWord(room, player, rawWord, gameSessionId) {
     loserPlayer.eliminated = loserPlayer.hearts <= 0;
     if (loserPlayer.eliminated) loserPlayer.hearts = 0;
     loserPlayer.alive = !loserPlayer.eliminated;
-
-    /* 랭크 전용: 중간에 한방단어로 매치가 끝나지 않도록
-       마지막 하트라도 1개로 복구하고 새 라운드로 이어간다 */
-    if (room.mode === "ranked" && loserPlayer.eliminated) {
-      loserPlayer.eliminated = false;
-      loserPlayer.hearts = 1;
-      loserPlayer.alive = true;
-    }
 
     io.to(room.id).emit("game:oneshot", {
       word, killer: player.playerIndex, killerNickname: player.nickname,
@@ -2013,11 +2144,12 @@ app.get("/api/leaderboard", async (req, res) => {
         }));
     }
     /* 같은 닉네임(같은 계정)이 좀비 레코드 때문에 중복 집계되는 것을 방지.
-       정렬은 위에서 끝났으므로 닉네임당 첫 번째(최고 순위) 레코드만 남긴다. */
+       정렬은 위에서 끝났으므로 닉네임당 첫 번째(최고 순위) 레코드만 남긴다.
+       이름 없는 고스트('플레이어' 등)는 리더보드에서 제외한다. */
     const seenNicks = new Set();
     rows = rows.filter(r => {
       const k = String(r.nickname || "").trim();
-      if (!k) return true;
+      if (!k || !normKey(k) || normKey(k) === normKey("플레이어")) return false;
       if (seenNicks.has(k)) return false;
       seenNicks.add(k);
       return true;
@@ -2109,6 +2241,32 @@ io.on("connection", (socket) => {
         socket.data.playerIndex = existing.playerIndex;
         socket.data.playerId = socket.id;
         socket.emit("room:joined", { ok: true, roomId: room.id, playerIndex: existing.playerIndex, reconnect: true, waiting: existing.waiting, state: getPublicRoomState(room) });
+        broadcastRoomState(room);
+        return;
+      }
+
+      /* 연결이 끊긴 플레이어를 같은 닉네임(새 소켓)으로 복귀 — 30초 유예 안에 오면
+         게임이 이어진다. 이전 소켓의 유예 타이머를 해제하고 자리를 대체한다. */
+      const reconnected = room.players.find(p => !p.isBot && !p.connected && normKey(p.nickname) === normKey(nickname));
+      if (reconnected) {
+        const oldId = reconnected.socketId;
+        reconnected.socketId = socket.id;
+        reconnected.id = socket.id;
+        reconnected.connected = true;
+        socket.join(room.id);
+        socket.data.roomId = room.id;
+        socket.data.playerIndex = reconnected.playerIndex;
+        socket.data.playerId = socket.id;
+        registerOnline(socket.id, nickname);
+        const prev = disconnectedPlayers.get(oldId);
+        if (prev) { clearTimeout(prev.timer); disconnectedPlayers.delete(oldId); }
+        disconnectedPlayers.delete(socket.id);
+        if (room.started && !room.finished) {
+          stopTurnTimer(room);
+          startTurnTimer(room, room.gameSessionId);
+        }
+        socket.emit("room:joined", { ok: true, roomId: room.id, playerIndex: reconnected.playerIndex, reconnect: true, waiting: reconnected.waiting, state: getPublicRoomState(room) });
+        io.to(room.id).emit("room:playerJoined", { playerIndex: reconnected.playerIndex, nickname, reconnect: true, state: getPublicRoomState(room) });
         broadcastRoomState(room);
         return;
       }
@@ -2543,7 +2701,16 @@ io.on("connection", (socket) => {
     cancelRankedInvitesFor(socket.id);
     removeFromRankedQueue(socket.id);
     broadcastRankedQueue();
+    const hadNick = socketNicks.has(socket.id);
     unregisterOnline(socket.id);
+    /* 이름 없이 접속했다 끊긴 고스트 레코드 정리 — 랭킹이 '플레이어'로 오염되는 것 방지 */
+    if (!hadNick && playerCache.has(socket.id)) {
+      const ghost = playerCache.get(socket.id);
+      if (isGhostRecord(ghost)) {
+        playerCache.delete(socket.id);
+        if (dbMode !== "pg") saveJsonDb();
+      }
+    }
     const room = getPlayerRoom(socket);
     if (!room) return;
     const player = getPlayerBySocket(room, socket.id);
@@ -2556,6 +2723,26 @@ io.on("connection", (socket) => {
           /* 싱글(AI) 방은 재접속 의미가 없으므로 즉시 정리 — 좀비 방 방지 */
           stopTurnTimer(room);
           ROOMS.delete(room.id);
+        } else {
+          /* 온라인·랭크 — 30초 안에 같은 닉네임으로 재접속하면 게임이 그대로 이어진다.
+             재접속이 없으면 유예가 끝난 뒤 퇴장(=패배)으로 처리한다 */
+          stopTurnTimer(room);
+          room.turnStartedAt = null;
+          room.turnEndsAt = null;
+          const prev = disconnectedPlayers.get(socket.id);
+          if (prev) clearTimeout(prev.timer);
+          const timer = setTimeout(() => {
+            disconnectedPlayers.delete(socket.id);
+            const r2 = ROOMS.get(room.id);
+            if (!r2 || r2.finished || r2.mode === "ai") return;
+            const p2 = getPlayerBySocket(r2, socket.id);
+            if (!p2 || p2.connected) return;
+            removePlayer(r2, socket.id, "disconnect");
+            const realConnected = r2.players.filter(x => !x.isBot && x.connected);
+            if (realConnected.length === 0) { stopTurnTimer(r2); ROOMS.delete(r2.id); }
+            broadcastRoomState(r2);
+          }, RECONNECT_GRACE_MS);
+          disconnectedPlayers.set(socket.id, { roomId: room.id, nickname: player.nickname || "", timer });
         }
       } else {
         removePlayer(room, socket.id, "disconnect");
@@ -3082,6 +3269,9 @@ io.on("connection", (socket) => {
 
   socket.on("player:getRanking", async () => {
     try {
+      /* setName 등록이 아직 안 끝난 새 소켓에서 오면 초기(0) 화면이 잠깐 보일 수 있다.
+         닉네임이 등록될 때까지 잠깐 기다렸다가 진짜 계정 데이터를 보낸다 */
+      if (!socketNicks.has(socket.id)) await new Promise(r => setTimeout(r, 500));
       socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("랭킹 조회 오류:", err); }
   });
@@ -3160,7 +3350,8 @@ io.on("connection", (socket) => {
         hasPassword: !!adminPassword,
         subAdmins: subAdmins.map(s => s.nickname),
         config: getConfig(),
-        startSyllables: STARTING_SYLLABLES
+        startSyllables: STARTING_SYLLABLES,
+        watchlist: watchNicks
       });
     } catch (err) { console.error("관리자 패널 오류:", err); }
   });
@@ -3258,9 +3449,10 @@ io.on("connection", (socket) => {
       adminPassword = next;
       saveAdminConfig();
       socket.emit("admin:panel", {
-        ok: true, hasPassword: true,
-        message: adminPassword ? "비밀번호가 변경되었습니다." : "비밀번호가 설정되었습니다.",
-        config: getConfig()
+        ok: true, role: reg.role, isSuper: true, hasPassword: true,
+        subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
+        startSyllables: STARTING_SYLLABLES, watchlist: watchNicks,
+        message: adminPassword ? "비밀번호가 변경되었습니다." : "비밀번호가 설정되었습니다."
       });
     } catch (err) { console.error("관리자 비밀번호 오류:", err); }
   });
@@ -3324,26 +3516,16 @@ io.on("connection", (socket) => {
         socket.emit("admin:panel", { ok: false, reason: "이미 등록된 서브 관리자입니다." });
         return;
       }
-      /* 닉네임만 입력하면 관리자로 추가 — 계정 비밀번호가 없으면 자동 발급 */
-      let generatedPassword = null;
-      if (!password) {
-        const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
-        password = "";
-        for (let i = 0; i < 8; i++) password += chars[Math.floor(Math.random() * chars.length)];
-        generatedPassword = password;
-      }
+      /* 닉네임으로만 등록 — 비밀번호는 해당 관리자가 계정 탭에서 직접 설정/변경 */
       subAdmins.push({ nickname, password });
       saveAdminConfig();
       socket.emit("admin:panel", {
         ok: true, role: reg.role, isSuper: true, hasPassword: !!adminPassword,
         subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
-        startSyllables: STARTING_SYLLABLES,
-        generatedPassword,
-        message: generatedPassword
-          ? `'${nickname}' 관리자를 추가했습니다. 계정 비밀번호: ${generatedPassword} (이 비밀번호를 ${nickname}님에게 알려주세요)`
-          : `'${nickname}' 관리자를 추가했습니다.`
+        startSyllables: STARTING_SYLLABLES, watchlist: watchNicks,
+        message: `'${nickname}' 님을 관리자로 추가했습니다. 계정 비밀번호는 '${nickname}'님이 계정 탭에서 직접 설정/변경할 수 있습니다.`
       });
-      console.log(`[ADMIN] ${reg.nickname}님이 서브 관리자 '${nickname}' 추가(비밀번호 ${generatedPassword ? "자동 발급" : "지정"})`);
+      console.log(`[ADMIN] ${reg.nickname}님이 서브 관리자 '${nickname}' 추가`);
     } catch (err) { console.error("관리자 추가 오류:", err); }
   });
 
@@ -3370,7 +3552,8 @@ io.on("connection", (socket) => {
       socket.emit("admin:panel", {
         ok: true, role: reg.role, isSuper: true, hasPassword: !!adminPassword,
         subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
-        startSyllables: STARTING_SYLLABLES, message: `'${nickname}' 관리자가 제거되었습니다.`
+        startSyllables: STARTING_SYLLABLES, watchlist: watchNicks,
+        message: `'${nickname}' 관리자가 제거되었습니다.`
       });
       console.log(`[ADMIN] ${reg.nickname}님이 서브 관리자 '${nickname}' 제거`);
     } catch (err) { console.error("관리자 제거 오류:", err); }
@@ -3390,7 +3573,7 @@ io.on("connection", (socket) => {
         socket.emit("admin:panel", { ok: false, reason: "비밀번호는 4자 이상이어야 합니다." });
         return;
       }
-      if (current !== reg.subAdmin.password) {
+      if (current !== (reg.subAdmin.password || "")) {
         socket.emit("admin:panel", { ok: false, reason: "현재 비밀번호가 올바르지 않습니다." });
         return;
       }
@@ -3399,7 +3582,8 @@ io.on("connection", (socket) => {
       socket.emit("admin:panel", {
         ok: true, role: "sub", isSuper: false, hasPassword: !!adminPassword,
         subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
-        startSyllables: STARTING_SYLLABLES, message: "서브 관리자 비밀번호가 변경되었습니다."
+        startSyllables: STARTING_SYLLABLES, watchlist: watchNicks,
+        message: "서브 관리자 비밀번호가 변경되었습니다."
       });
       console.log(`[ADMIN] 서브 관리자 '${reg.nickname}' 비밀번호 변경`);
     } catch (err) { console.error("서브 관리자 비밀번호 오류:", err); }
@@ -3543,10 +3727,34 @@ io.on("connection", (socket) => {
       socket.emit("admin:panel", {
         ok: true, role: reg.role, isSuper: true, hasPassword: !!adminPassword,
         subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
-        startSyllables: STARTING_SYLLABLES, message: `'${nickname}' 관리자 계정 비밀번호가 재설정되었습니다.`
+        startSyllables: STARTING_SYLLABLES, watchlist: watchNicks,
+        message: `'${nickname}' 관리자 계정 비밀번호가 재설정되었습니다.`
       });
       console.log(`[ADMIN] ${reg.nickname}님이 서브 관리자 '${nickname}' 비밀번호 재설정`);
     } catch (err) { console.error("관리자 계정 비밀번호 재설정 오류:", err); }
+  });
+
+  /* 감시 목록 — 등록된 닉네임의 로그인 시 최고 관리자에게 알림 */
+  socket.on("admin:setWatchlist", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") {
+        socket.emit("admin:panel", { ok: false, reason: "최고 관리자만 감시 목록을 바꿀 수 있습니다." });
+        return;
+      }
+      watchNicks = Array.isArray(data?.watchlist)
+        ? data.watchlist.map(w => String(w || "").trim()).filter(Boolean)
+        : [];
+      saveAdminConfig();
+      socket.emit("admin:panel", {
+        ok: true, role: reg.role, isSuper: true, hasPassword: !!adminPassword,
+        subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
+        startSyllables: STARTING_SYLLABLES, watchlist: watchNicks,
+        message: "감시 목록이 저장되었습니다."
+      });
+      console.log(`[ADMIN] 감시 목록 저장: ${watchNicks.join(", ") || "(없음)"}`);
+    } catch (err) { console.error("감시 목록 오류:", err); }
   });
 
   socket.on("player:setName", async (data) => {
@@ -3588,7 +3796,18 @@ io.on("connection", (socket) => {
           }
           adminAuthed.set(socket.id, { role: "super", nickname });
         } else {
-          if (pw !== asSub.password) {
+          /* 서브 관리자 — 비밀번호가 없으면 최초 로그인 시 본인이 직접 설정한다 */
+          if (!asSub.password) {
+            if (pw.length < 4) {
+              socket.emit("player:nameUpdated", {
+                ok: false, adminRequired: true,
+                reason: "관리자 계정입니다. 계정 탭에서 계정 비밀번호(4자 이상)를 먼저 설정해주세요."
+              });
+              return;
+            }
+            asSub.password = pw;
+            saveAdminConfig();
+          } else if (pw !== asSub.password) {
             socket.emit("player:nameUpdated", {
               ok: false, adminRequired: true,
               reason: "관리자 계정 비밀번호가 올바르지 않습니다."
@@ -3601,54 +3820,6 @@ io.on("connection", (socket) => {
         adminAuthed.delete(socket.id);
       }
 
-      /* 재접속/새 소켓에서도 같은 닉네임이라면 기존 플레이어 데이터(돈, 랭킹 등)를
-         현재 소켓 ID로 이관 — 소켓 ID는 재접속 때마다 바뀌므로 닉네임이 곧 계정이다.
-         같은 닉네임의 좀비(이미 끊긴 소켓) 레코드가 여러 개 쌓이면 랭킹에 같은 유저가
-         중복 표시되므로, 소켓이 죽은 레코드는 하나만 남겨 이관하고 나머지는 전부 제거한다.
-         살아 있는 소켓(다른 탭)의 레코드는 건드리지 않는다. */
-      const sameNickIds = await findAllPlayerIdsByNickname(nickname);
-      const deadOnes = sameNickIds.filter(id => id !== socket.id && !io.sockets.sockets.has(id));
-      const migratedId = deadOnes[0] || null;
-      for (const id of deadOnes) {
-        if (id === migratedId) continue;
-        playerCache.delete(id);
-        if (dbMode === "pg") {
-          try { await dbPool.query("DELETE FROM players WHERE id = $1", [id]); } catch (err) { console.error("중복 레코드 삭제 오류:", err.message); }
-        }
-        console.log(`[ACCOUNT] '${nickname}' 중복 레코드 정리: ${id}`);
-      }
-      if (migratedId) {
-        const oldData = await getPlayerData(migratedId);
-        oldData.id = socket.id;
-        oldData.nickname = nickname;
-        playerCache.set(socket.id, oldData);
-        playerCache.delete(migratedId);
-        if (dbMode === "pg") {
-          try { await dbPool.query("DELETE FROM players WHERE id = $1", [migratedId]); } catch (err) { console.error("기존 레코드 삭제 오류:", err.message); }
-        }
-        await savePlayerData(socket.id, oldData);
-        console.log(`[ACCOUNT] '${nickname}' 데이터 이관: ${migratedId} -> ${socket.id}`);
-      }
-      /* 빠르게 새로고침하는 경우 직전 소켓이 아직 "연결 중"으로 보여 위 정리가 안 될 수 있음.
-         잠시 뒤 다시 확인해 끊긴 좀비 레코드가 남아 있으면 정리한다. */
-      setTimeout(async () => {
-        try {
-          if (!io.sockets.sockets.has(socket.id)) return;
-          const rest = await findAllPlayerIdsByNickname(nickname);
-          let changed = false;
-          for (const id of rest) {
-            if (id === socket.id || io.sockets.sockets.has(id)) continue;
-            playerCache.delete(id);
-            if (dbMode === "pg") {
-              try { await dbPool.query("DELETE FROM players WHERE id = $1", [id]); } catch (err) { console.error("지연 정리 오류:", err.message); }
-            }
-            console.log(`[ACCOUNT] '${nickname}' 지연 좀비 레코드 정리: ${id}`);
-            changed = true;
-          }
-          if (changed && dbMode !== "pg") saveJsonDb();
-        } catch (err) { console.error("닉네임 지연 정리 오류:", err); }
-      }, 5000);
-
       const room = getPlayerRoom(socket);
       if (room) {
         const dup = room.players.find(p => !p.isBot && p.socketId !== socket.id && p.nickname === nickname);
@@ -3659,17 +3830,24 @@ io.on("connection", (socket) => {
         const me = room.players.find(p => p.socketId === socket.id);
         if (me) me.nickname = nickname;
       }
+      /* 닉네임(정규화 키)이 곧 계정 저장 키 — 소켓 ID에 얽매이지 않아 재접속시에도
+         돈/랭킹/연승이 초기화되는 문제가 없다 */
       const playerData = await getPlayerData(socket.id);
       playerData.nickname = nickname;
       await savePlayerData(socket.id, playerData);
       registerOnline(socket.id, nickname);
       socket.emit("player:nameUpdated", { ok: true, nickname });
       if (room) broadcastRoomState(room);
+
+      /* 감시 목록(로그인 알림) — 최고 관리자에게 접속 알림 */
+      if (watchNicks.some(w => normKey(w) === normKey(nickname))) {
+        notifySuperAdmins({ nickname, at: new Date().toISOString(), reason: "login" });
+      }
     } catch (err) { console.error("닉네임 설정 오류:", err); }
   });
 
   /* =========================================================
-     친구 — 추가/삭제/목록, 온라인 상태 포함 (양방향 친구)
+     친구 — 신청/수락/거절/삭제/목록, 온라인 상태 포함 (양방향 친구)
   ========================================================= */
   const emitFriendsUpdated = async (socket, ok, reason, extra) => {
     const nm = socketNicks.get(socket.id);
@@ -3679,8 +3857,25 @@ io.on("connection", (socket) => {
     }
     const me = normKey(nm);
     const list = me ? [...(friendsMap.get(me) || new Set())]
-      .map(f => ({ nickname: f, online: onlineNicks.has(f) && io.sockets.sockets.has(onlineNicks.get(f)) })) : [];
-    socket.emit("friends:updated", { ok, reason, registered: true, friends: list, ...(extra || {}) });
+      .map(f => ({ nickname: nicknameDisplay(f), online: onlineNicks.has(f) && io.sockets.sockets.has(onlineNicks.get(f)) })) : [];
+    /* 받은 친구 신청 목록 (나를 신청한 쪽) */
+    const requests = [];
+    for (const [fromKey, toSet] of friendRequests) {
+      if (me && toSet.has(me)) requests.push(nicknameDisplay(fromKey));
+    }
+    socket.emit("friends:updated", { ok, reason, registered: true, friends: list, requests, ...(extra || {}) });
+  };
+
+  const notifyFriendsChanged = (key, payload) => {
+    const tId = onlineNicks.get(key);
+    if (tId && io.sockets.sockets.has(tId)) io.to(tId).emit("friends:updated", { ...payload });
+  };
+
+  const makeFriends = (me, target) => {
+    if (!friendsMap.has(me)) friendsMap.set(me, new Set());
+    if (!friendsMap.has(target)) friendsMap.set(target, new Set());
+    friendsMap.get(me).add(target);
+    friendsMap.get(target).add(me);
   };
 
   socket.on("friends:add", async (data) => {
@@ -3693,19 +3888,63 @@ io.on("connection", (socket) => {
       if (!target) { await emitFriendsUpdated(socket, false, "친구로 추가할 이름을 입력해주세요."); return; }
       if (target === me) { await emitFriendsUpdated(socket, false, "자기 자신은 친구로 추가할 수 없습니다."); return; }
       if (!nicknameKnown(target)) { await emitFriendsUpdated(socket, false, `'${String(data?.nickname).trim()}' 닉네임을 찾을 수 없습니다.`); return; }
-      if (!friendsMap.has(me)) friendsMap.set(me, new Set());
-      if (friendsMap.get(me).has(target)) { await emitFriendsUpdated(socket, false, "이미 친구입니다."); return; }
-      friendsMap.get(me).add(target);
-      if (!friendsMap.has(target)) friendsMap.set(target, new Set());
-      friendsMap.get(target).add(me);
+      if ((friendsMap.get(me) || new Set()).has(target)) { await emitFriendsUpdated(socket, false, "이미 친구입니다."); return; }
+      if ((friendRequests.get(me) || new Set()).has(target)) { await emitFriendsUpdated(socket, false, "이미 친구 신청을 보냈습니다. 상대가 수락할 때까지 기다려주세요."); return; }
+
+      /* 상대가 먼저 나에게 신청해 둔 상태라면 즉시 친구가 된다 */
+      if ((friendRequests.get(target) || new Set()).has(me)) {
+        friendRequests.get(target).delete(me);
+        makeFriends(me, target);
+        saveFriends();
+        await emitFriendsUpdated(socket, true, `'${String(data?.nickname).trim()}' 님과 친구가 되었습니다.`);
+        notifyFriendsChanged(target, { ok: true, reason: `'${myNick}' 님이 친구 신청을 수락했습니다.` });
+        console.log(`[FRIENDS] '${myNick}' ↔ '${String(data?.nickname).trim()}' 친구 (상호 신청)`);
+        return;
+      }
+
+      if (!friendRequests.has(me)) friendRequests.set(me, new Set());
+      friendRequests.get(me).add(target);
+      saveFriends();
+      await emitFriendsUpdated(socket, true, `'${String(data?.nickname).trim()}' 님에게 친구 신청을 보냈습니다.`);
+      notifyFriendsChanged(target, { ok: true, reason: `'${myNick}' 님이 친구 신청을 보냈습니다.`, requestFrom: myNick });
+      console.log(`[FRIENDS] '${myNick}' → '${String(data?.nickname).trim()}' 친구 신청`);
+    } catch (err) { console.error("친구 신청 오류:", err); }
+  });
+
+  socket.on("friends:accept", async (data) => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const myNick = String(pd.nickname || "").trim();
+      const me = normKey(myNick);
+      const target = normKey(data?.nickname);
+      if (!me || !target) { await emitFriendsUpdated(socket, false, "이름을 확인해주세요."); return; }
+      if (!(friendRequests.get(target) || new Set()).has(me)) {
+        await emitFriendsUpdated(socket, false, `'${String(data?.nickname).trim()}' 님의 친구 신청이 없습니다.`);
+        return;
+      }
+      friendRequests.get(target).delete(me);
+      makeFriends(me, target);
       saveFriends();
       await emitFriendsUpdated(socket, true, `'${String(data?.nickname).trim()}' 님과 친구가 되었습니다.`);
-      const tId = onlineNicks.get(target);
-      if (tId && tId !== socket.id && io.sockets.sockets.has(tId)) {
-        io.to(tId).emit("friends:updated", { ok: true, reason: `'${myNick}' 님이 친구로 추가했습니다.` });
+      notifyFriendsChanged(target, { ok: true, reason: `'${myNick}' 님이 친구 신청을 수락했습니다.` });
+      console.log(`[FRIENDS] '${myNick}' ↔ '${String(data?.nickname).trim()}' 친구 (수락)`);
+    } catch (err) { console.error("친구 수락 오류:", err); }
+  });
+
+  socket.on("friends:reject", async (data) => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const me = normKey(String(pd.nickname || "").trim());
+      const target = normKey(data?.nickname);
+      if (!me || !target) { await emitFriendsUpdated(socket, false, "이름을 확인해주세요."); return; }
+      if (!(friendRequests.get(target) || new Set()).delete(me)) {
+        await emitFriendsUpdated(socket, false, "받은 친구 신청이 없습니다.");
+        return;
       }
-      console.log(`[FRIENDS] '${myNick}'님이 '${String(data?.nickname).trim()}' 친구 추가`);
-    } catch (err) { console.error("친구 추가 오류:", err); }
+      saveFriends();
+      await emitFriendsUpdated(socket, true, `'${String(data?.nickname).trim()}' 님의 친구 신청을 거절했습니다.`);
+      console.log(`[FRIENDS] '${String(data?.nickname).trim()}' → 신청 거절`);
+    } catch (err) { console.error("친구 신청 거절 오류:", err); }
   });
 
   socket.on("friends:remove", async (data) => {

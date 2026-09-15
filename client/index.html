@@ -30,6 +30,7 @@
       <span class="money-chip">💰 <b id="moneyDisplay">0</b></span>
       <span class="boost-chip hidden" id="boostChip" title="다음 N번 게임 동안 레이팅/승리 보상 2배">물약 <b id="boostCount">0</b>판</span>
       <span class="title-chip hidden" id="titleChip"></span>
+      <button id="missionBtn" class="mission-mini hidden" title="일일 미션 보기">📋 미션 <b id="missionMiniCount">0/0</b></button>
       <button id="soundToggle" class="sound-chip" title="소리/진동 켜기·끄기">🔊</button>
     </div>
 
@@ -311,6 +312,16 @@
         <strong id="shopMoney">0</strong>
       </div>
       <div id="shopBody"></div>
+      <div class="shop-support">
+        <div class="acc-change-title">📝 단어 신청</div>
+        <div class="admin-info">사전에 없는 한글 단어를 신청하면 관리자 승인 후 게임에서 사용할 수 있습니다.</div>
+        <div class="admin-row">
+          <input type="text" id="shopWordReqInput" class="admin-text" maxlength="40" placeholder="예: 프로브단어" autocomplete="off" data-admin-enter="[data-shop-word-req]">
+          <button type="button" class="admin-apply" id="shopWordReqSend" data-shop-word-req="1">신청</button>
+        </div>
+        <div id="shopWordReqStatus" class="admin-info"></div>
+        <div id="shopWordReqMyList" class="word-my-list"></div>
+      </div>
       <div class="shop-bug">
         <button id="bugBtn" class="wide secondary">🐞 버그 제보</button>
       </div>
@@ -370,7 +381,7 @@
   </div>
 
   <div id="friendsWrap" class="friends-wrap">
-    <button id="friendsBtn" class="friends-btn" title="친구 관리">👥 친구<span id="friendsCount" class="friends-count hidden"></span></button>
+    <button id="friendsBtn" class="friends-btn" title="친구 관리">👥 친구<span id="friendsCount" class="friends-count hidden"></span><span id="friendsReqBadge" class="friends-req-badge hidden">!</span></button>
     <div id="friendsPanel" class="friends-panel hidden">
       <div class="friends-head">
         <span>친구 관리</span>
@@ -410,9 +421,9 @@
       </label>
       <div id="accountMsg"></div>
       <div class="account-scores">
-        <div class="acc-row"><span>싱글 점수</span><strong id="accSingleRating">-</strong><span id="accSingleRank" class="acc-rank"></span></div>
-        <div class="acc-row"><span>멀티 점수</span><strong id="accMultiRating">-</strong><span id="accMultiRank" class="acc-rank"></span></div>
-        <div class="acc-row"><span>랭크 점수</span><strong id="accRankedRating">-</strong><span id="accRankedRank" class="acc-rank"></span></div>
+        <div class="acc-row"><span>싱글 점수</span><strong id="accSingleRating">-</strong><span id="accSingleRank" class="acc-rank"></span><span id="accSingleWL" class="acc-wl"></span></div>
+        <div class="acc-row"><span>멀티 점수</span><strong id="accMultiRating">-</strong><span id="accMultiRank" class="acc-rank"></span><span id="accMultiWL" class="acc-wl"></span></div>
+        <div class="acc-row"><span>랭크 점수</span><strong id="accRankedRating">-</strong><span id="accRankedRank" class="acc-rank"></span><span id="accRankedWL" class="acc-wl"></span></div>
         <div class="acc-row"><span>랭크 연승</span><strong id="accRankedStreak">-</strong><span id="accRankedBestStreak" class="acc-rank">최대 -</span></div>
         <div class="acc-row"><span>소지금</span><strong id="accMoney">0</strong></div>
         <div class="acc-row"><span>칭호</span><strong id="accTitle">없음</strong></div>

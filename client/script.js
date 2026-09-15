@@ -22,8 +22,11 @@ let startingGame = false;
 let myNickname = localStorage.getItem("kkNickname") || "";
 let myPassword = localStorage.getItem("kkPassword") || "";
 let friends = [];
+let friendRequests = [];
 let friendsPanelOpen = false;
 let pendingInvite = null;
+/* 끊긴 온라인/랭크 게임 재접속(30초 유예)용 — 마지막으로 있던 방 */
+let lastRoomId = sessionStorage.getItem("kkLastRoom") || null;
 /* 싱글 AI 난이도 (easy/normal/hard) */
 let aiDifficulty = localStorage.getItem("kkAiDiff") || "normal";
 
@@ -339,7 +342,7 @@ const DUEUM = {
   "레": ["레", "네", "에"],
   "력": ["력", "역"],
   "로": ["로", "노"], "록": ["록", "녹"], "론": ["론", "논"],
-  "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놑"],
+  "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놑", "놉"],
   "롯": ["롯", "놃"], "롱": ["롱", "농"], "뢰": ["뢰", "뇌"],
   "루": ["루", "누"], "륙": ["륙", "육"], "률": ["률", "율"],
   "룬": ["룬", "운"],
@@ -355,7 +358,8 @@ const DUEUM = {
   "녓": ["녓", "엿"], "엿": ["엿", "녓"],
   "릊": ["릊", "늦", "읒"], "늦": ["늦", "릊", "읒"], "읒": ["읒", "릊", "늦"],
   "릅": ["릅", "늡"], "늡": ["늡", "릅"],
-  "닢": ["닢", "잎"], "잎": ["잎", "닢"]
+  "닢": ["닢", "잎"], "잎": ["잎", "닢"],
+  "놉": ["놉", "롭"]
 };
 
 /* 자동 두음법칙 확장 — 서버 game.js와 동일 로직
@@ -370,13 +374,15 @@ function buildDueumAuto() {
       for (let cho = 0; cho < 19; cho++) {
         const base = 0xAC00 + (cho * 21 + m) * 28 + j;
         const c = String.fromCharCode(base);
+        /* 냐·냑은 두음법칙을 적용하지 않는다 — 서버 game.js와 동일 */
+        if (c === "냐" || c === "냑") continue;
         let partners = [];
         if (cho === 5) partners = yg ? [11] : [2];         /* ㄹ */
         else if (cho === 2) partners = yg ? [11, 5] : [5]; /* ㄴ */
         else if (cho === 11) partners = yg ? [5, 2] : [];  /* ㅇ */
         for (const pcho of partners) {
           const p = String.fromCharCode(0xAC00 + (pcho * 21 + m) * 28 + j);
-          if (p === c) continue;
+          if (p === c || p === "냐" || p === "냑") continue;
           if (!map.has(c)) map.set(c, new Set());
           map.get(c).add(p);
           if (!map.has(p)) map.set(p, new Set());
@@ -442,13 +448,15 @@ function calculateRank(rating) {
     { tier: "Gold", base: 1400, span: 400 },
     { tier: "Platinum", base: 1800, span: 400 },
     { tier: "Diamond", base: 2200, span: 400 },
-    { tier: "Master", base: 2600, span: 400 }
+    { tier: "Master", base: 2600, span: 400 },
+    { tier: "Grandmaster", base: 3000, span: 400 },
+    { tier: "Challenger", base: 3400, span: 400 }
   ];
-  if (rating >= 3000) return { tier: "Grandmaster", sub: "" };
   let tier = tierTables[tierTables.length - 1];
   for (const t of tierTables) {
     if (rating >= t.base) tier = t;
   }
+  if (rating >= 3400) return { tier: "Challenger", sub: "" };
   const step = Math.floor((rating - tier.base) / (tier.span / 5));
   const sub = 5 - Math.max(0, Math.min(4, step));
   return { tier: tier.tier, sub: String(sub) };
@@ -493,6 +501,34 @@ function isMyTurn() {
 function isStaleAIEvent(payloadMode, state) {
   const m = payloadMode || (state && state.mode);
   return m === "ai" && currentMode !== "single";
+}
+
+/* 재접속한 방의 모드로 화면 전환 — 탭 클릭처럼 보이되 방을 나가지 않는다 */
+function switchToModeTab(mode, rankedInGame) {
+  if (currentMode === mode) return;
+  $all(".tabs button").forEach(b => b.classList.remove("active"));
+  const tab = $(`.tabs button[data-mode='${mode}']`);
+  if (tab) tab.classList.add("active");
+  currentMode = mode;
+  $all(".panel").forEach(p => p.classList.add("hidden"));
+  const target = $(`#${mode}`);
+  if (target) target.classList.remove("hidden");
+  if (mode === "ranked") {
+    $("#rankedLobby")?.classList.toggle("hidden", !!rankedInGame);
+    $("#rankedGame")?.classList.toggle("hidden", !rankedInGame);
+  }
+}
+
+/* 재접속용 — 현재 방에 있는 상태를 세션에 기록한다 */
+function storeLastRoomId(rid) {
+  if (!rid) return;
+  lastRoomId = rid;
+  try { sessionStorage.setItem("kkLastRoom", rid); } catch (e) { /* 무시 */ }
+}
+
+function clearLastRoomId() {
+  lastRoomId = null;
+  try { sessionStorage.removeItem("kkLastRoom"); } catch (e) { /* 무시 */ }
 }
 
 /* ---------------------------------------------------------
@@ -551,6 +587,13 @@ function initSocket() {
     if (currentMode === "single" && !roomId && !gameState && !startingGame) {
       startSingleGame();
     }
+    /* 끊겼던 온라인/랭크 게임 — 30초 유예 안이면 서버가 room:joined(reconnect)로 복구한다 */
+    if (myNickname && lastRoomId && !startingGame) {
+      const rid = lastRoomId;
+      setTimeout(() => {
+        if (lastRoomId === rid) socket.emit("room:join", { roomId: rid, nickname: myNickname });
+      }, 150);
+    }
   });
 
   socket.on("disconnect", () => {
@@ -586,6 +629,9 @@ function initSocket() {
     setText(["#accMultiRank"], mul.rank ? formatRank(mul.rank) : "");
     setText(["#accRankedRating"], rkd.rating);
     setText(["#accRankedRank"], rkd.rank ? formatRank(rkd.rank) : "");
+    setText(["#accSingleWL"], `${sng.wins || 0}승 ${sng.losses || 0}패`);
+    setText(["#accMultiWL"], `${mul.wins || 0}승 ${mul.losses || 0}패`);
+    setText(["#accRankedWL"], `${rkd.wins || 0}승 ${rkd.losses || 0}패`);
     rankedStreak = rkd.streak || 0;
     rankedBestStreak = rkd.bestStreak || 0;
     setText(["#accRankedStreak"], rankedStreak || 0);
@@ -639,6 +685,7 @@ function initSocket() {
     gameState = data.state;
     roomId = data.roomId;
     playerIndex = data.playerIndex ?? data.state.players?.find(p => p.socketId === socket.id || p.id === socket.id)?.playerIndex ?? 0;
+    storeLastRoomId(data.roomId);
     gameSessionId++;
     const tab = $(".tabs button[data-mode='ranked']");
     if (tab && currentMode !== "ranked") tab.click();
@@ -960,6 +1007,16 @@ function initSocket() {
     }
   });
 
+  /* 감시 중인 닉네임이 로그인하면 최고 관리자에게 실시간 알림 */
+  socket.on("admin:loginNotice", (data) => {
+    if (!data) return;
+    const msg = data.nickname ? `🔔 감시 중인 '${data.nickname}' 님이 로그인했습니다.` : "로그인 알림이 도착했습니다.";
+    if (myAdminRole === "super") {
+      showMessage(msg, "info");
+      if (adminModalOpen) setAdminStatus(msg, "ok");
+    }
+  });
+
   socket.on("admin:words", (data) => {
     if (!data) return;
     if (data.ok) {
@@ -980,6 +1037,8 @@ function initSocket() {
     gameState = data.state;
     startingGame = false;
     renderGameState(gameState);
+    /* 싱글(AI) 방은 재접속 유예 대상이 아니므로 기록하지 않는다 */
+    if (data.state && data.state.mode !== "ai") storeLastRoomId(data.roomId);
     if (currentMode === "online") {
       showMessage(`방이 생성되었습니다. 방 코드: ${data.roomId}`, "success");
     }
@@ -988,6 +1047,11 @@ function initSocket() {
   socket.on("room:joined", (data) => {
     if (!data.ok) return;
     if (isStaleAIEvent(null, data.state)) return;
+    if (data.state && data.state.mode !== "ai") storeLastRoomId(data.roomId);
+    /* 새 소켓으로 재접속됨 — 방의 실제 모드에 맞게 탭을 전환한다 */
+    if (data.reconnect && data.state && data.state.mode) {
+      switchToModeTab(data.state.mode === "ai" ? "single" : data.state.mode, data.state.mode === "ranked");
+    }
     roomId = data.roomId;
     playerIndex = data.playerIndex;
     gameSessionId++;
@@ -1003,6 +1067,12 @@ function initSocket() {
   socket.on("room:error", (data) => {
     startingGame = false;
     showMessage(data.reason || "방 오류", "error");
+    /* 재접속을 시도하다 실패한 경우 저장된 방은 무효 — 다시 시도하지 않는다 */
+    if (lastRoomId) {
+      clearLastRoomId();
+      /* 페이지를 새로 연 상태(싱글 탭)면 대신 싱글 게임을 이어준다 */
+      if (currentMode === "single" && !gameState) setTimeout(startSingleGame, 200);
+    }
   });
 
   socket.on("room:playerJoined", (data) => {
@@ -1029,8 +1099,11 @@ function initSocket() {
   /* -- 친구 / 초대 ------------------------------------ */
   socket.on("friends:updated", (data) => {
     if (!data) return;
-    if (data.registered === false) return;
+    if (data.registered === false) { friendRequests = []; renderFriends(); return; }
     if (Array.isArray(data.friends)) friends = data.friends;
+    if (Array.isArray(data.requests)) friendRequests = data.requests;
+    const badge = $("#friendsReqBadge");
+    if (badge) badge.classList.toggle("hidden", friendRequests.length === 0);
     renderFriends();
     if (data.reason) showMessage(data.reason, data.ok ? "success" : "error");
   });
@@ -1687,6 +1760,12 @@ function startSingleGame() {
     return;
   }
 
+  /* 끊겼던 온라인/랭크 게임으로 복귀 대기 중이면 싱글을 자동으로 시작하지 않는다 */
+  if (lastRoomId && myNickname) {
+    showMessage("이전 게임에 복귀하는 중입니다...", "waiting");
+    return;
+  }
+
   if (submitting || startingGame) return;
   startingGame = true;
 
@@ -1842,26 +1921,32 @@ function fetchWordList() {
 }
 
 function setWordReqStatus(text, type) {
-  const el = $("#wordReqStatus");
+  return setWordReqStatusFrom("#wordReqStatus", text, type);
+}
+
+function setWordReqStatusFrom(statusSel, text, type) {
+  const el = $(statusSel);
   if (!el) return;
   el.innerHTML = `<div class="room-list-status ${type === "ok" ? "" : type === "error" ? "error" : ""}">${escapeHtml(text)}</div>`;
 }
 
 function submitWordRequest() {
+  return submitWordRequestFrom("#wordReqInput", "#wordReqStatus");
+}
+
+function submitWordRequestFrom(inputSel, statusSel) {
   if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
   if (!requireNickname()) return;
-  const input = $("#wordReqInput");
+  const input = $(inputSel);
   if (!input) return;
   const word = normalizeWord(input.value);
-  if (!word) { setWordReqStatus("신청할 단어를 입력해주세요.", "error"); return; }
+  if (!word) { setWordReqStatusFrom(statusSel, "신청할 단어를 입력해주세요.", "error"); return; }
   socket.emit("word:request", { word });
-  setWordReqStatus("신청 중...", "");
+  setWordReqStatusFrom(statusSel, "신청 중...", "");
   input.value = "";
 }
 
-function renderWordList(data) {
-  const el = $("#wordReqMyList");
-  if (!el) return;
+function wordListMarkup(data) {
   const pending = Array.isArray(data.pending) ? data.pending : [];
   const rejected = Array.isArray(data.rejected) ? data.rejected : [];
   const total = Number(data.approvedTotal) || 0;
@@ -1878,7 +1963,15 @@ function renderWordList(data) {
       items.map(it => `<div class="word-my-row ${it.cls}"><span class="word-my-word">${escapeHtml(it.text)}</span><span class="word-my-label">${escapeHtml(it.label)}</span></div>`).join("");
   }
   html += `<div class="room-list-status">🏆 승인된 커스텀 단어: <b>${total}</b>개</div>`;
-  el.innerHTML = html;
+  return html;
+}
+
+function renderWordList(data) {
+  const markup = wordListMarkup(data);
+  const main = $("#wordReqMyList");
+  if (main) main.innerHTML = markup;
+  const shop = $("#shopWordReqMyList");
+  if (shop) shop.innerHTML = markup;
 }
 
 /* ---------------------------------------------------------
@@ -1914,6 +2007,7 @@ function leaveRoom() {
   rankedAutoLeave = null;
   rankedRematchReq = false;
   showRankedRematchBar(false, false);
+  clearLastRoomId();
   if (!socket || !socketConnected) return;
   socket.emit("room:leave");
   roomId = null;
@@ -2220,9 +2314,19 @@ function rewardLabel(m) {
 function renderMissions() {
   const list = $("#missionList");
   const box = $("#missionBox");
-  if (!list || !box) return;
-  if (missionsState.length === 0) { box.classList.add("hidden"); list.innerHTML = ""; return; }
-  box.classList.remove("hidden");
+  const mini = $("#missionMiniCount");
+  if (missionsState.length === 0) {
+    if (box) box.classList.add("hidden");
+    if (list) list.innerHTML = "";
+    const miniBtn = $("#missionBtn");
+    if (miniBtn) miniBtn.classList.add("hidden");
+    return;
+  }
+  if (box) box.classList.remove("hidden");
+  if (!list) return;
+  if (mini) mini.textContent = `${missionsState.filter(m => m.current >= m.target).length}/${missionsState.length}`;
+  const miniBtn = $("#missionBtn");
+  if (miniBtn) miniBtn.classList.remove("hidden");
   list.innerHTML = missionsState.map(m => {
     const done = m.current >= m.target;
     const claimed = !!m.claimed;
@@ -2291,9 +2395,9 @@ function renderAdminBugs(reports) {
 }
 
 /* ---------------------------------------------------------
-   관리자 패널 (닉네임이 blossomIng_0인 사람에게만 보이는 버튼)
+   관리자 패널 (닉네임이 blossomlng_0인 사람에게만 보이는 버튼)
 --------------------------------------------------------- */
-const ADMIN_NICKNAME = "blossomIng_0";
+const ADMIN_NICKNAME = "blossomlng_0";
 let myAdminRole = "none";
 let adminModalOpen = false;
 let adminFoundNick = null;
@@ -2380,11 +2484,28 @@ function renderAdminBody(data) {
         <input type="text" id="adminSubNick" class="admin-text" placeholder="관리자로 추가할 닉네임" autocomplete="off" data-admin-enter="[data-admin-addsub]">
         <button type="button" class="admin-apply" data-admin-addsub="1">관리자로 추가</button>
       </div>
-      <div class="admin-info">※ 닉네임만 입력하면 바로 관리자(개인 통계 관리 권한)로 추가됩니다.
-        계정 비밀번호는 자동으로 발급되어 위에 표시되며, 그 비밀번호를 해당 관리자에게 꼭 알려주세요.</div>
+      <div class="admin-info">※ 닉네임만 입력하면 바로 관리자(개인 통계 관리 권한)로 추가됩니다.<br>
+        추가된 관리자는 첫 로그인 시 본인이 '계정' 탭에서 비밀번호(4자 이상)를 직접 설정하며, 이후 '닉네임 + 계정 비밀번호'로 로그인해야 관리자 권한을 받습니다.</div>
       <ul class="admin-sub-list">${subList || '<li class="admin-info">등록된 서브 관리자가 없습니다.</li>'}</ul>
-      <div class="admin-info">※ 관리자 계정 로그인은 '닉네임 + 계정 비밀번호'입니다. 비밀번호를 모르는 사람은
-        같은 닉네임을 써도 관리자 권한을 받을 수 없습니다.</div>
+    </div>
+  ` : "";
+
+  /* 감시 닉네임 — 등록된 닉이 로그인하면 최고 관리자에게 알림 */
+  const watchItems = (data.watchlist || []).map(n => `
+    <li class="admin-sub-row">
+      <span>${escapeHtml(n)}</span>
+      <button type="button" class="admin-apply" data-admin-watch-del="${escapeHtml(n)}">제거</button>
+    </li>
+  `).join("");
+  const watchCard = isSuper ? `
+    <div class="admin-card">
+      <h4>로그인 감시 (최고 관리자 전용)</h4>
+      <div class="admin-info">등록한 닉네임이 로그인하면 이 패널과 상단 알림으로 즉시 표시됩니다.</div>
+      <div class="admin-row">
+        <input type="text" id="adminWatchInput" class="admin-text" placeholder="감시할 닉네임" autocomplete="off" data-admin-enter="[data-admin-watch-add]">
+        <button type="button" class="admin-apply" data-admin-watch-add="1">추가</button>
+      </div>
+      <ul class="admin-sub-list">${watchItems || '<li class="admin-info">등록된 감시 대상이 없습니다.</li>'}</ul>
     </div>
   ` : "";
 
@@ -2470,6 +2591,7 @@ function renderAdminBody(data) {
     ${resetCard}
     ${configCard}
     ${dueumCard}
+    ${watchCard}
     ${statsCard}
     ${moneyCard}
     ${wordCard}
@@ -2635,6 +2757,28 @@ function bindAdminBody() {
     if (newPassword.length < 4) { setAdminStatus("새 비밀번호는 4자 이상이어야 합니다.", "error"); return; }
     if (!password) { setAdminStatus("진행하려면 상단 관리자 비밀번호가 필요합니다.", "error"); return; }
     socket.emit("admin:resetSubPassword", { nickname, password, newPassword });
+  });
+
+  /* 감시 목록 — 추가/제거 후 목록 전체를 서버에 저장 */
+  const emitWatchlist = (list) => {
+    socket.emit("admin:setWatchlist", { watchlist: list });
+    setAdminStatus("감시 목록을 저장하는 중...", "");
+  };
+  const watchAdd = modal.querySelector("[data-admin-watch-add]");
+  if (watchAdd) watchAdd.addEventListener("click", () => {
+    const input = modal.querySelector("#adminWatchInput");
+    const nick = (input?.value || "").trim();
+    if (!nick) { setAdminStatus("감시할 닉네임을 입력해주세요.", "error"); return; }
+    const cur = Array.from(modal.querySelectorAll("[data-admin-watch-del]")).map(b => b.dataset.adminWatchDel);
+    if (cur.includes(nick)) { setAdminStatus(`'${nick}' 닉네임은 이미 감시 목록에 있습니다.`, "error"); return; }
+    emitWatchlist([...cur, nick]);
+    if (input) input.value = "";
+  });
+  modal.querySelectorAll("[data-admin-watch-del]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const cur = Array.from(modal.querySelectorAll("[data-admin-watch-del]")).map(b => b.dataset.adminWatchDel);
+      emitWatchlist(cur.filter(n => n !== btn.dataset.adminWatchDel));
+    });
   });
 
   /* 엔터 키로 버튼 실행 (데이터 어트리뷰트로 지정된 버튼) */
@@ -2809,29 +2953,50 @@ function renderFriends() {
   if (!list) return;
   const count = $("#friendsCount");
   if (count) {
-    count.classList.toggle("hidden", friends.length === 0);
     count.textContent = friends.length;
+    count.classList.toggle("hidden", friends.length === 0);
   }
   if (!myNickname) {
     list.innerHTML = `<div class="friends-empty">닉네임을 먼저 저장해주세요.</div>`;
     return;
   }
-  if (friends.length === 0) {
-    list.innerHTML = `<div class="friends-empty">아직 친구가 없습니다.<br>위 입력란에 친구 닉네임을 입력해 추가하세요.</div>`;
-    return;
+
+  let reqHtml = "";
+  if (friendRequests.length > 0) {
+    reqHtml = `<div class="friends-req-title">받은 친구 신청 (${friendRequests.length})</div>` +
+      friendRequests.map(n => `
+      <div class="friend-row req">
+        <span class="friend-dot"></span>
+        <span class="friend-name">${escapeHtml(n)}</span>
+        <button class="friend-invite" data-friend-accept="${escapeHtml(n)}">수락</button>
+        <button class="friend-del" data-friend-reject="${escapeHtml(n)}">거절</button>
+      </div>`).join("");
   }
-  list.innerHTML = friends.map(f => `
-    <div class="friend-row${f.online ? " online" : ""}">
-      <span class="friend-dot"></span>
-      <span class="friend-name">${escapeHtml(f.nickname)}</span>
-      ${f.online ? `<button class="friend-invite" data-friend-invite="${escapeHtml(f.nickname)}">대결 신청</button>` : `<span class="friend-offline">오프라인</span>`}
-      <button class="friend-del" data-friend-del="${escapeHtml(f.nickname)}">삭제</button>
-    </div>`).join("");
+
+  let listHtml;
+  if (friends.length === 0) {
+    listHtml = `<div class="friends-empty">아직 친구가 없습니다.<br>위 입력란에 친구 닉네임을 입력해 추가하세요.</div>`;
+  } else {
+    listHtml = friends.map(f => `
+      <div class="friend-row${f.online ? " online" : ""}">
+        <span class="friend-dot"></span>
+        <span class="friend-name">${escapeHtml(f.nickname)}</span>
+        ${f.online ? `<button class="friend-invite" data-friend-invite="${escapeHtml(f.nickname)}">대결 신청</button>` : `<span class="friend-offline">오프라인</span>`}
+        <button class="friend-del" data-friend-del="${escapeHtml(f.nickname)}">삭제</button>
+      </div>`).join("");
+  }
+  list.innerHTML = reqHtml + listHtml;
   list.querySelectorAll("[data-friend-invite]").forEach(btn => {
     btn.addEventListener("click", () => inviteByNickname(btn.dataset.friendInvite));
   });
   list.querySelectorAll("[data-friend-del]").forEach(btn => {
     btn.addEventListener("click", () => socket?.emit("friends:remove", { nickname: btn.dataset.friendDel }));
+  });
+  list.querySelectorAll("[data-friend-accept]").forEach(btn => {
+    btn.addEventListener("click", () => socket?.emit("friends:accept", { nickname: btn.dataset.friendAccept }));
+  });
+  list.querySelectorAll("[data-friend-reject]").forEach(btn => {
+    btn.addEventListener("click", () => socket?.emit("friends:reject", { nickname: btn.dataset.friendReject }));
   });
 }
 
@@ -2961,22 +3126,27 @@ async function loadSideRanking(mode = sideRankMode, silent = false) {
 }
 
 function initSideRanking() {
-  $all(".side-rank-tabs button").forEach(btn => {
-    btn.addEventListener("click", () => loadSideRanking(btn.dataset.sideMode));
-  });
-  $("#sideRankClose")?.addEventListener("click", () => {
+  const closeRanking = () => {
     $("#sideRank").classList.add("closed");
     $("#sideRankOpen").classList.remove("hidden");
-  });
-  $("#sideRankOpen")?.addEventListener("click", () => {
+    try { localStorage.setItem("kkSideRankClosed", "1"); } catch (e) { /* 무시 */ }
+  };
+  const openRanking = () => {
     $("#sideRank").classList.remove("closed");
     $("#sideRank").style.display = "flex";
     $("#sideRankOpen").classList.add("hidden");
+    try { localStorage.setItem("kkSideRankClosed", "0"); } catch (e) { /* 무시 */ }
     loadSideRanking(sideRankMode, true);
+  };
+  $all(".side-rank-tabs button").forEach(btn => {
+    btn.addEventListener("click", () => loadSideRanking(btn.dataset.sideMode));
   });
-  if (window.innerWidth < 1080) {
-    $("#sideRank").classList.add("closed");
-    $("#sideRankOpen").classList.remove("hidden");
+  $("#sideRankClose")?.addEventListener("click", closeRanking);
+  $("#sideRankOpen")?.addEventListener("click", openRanking);
+  let closedInit = false;
+  try { closedInit = localStorage.getItem("kkSideRankClosed") === "1"; } catch (e) { closedInit = false; }
+  if (closedInit || window.innerWidth < 1080) {
+    closeRanking();
   }
   loadSideRanking("multi");
   setInterval(() => { if (!$("#sideRank").classList.contains("closed")) loadSideRanking(sideRankMode, true); }, 180000);
@@ -3078,6 +3248,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (socket && socketConnected) {
           socket.emit("shop:list");
           socket.emit("attendance:status");
+          socket.emit("word:list", { nickname: myNickname || undefined });
         }
       }
       loadSideRanking(sideRankMode, true);
@@ -3133,6 +3304,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#wordReqClose")?.addEventListener("click", closeWordPanel);
   $("#wordReqSend")?.addEventListener("click", submitWordRequest);
   bindAdminEnter("#wordReqInput", submitWordRequest);
+  $("#shopWordReqSend")?.addEventListener("click", () => submitWordRequestFrom("#shopWordReqInput", "#shopWordReqStatus"));
+  bindAdminEnter("#shopWordReqInput", () => submitWordRequestFrom("#shopWordReqInput", "#shopWordReqStatus"));
+  $("#missionBtn")?.addEventListener("click", () => openAccountPanel(true));
   $("#startOnline")?.addEventListener("click", () => {
     if (!socket || !socketConnected) return;
     socket.emit("game:start");

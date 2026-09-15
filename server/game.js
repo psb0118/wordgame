@@ -26,7 +26,7 @@ const DUEUM = {
 "럴": ["럴", "널"], "럽": ["럽", "넙"],
   "레": ["레", "네", "에"],
   "로": ["로", "노"], "록": ["록", "녹"], "론": ["론", "논"],
-  "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놑"],
+  "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놑", "놉"],
   "롯": ["롯", "놃"], "롱": ["롱", "농"], "뢰": ["뢰", "뇌"],
   "루": ["루", "누"], "륙": ["륙", "육"], "률": ["률", "율"],
   "룬": ["룬", "운"],
@@ -41,7 +41,8 @@ const DUEUM = {
   "녓": ["녓", "엿"], "엿": ["엿", "녓"],
   "릊": ["릊", "늦", "읒"], "늦": ["늦", "릊", "읒"], "읒": ["읒", "릊", "늦"],
   "릅": ["릅", "늡"], "늡": ["늡", "릅"],
-  "닢": ["닢", "잎"], "잎": ["잎", "닢"]
+  "닢": ["닢", "잎"], "잎": ["잎", "닢"],
+  "놉": ["놉", "롭"]
 };
 
 /* =========================================================
@@ -66,6 +67,9 @@ function buildDueumAuto() {
       for (let cho = 0; cho < 19; cho++) {
         const base = 0xAC00 + (cho * 21 + m) * 28 + j;
         const c = String.fromCharCode(base);
+        /* 냐·냑은 두음법칙을 적용하지 않는다 — 냐(ㄴ+ㅑ), 냑(ㄴ+ㅑㄱ)는 그대로 쓰고
+           야/랴, 약/략과 섞지 않는다 */
+        if (c === "냐" || c === "냑") continue;
         /* 두음법칙 변형 초성 후보 — 종성은 그대로 */
         let partners = [];
         if (cho === 5) partners = yg ? [11] : [2];          /* ㄹ */
@@ -73,7 +77,7 @@ function buildDueumAuto() {
         else if (cho === 11) partners = yg ? [5, 2] : [];   /* ㅇ */
         for (const pcho of partners) {
           const p = String.fromCharCode(0xAC00 + (pcho * 21 + m) * 28 + j);
-          if (p === c) continue;
+          if (p === c || p === "냐" || p === "냑") continue;
           if (!map.has(c)) map.set(c, new Set());
           map.get(c).add(p);
           if (!map.has(p)) map.set(p, new Set());
@@ -667,13 +671,32 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   const values = list.filter(i => i.isValue);
   if (values.length) return bestFrom(values);
 
+  /* 루트/희귀 루트는 점수 대신 자유 선택 — 매번 같은 단어만 고르는 단조로움을 없애고
+     다양한 루트 단어를 쓴다. 단, 즉시 패배로 이어지는 수(상대가 받아친 뒤 내 수가 0)는
+     피한다. 전부 위험하면 기존 점수 평가로 폴백. */
+  const pickFree = (group) => {
+    if (!group.length) return null;
+    const avoid = (i) => {
+      const opp = getCandidates(i.w, newUsed, WORD_INDEX, OPP_CAP);
+      for (const ow of opp) {
+        const owUsed = new Set(newUsed);
+        owUsed.add(i.w);
+        owUsed.add(ow);
+        if (getCandidates(ow, owUsed, WORD_INDEX, 1).length === 0) return true;
+      }
+      return false;
+    };
+    const safe = group.filter(i => !avoid(i));
+    return pick((safe.length ? safe : group)).w;
+  };
+
   /* 4. 희귀 루트 단어 — 상대가 대응하기 가장 어려운 승리 루트 */
   const rareRoots = list.filter(i => i.isRareRoot);
-  if (rareRoots.length) return bestFrom(rareRoots);
+  if (rareRoots.length) return pickFree(rareRoots);
 
   /* 5. 주요 루트 단어 — 받아치기 힘든 승리 루트 */
   const roots = list.filter(i => i.isRoot && !i.isRareRoot);
-  if (roots.length) return bestFrom(roots);
+  if (roots.length) return pickFree(roots);
 
   /* 6. 공격 단어 — 깊이 최저만 사용 */
   const attacks = list.filter(i => i.isAttack);
@@ -695,20 +718,23 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
 ========================================================= */
 
 function calculateRank(rating) {
-  /* 5단계 등급 체계 — 숫자가 낮을수록 높은 등급 (브론즈5~브론즈1, 실버5~실버1, ...) */
+  /* 등급 체계 — 숫자가 낮을수록 높은 등급 (브론즈5~브론즈1, 실버5~실버1, ...)
+     마스터·그랜드마스터·챌린저(400 간격)는 다이아를 넘어서도 계속 오른다 */
   const tierTables = [
     { tier: "Bronze", base: 0, span: 1000 },
     { tier: "Silver", base: 1000, span: 400 },
     { tier: "Gold", base: 1400, span: 400 },
     { tier: "Platinum", base: 1800, span: 400 },
     { tier: "Diamond", base: 2200, span: 400 },
-    { tier: "Master", base: 2600, span: 400 }
+    { tier: "Master", base: 2600, span: 400 },
+    { tier: "Grandmaster", base: 3000, span: 400 },
+    { tier: "Challenger", base: 3400, span: 400 }
   ];
-  if (rating >= 3000) return { tier: "Grandmaster", sub: "" };
   let tier = tierTables[tierTables.length - 1];
   for (const t of tierTables) {
     if (rating >= t.base) tier = t;
   }
+  if (rating >= 3400) return { tier: "Challenger", sub: "" };
   const step = Math.floor((rating - tier.base) / (tier.span / 5));
   const sub = 5 - Math.max(0, Math.min(4, step));
   return { tier: tier.tier, sub: String(sub) };
