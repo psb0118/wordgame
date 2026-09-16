@@ -750,25 +750,12 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   };
 
   /* 4-0. 돌림 좁힘 — 상대를 좁은 말밭으로 되돌리는 강한 펀넬 돌림(예: 틀라솔테오틀)이
-         있으면 루트 단어보다도 우선해 그 순환을 시작한다 (상황 판단: ratio ≥ 0.6) */
+         있으면 공격 단어·루트보다도 우선해 그 순환을 시작한다 (상황 판단) */
   const funnelDolrims = list.filter(i => funnelOf(i) >= 60);
   if (funnelDolrims.length) return bestFrom(funnelDolrims);
 
-  /* 4. 희귀 루트 단어 — 상대가 대응하기 가장 어려운 승리 루트 */
-  const rareRoots = list.filter(i => i.isRareRoot);
-  if (rareRoots.length) return pickRootVariety(rareRoots);
-
-  /* 5. 주요 루트 단어 — 받아치기 힘든 승리 루트 */
-  const roots = list.filter(i => i.isRoot && !i.isRareRoot);
-  if (roots.length) return pickRootVariety(roots);
-
-  /* 5-1. 돌림 단어 — 끝 음절로 되돌리는 회전 단어. 루트가 없으면 돌림 단어로
-         유리한 흐름을 만든다 (방어 파일의 '돌림' 표기와 겹쳐도 전용 셋이면 활용.
-         증명상의 확정 패배 수는 이미 위 리스트 필터에서 제외되어 있음) */
-  const dolrims = list.filter(i => i.isDolrim && !i.isRareRoot && !i.isValue);
-  if (dolrims.length) return bestFrom(dolrims);
-
-  /* 6. 공격 단어 — 공격 깊이 낮은 순 우선. 어려움은 최저 깊이만, 보통은 ±1 대역에서 다양하게 */
+  /* 4-1. 공격 단어 — 시작 이후엔 바로 공격 단어를 쓴다. 낮은 깊이 순 우선
+         (어려움은 최저 깊이만, 보통은 ±1 대역에서 다양하게) */
   const attacks = list.filter(i => i.isAttack);
   if (attacks.length) {
     const minDepth = Math.min(...attacks.map(i => i.depth));
@@ -776,11 +763,25 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     return bestFrom(attacks.filter(i => i.depth <= minDepth + depthBand));
   }
 
-  /* 7. 일반(비방어) 단어 — 지지 않는 최선 */
+  /* 4-2. 희귀 루트 단어 — 상대가 대응하기 가장 어려운 승리 루트 */
+  const rareRoots = list.filter(i => i.isRareRoot);
+  if (rareRoots.length) return pickRootVariety(rareRoots);
+
+  /* 4-3. 주요 루트 단어 — 받아치기 힘든 승리 루트 */
+  const roots = list.filter(i => i.isRoot && !i.isRareRoot);
+  if (roots.length) return pickRootVariety(roots);
+
+  /* 4-4. 돌림 단어 — 끝 음절로 되돌리는 회전 단어. 루트가 없으면 돌림 단어로
+         유리한 흐름을 만든다 (방어 파일의 '돌림' 표기와 겹쳐도 전용 셋이면 활용.
+         증명상의 확정 패배 수는 이미 위 리스트 필터에서 제외되어 있음) */
+  const dolrims = list.filter(i => i.isDolrim && !i.isRareRoot && !i.isValue);
+  if (dolrims.length) return bestFrom(dolrims);
+
+  /* 4-5. 일반(비방어) 단어 — 지지 않는 최선 */
   const normals = list.filter(i => !i.isDefense);
   if (normals.length) return bestFrom(normals);
 
-  /* 8. 전부 방어 단어일 때만 최후 수단 */
+  /* 4-6. 전부 방어 단어일 때만 최후 수단 */
   return bestFrom(list);
 }
 
