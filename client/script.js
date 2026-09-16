@@ -2175,6 +2175,8 @@ function applyFx(el, cls, ms = 700) {
 function renderMoneyBar() {
   const chip = $("#moneyDisplay");
   if (chip) chip.textContent = moneyBalance.toLocaleString();
+  const shopMoney = $("#shopMoney");
+  if (shopMoney) shopMoney.textContent = moneyBalance.toLocaleString();
   const bar = $(".money-bar");
   if (bar) bar.classList.toggle("hidden", false);
   const boostChip = $("#boostChip");
@@ -2230,6 +2232,8 @@ function renderAttendance() {
 function renderShop() {
   const body = $("#shopBody");
   if (!body || !shopInfo) return;
+  const shopMoney = $("#shopMoney");
+  if (shopMoney) shopMoney.textContent = moneyBalance.toLocaleString();
   const mkRow = (label, desc, btnId, btnLabel, btnStyle, price) => {
     const disabled = typeof price === "number" && moneyBalance < price ? " disabled" : "";
     return `<div class="shop-item">

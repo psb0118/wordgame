@@ -534,17 +534,16 @@ function solveWin(word, usedSet, depth, budget, WORD_INDEX) {
 /* =========================================================
    AI — 최강 전략적 단어 선택
    절대 원칙 (우선순위):
-   1. 즉시 승리(한방) → 무조건 사용
-   2. 강제 승리(유도) 라인 — 뒤에 가능한 루트 단어가 적은 끝밭침으로 몰고 가
-      확정 승리를 증명할 수 있으면 그 수를 우선 사용 (꾼·늬 같은 짧은 말밭)
-   3. 값으로 끝나는 루트 단어(값표, 표준값, ~~값) → 상대가 받아치기 힘든 승리 루트
-   4. 희귀 루트 단어 → 상대가 대응하기 가장 어려운 승리 루트
-   5. 주요 루트 단어 → 받아치기 힘든 승리 루트
-   6. 공격 단어 (깊이 낮을수록 강함)
-   7. 일반(비방어) 단어 중 상대 선택지를 최소화
-   8. 모든 후보가 방어 단어일 때만 마지막 수단으로 사용
-   - 루트/희귀 루트 단어를 우선 사용하되 공격 단어는 그 다음 수단으로 쓴다
-   - 방어 단어는 지지 않기 위해 평소엔 절대 쓰지 않는다
+   1. 방어 단어는 어떤 경우에도 절대 사용하지 않는다 (후보에서 제거, 전부 방어면 수를 내지 않음)
+   2. 무조건 루트/희귀 루트 단어만 사용한다 (그 외 공격/일반/돌림 단어는 두지 않는다)
+      단, 아래는 예외로 허용:
+     a. 즉시 승리(한방) → 루트가 아니어도 무조건 사용
+     b. 강제 승리 증명 → 상대가 지는 수(꾼·늬 같은 짧은 말밭)면 무조건 사용,
+        상대가 이기는 것이 증명되는 수는 배제
+     c. 값 루트(값표, 표준값, ~~값) → 받아치기 힘든 승리 루트
+     d. 돌림 좁힘(펀넬) → 그 돌림 이후에 다시 루트/희귀 루트 단어로
+        이어질 수 있을 때만 사용 (틀라솔테오틀 → 틀가락 → 낙타사슴 → … → 접꾼)
+   - 루트/희귀 루트가 하나도 없으면 수를 내지 않는다(= 패배)
    - 상대에게 즉시 승리(한방)를 주는 단어는 회피
    - 상대가 이 단어를 받아친 뒤에도 AI가 이길 수 있는지 여러 수 먼저 내다본다
 ========================================================= */
@@ -590,6 +589,11 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   });
 
   const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
+  /* 0. 방어 단어 절대 배제 — 어떤 경우에도 방어 단어로 받아치지 않는다.
+     전부 방어 단어뿐이면 수를 내지 않는다(= 패배). */
+  list = list.filter(i => !i.isDefense);
+  if (!list.length) return null;
 
   const capSample = (arr) => {
     if (arr.length <= EVAL_CAP) return arr;
@@ -749,40 +753,29 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     return pick(ranked.slice(0, window)).i.w;
   };
 
-  /* 4-0. 돌림 좁힘 — 상대를 좁은 말밭으로 되돌리는 강한 펀넬 돌림(예: 틀라솔테오틀)이
-         있으면 공격 단어·루트보다도 우선해 그 순환을 시작한다 (상황 판단) */
-  const funnelDolrims = list.filter(i => funnelOf(i) >= 60);
+  /* 4-0. 돌림 좁힘 — 상대를 좁은 말밭으로 되돌리는 강한 펀넬 돌림(예: 틀라솔테오틀).
+         사용 기준: 그 돌림 뒤 상대 말밭에 다시 꺼낼 수 있는 루트/희귀 루트 단어가
+         있을 때만 (틀라솔테오틀 → 상대 틀가락 → 낙타사슴 → … → 접꾼로 이어지는 펀넬) */
+  const rootFollow = (info) => {
+    const opp = getCandidates(info.w, newUsed, WORD_INDEX, 1000);
+    for (const ow of opp) {
+      if ((ROOT_WORDS && ROOT_WORDS.has(ow)) || rareRootSet.has(ow)) return true;
+    }
+    return false;
+  };
+  const funnelDolrims = list.filter(i => funnelOf(i) >= 60 && rootFollow(i));
   if (funnelDolrims.length) return bestFrom(funnelDolrims);
 
-  /* 4-1. 공격 단어 — 시작 이후엔 바로 공격 단어를 쓴다. 낮은 깊이 순 우선
-         (어려움은 최저 깊이만, 보통은 ±1 대역에서 다양하게) */
-  const attacks = list.filter(i => i.isAttack);
-  if (attacks.length) {
-    const minDepth = Math.min(...attacks.map(i => i.depth));
-    const depthBand = strong ? 0 : 1;
-    return bestFrom(attacks.filter(i => i.depth <= minDepth + depthBand));
-  }
-
-  /* 4-2. 희귀 루트 단어 — 상대가 대응하기 가장 어려운 승리 루트 */
+  /* 4-1. 희귀 루트 단어 — 상대가 대응하기 가장 어려운 승리 루트 */
   const rareRoots = list.filter(i => i.isRareRoot);
   if (rareRoots.length) return pickRootVariety(rareRoots);
 
-  /* 4-3. 주요 루트 단어 — 받아치기 힘든 승리 루트 */
+  /* 4-2. 주요 루트 단어 — 받아치기 힘든 승리 루트 */
   const roots = list.filter(i => i.isRoot && !i.isRareRoot);
   if (roots.length) return pickRootVariety(roots);
 
-  /* 4-4. 돌림 단어 — 끝 음절로 되돌리는 회전 단어. 루트가 없으면 돌림 단어로
-         유리한 흐름을 만든다 (방어 파일의 '돌림' 표기와 겹쳐도 전용 셋이면 활용.
-         증명상의 확정 패배 수는 이미 위 리스트 필터에서 제외되어 있음) */
-  const dolrims = list.filter(i => i.isDolrim && !i.isRareRoot && !i.isValue);
-  if (dolrims.length) return bestFrom(dolrims);
-
-  /* 4-5. 일반(비방어) 단어 — 지지 않는 최선 */
-  const normals = list.filter(i => !i.isDefense);
-  if (normals.length) return bestFrom(normals);
-
-  /* 4-6. 전부 방어 단어일 때만 최후 수단 */
-  return bestFrom(list);
+  /* 루트/희귀 루트가 하나도 없으면 수를 내지 않는다 (무조건 루트만 사용) */
+  return null;
 }
 
 /* =========================================================
