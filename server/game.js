@@ -43,7 +43,8 @@ const DUEUM = {
   "릅": ["릅", "늡"], "늡": ["늡", "릅"],
   "닢": ["닢", "잎"], "잎": ["잎", "닢"],
   "놉": ["놉", "롭"],
-  "름": ["름", "늠", "음"], "늠": ["늠", "름", "음"], "음": ["음", "름", "늠"]
+  "름": ["름", "늠", "음"], "늠": ["늠", "름", "음"], "음": ["음", "름", "늠"],
+  "뤠": ["뤠", "눼", "웨"], "눼": ["눼", "뤠", "웨"], "웨": ["웨", "뤠", "눼"]
 };
 
 /* =========================================================
@@ -652,9 +653,23 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     else if (info.rarityCount <= 5) score += 38;
     else if (info.rarityCount <= 15) score += 18;
     else if (info.rarityCount <= 30) score += 12;
-    /* 꾼 마무리 — 꾼으로 끝내는 수는 상대의 꾼·대응지가 좁아질수록 더 유리 */
-    if (info.lastSyl === "꾼") score += 25;
-    score += funnelOf(info);
+    /* 꾼 마무리 — 접꾼·감꾼류. 상대는 22개뿐인 꾼 말밭으로 몰려 좁은 골목에 갇힌다.
+       꾼으로 끝내는 수를 적극적으로 쓴다 */
+    if (info.lastSyl === "꾼") score += 45;
+    score += Math.min(60, funnelOf(info)); /* 펀넬 보너스는 60 상한 — 루트/좁은 말밭과 비교 가능하게 */
+
+    /* 상대가 받아칠 루트/희귀 루트가 적은 수를 우선. 예: 가듁 → 상대의 루트 대응은
+       듁슌 하나뿐이므로 보너스. 3개 미만이면 상대 반격이 제한된다. 6개 이상이면 산만한 수. */
+    const oppRootPool = getCandidates(info.w, newUsed, WORD_INDEX, 64);
+    let oppRoots = 0;
+    for (const ow of oppRootPool) {
+      if ((ROOT_WORDS && ROOT_WORDS.has(ow)) || rareRootSet.has(ow)) oppRoots++;
+    }
+    if (oppRoots === 0) score += 40;
+    else if (oppRoots === 1) score += 25;
+    else if (oppRoots === 2) score += 15;
+    else if (oppRoots === 3) score += 8;
+    else if (oppRoots >= 6) score -= 20;
 
     score -= Math.min(info.nextCount, 15) * 2;
     const opp = getCandidates(info.w, newUsed, WORD_INDEX, OPP_CAP + 1);
@@ -731,37 +746,10 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     if (safe.length) list = safe;
   }
 
-  /* 3. 값 루트 — ~~값/값표/표준값. 받아치기 어려운 강력한 수 */
-  const values = list.filter(i => i.isValue);
-  if (values.length) return bestFrom(values);
-
-  /* 루트/희귀 루트 — 폭을 넓혀 다양하게 쓴다. 즉시 패배로 이어지는 수(상대가 받아친 뒤
-     내 수가 0)는 피하고, 끝 음절(대응지)이 좁은 루트를 우선하되 상위 몇 개 중 무작위로
-     골라 매 턴 같은 루트 단어만 반복하지 않게 한다. 전부 위험하면 그룹 전체로 폴백. */
-  const pickRootVariety = (group) => {
-    if (!group.length) return null;
-    const avoid = (i) => {
-      const opp = getCandidates(i.w, newUsed, WORD_INDEX, OPP_CAP);
-      for (const ow of opp) {
-        const owUsed = new Set(newUsed);
-        owUsed.add(i.w);
-        owUsed.add(ow);
-        if (getCandidates(ow, owUsed, WORD_INDEX, 1).length === 0) return true;
-      }
-      return false;
-    };
-    const safe = group.filter(i => !avoid(i));
-    const pool = safe.length ? safe : group;
-    const ranked = pool
-      .map(i => ({ i, r: SYLLABLE_RARITY.get(i.lastSyl) ?? 9999 }))
-      .sort((a, b) => a.r - b.r);
-    const window = Math.min(6, ranked.length);
-    return pick(ranked.slice(0, window)).i.w;
-  };
-
-  /* 4-0. 돌림 좁힘 — 상대를 좁은 말밭으로 되돌리는 강한 펀넬 돌림(예: 틀라솔테오틀).
-         사용 기준: 그 돌림 뒤 상대 말밭에 다시 꺼낼 수 있는 루트/희귀 루트 단어가
-         있을 때만 (틀라솔테오틀 → 상대 틀가락 → 낙타사슴 → … → 접꾼로 이어지는 펀넬) */
+  /* 3. 모든 수 비교 — 값/루트/희귀 루트/펀넬 돌림 후보를 한 점수로 매겨 더 좋은 수를
+        계산한다. 돌림은 "상대 말밭에 꺼낼 루트/희귀 루트가 남아 있을 때"(루트 팔로우)만
+        후보로 남겨, 돌림이 유리하면 돌림이, 더 좋은 루트/좁은 말밭 수가 있으면 그 수가
+        점수에서 앞서도록 한다. 즉 돌림에 치우치지 않고 더 좋은 수가 있는지 확인한다. */
   const rootFollow = (info) => {
     const opp = getCandidates(info.w, newUsed, WORD_INDEX, 1000);
     for (const ow of opp) {
@@ -769,19 +757,13 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     }
     return false;
   };
-  const funnelDolrims = list.filter(i => funnelOf(i) >= 60 && rootFollow(i));
-  if (funnelDolrims.length) return bestFrom(funnelDolrims);
-
-  /* 4-1. 희귀 루트 단어 — 상대가 대응하기 가장 어려운 승리 루트 */
-  const rareRoots = list.filter(i => i.isRareRoot);
-  if (rareRoots.length) return pickRootVariety(rareRoots);
-
-  /* 4-2. 주요 루트 단어 — 받아치기 힘든 승리 루트 */
-  const roots = list.filter(i => i.isRoot && !i.isRareRoot);
-  if (roots.length) return pickRootVariety(roots);
-
-  /* 루트/희귀 루트가 하나도 없으면 수를 내지 않는다 (무조건 루트만 사용) */
-  return null;
+  const eligible = list.filter(i =>
+    i.isValue ||
+    i.isRoot ||
+    i.isRareRoot ||
+    (i.isDolrim && funnelOf(i) >= 60 && rootFollow(i)));
+  if (!eligible.length) return null; /* 값/루트/희귀루트/유효 펀넬이 없으면 수를 내지 않는다 */
+  return bestFrom(eligible);
 }
 
 /* =========================================================
