@@ -440,12 +440,9 @@ function chooseStartWord(usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
    AI — 첫 턴(턴 0) 시작 단어 선택
    - 반드시 주어진 시작 음절로 시작
    - 공격 단어/한방 단어/이미 사용한 단어/방어 단어 배제
-   - 우선순위:
-     1. 희귀 루트 단어 (상대가 받아치기 어려운 시작)
-     2. 루트 단어
-     3. 돌림 단어 (유리한 순환 흐름을 만드는 시작)
-     4. 값 루트 단어 (~~값)
-     5. 일반 단어 (희귀한 끝 음절 우선)
+   - 시작 단어 = 상대 대응지(끝 음절 버킷)가 좁은 수 우선 — 켄(자르브뤼켄 등)·꾼류의
+     좁은 끝밭침 오프닝으로 상대를 골목으로 몰아 넣는다. 같은 좁음 안에서는
+     희귀루트 > 루트 > 돌림 > 일반 순서로 무작위 다양하게
    - 어떤 경우에도 방어 단어는 시작으로 절대 두지 않는다
 ========================================================= */
 
@@ -469,45 +466,31 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
 
   const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 
-  /* 루트 단어가 있다면 무조건 루트 먼저 — 희귀 루트일수록 좋다.
-     희귀도 = 그 끝 음절로 이어지는 후보 수가 적을수록 상대가 응수하기 어렵다 */
-  const roots = legal.filter(w => rootSet.has(normalizeWord(w)));
-  const rareRoots = roots.filter(w => rareRootSet.has(normalizeWord(w)));
-  const rootPool = rareRoots.length > 0 ? rareRoots : roots;
-  if (rootPool.length > 0) {
-    const countLast = w => {
-      const bucket = WORD_INDEX.get(normalizeWord(w).at(-1));
-      return bucket ? bucket.length : 9999;
-    };
-    rootPool.sort((a, b) => countLast(a) - countLast(b));
-    return pick(rootPool.slice(0, Math.min(3, rootPool.length)));
-  }
+  /* 시작 단어 = "상대 대응지(내 끝 음절 버킷)가 가장 좁은 수"를 우선.
+     켄(자르브뤼켄·마우어하켄·시클로헥사데켄·나주켄)이나 꾼처럼 남은 버킷이 좁은
+     오프닝이면 상대를 골목으로 몰아 넣을 수 있다. 같은 좁은-끝음절 안에서는
+     희귀루트 > 루트 > 돌림 > 일반 순으로 우선하되 무작위로 다양하게 고른다 */
+  const tierOf = (nw) => rareRootSet.has(nw) ? 4 : rootSet.has(nw) ? 3 : dolrimSet.has(nw) ? 2 : 1;
 
-  /* 돌림 단어 — 루트가 없으면 돌림 단어로 유리한 순환 시작 (방어 표기와 겹쳐도 전용 셋) */
-  const dolrims = legal.filter(w => dolrimSet.has(normalizeWord(w)) && !normalizeWord(w).endsWith("값"));
-  if (dolrims.length > 0) {
-    const countLast = w => {
-      const bucket = WORD_INDEX.get(normalizeWord(w).at(-1));
-      return bucket ? bucket.length : 9999;
-    };
-    dolrims.sort((a, b) => countLast(a) - countLast(b));
-    return pick(dolrims.slice(0, Math.min(3, dolrims.length)));
-  }
+  /* 끝 음절의 실제 상대 대응 수 — 두음법칙 확장(리→이 등)까지 포함해
+     "상대가 이 수를 받은 뒤 답할 수 있는 후보"를 센다 */
+  const endSizes = new Map();
+  for (const [ch, bucket] of WORD_INDEX) endSizes.set(ch, bucket.length);
+  const replyPoolOf = (endChar) => {
+    let n = 0;
+    for (const fc of allowedFirstChars(endChar)) n += endSizes.get(fc) || 0;
+    return n;
+  };
 
-  /* 값 루트 (~~값) */
-  const values = legal.filter(w => normalizeWord(w).endsWith("값"));
-  if (values.length > 0) return pick(values);
-
-  /* 일반 단어 — 끝 음절이 희귀할수록 상대 선택지가 좁아진다 */
-  const byLast = new Map();
-  for (const w of legal) {
-    const last = normalizeWord(w).at(-1);
-    if (!byLast.has(last)) byLast.set(last, []);
-    byLast.get(last).push(w);
-  }
-  const rareLast = [...byLast.entries()].sort((a, b) => a[1].length - b[1].length)[0];
-  if (rareLast) return pick(rareLast[1].slice(0, Math.min(3, rareLast[1].length)));
-  return pick(legal);
+  const ranked = legal.map(w => {
+    const nw = normalizeWord(w);
+    /* 켄 계열(자르브뤼켄·마우어하켄·시클로헥사데켄·나주켄 등)은 상대 대응 버킷이
+       좁아 골목으로 몰아넣기에 유리해 가산 -25 */
+    const bias = nw.endsWith("켄") ? 25 : 0;
+    return { w, nw, endBucket: replyPoolOf(nw.at(-1)) - bias, tier: tierOf(nw) };
+  });
+  ranked.sort((a, b) => a.endBucket - b.endBucket || b.tier - a.tier);
+  return pick(ranked.slice(0, Math.min(5, ranked.length))).w;
 }
 
 /* =========================================================
@@ -618,6 +601,36 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     return pool.slice(0, EVAL_CAP);
   };
 
+  /* 돌림 좁힘(펀넬) 점수 — 돌림 단어(예: 틀라솔테오틀)는 상대를 내 끝 음절 말밭으로
+     되돌려 상대의 선택 폭을 그 버킷 안으로 단단히 묶는다. 버킷(남은 대응 풀)이 좁을수록
+     상대를 골목(꾼 등)으로 몰아넣기 유리해 점수가 높다. 판정은 두음법칙 확장을 포함한
+     실제 대응 수로 센다 */
+  const funnelCache = new Map();
+  const funnelOf = (info) => {
+    if (!info.isDolrim) return 0;
+    if (funnelCache.has(info.w)) return funnelCache.get(info.w);
+    let score = 0;
+    const oppPool = getCandidates(info.w, newUsed, WORD_INDEX, 1000);
+    if (oppPool.length === 0) { funnelCache.set(info.w, 0); return 0; }
+    let P = 0;
+    for (const fc of allowedFirstChars(info.w.at(-1))) P += (WORD_INDEX.get(fc) || []).length;
+    const eff = Math.max(1, Math.min(P, oppPool.length));
+    if (eff <= 60) score = 90;
+    else if (eff <= 95) score = 80;
+    else if (eff <= 130) score = 65;
+    else if (eff <= 180) score = 45;
+    /* 그 말밭의 후보들이 대부분 '좁은 끝음절로 끝나는 수'라면 좁힘이 더 확실하다 */
+    let narrow = 0;
+    for (const ow of oppPool) {
+      let rp = 0;
+      for (const fc of allowedFirstChars(ow.at(-1))) rp += (WORD_INDEX.get(fc) || []).length;
+      if (rp <= 40) narrow++;
+    }
+    if (narrow / oppPool.length >= 0.7) score = Math.min(110, score + 20);
+    funnelCache.set(info.w, score);
+    return score;
+  };
+
   const oppScore = (info) => {
     let score = 0;
     if (info.isValue) score += 90;
@@ -628,6 +641,10 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     if (info.rarityCount <= 2) score += 60;
     else if (info.rarityCount <= 5) score += 38;
     else if (info.rarityCount <= 15) score += 18;
+    else if (info.rarityCount <= 30) score += 12;
+    /* 꾼 마무리 — 꾼으로 끝내는 수는 상대의 꾼·대응지가 좁아질수록 더 유리 */
+    if (info.lastSyl === "꾼") score += 25;
+    score += funnelOf(info);
 
     score -= Math.min(info.nextCount, 15) * 2;
     const opp = getCandidates(info.w, newUsed, WORD_INDEX, OPP_CAP + 1);
@@ -708,10 +725,10 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   const values = list.filter(i => i.isValue);
   if (values.length) return bestFrom(values);
 
-  /* 루트/희귀 루트는 점수 대신 자유 선택 — 매번 같은 단어만 고르는 단조로움을 없애고
-     다양한 루트 단어를 쓴다. 단, 즉시 패배로 이어지는 수(상대가 받아친 뒤 내 수가 0)는
-     피한다. 전부 위험하면 기존 점수 평가로 폴백. */
-  const pickFree = (group) => {
+  /* 루트/희귀 루트 — 폭을 넓혀 다양하게 쓴다. 즉시 패배로 이어지는 수(상대가 받아친 뒤
+     내 수가 0)는 피하고, 끝 음절(대응지)이 좁은 루트를 우선하되 상위 몇 개 중 무작위로
+     골라 매 턴 같은 루트 단어만 반복하지 않게 한다. 전부 위험하면 그룹 전체로 폴백. */
+  const pickRootVariety = (group) => {
     if (!group.length) return null;
     const avoid = (i) => {
       const opp = getCandidates(i.w, newUsed, WORD_INDEX, OPP_CAP);
@@ -724,16 +741,26 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
       return false;
     };
     const safe = group.filter(i => !avoid(i));
-    return pick((safe.length ? safe : group)).w;
+    const pool = safe.length ? safe : group;
+    const ranked = pool
+      .map(i => ({ i, r: SYLLABLE_RARITY.get(i.lastSyl) ?? 9999 }))
+      .sort((a, b) => a.r - b.r);
+    const window = Math.min(6, ranked.length);
+    return pick(ranked.slice(0, window)).i.w;
   };
+
+  /* 4-0. 돌림 좁힘 — 상대를 좁은 말밭으로 되돌리는 강한 펀넬 돌림(예: 틀라솔테오틀)이
+         있으면 루트 단어보다도 우선해 그 순환을 시작한다 (상황 판단: ratio ≥ 0.6) */
+  const funnelDolrims = list.filter(i => funnelOf(i) >= 60);
+  if (funnelDolrims.length) return bestFrom(funnelDolrims);
 
   /* 4. 희귀 루트 단어 — 상대가 대응하기 가장 어려운 승리 루트 */
   const rareRoots = list.filter(i => i.isRareRoot);
-  if (rareRoots.length) return pickFree(rareRoots);
+  if (rareRoots.length) return pickRootVariety(rareRoots);
 
   /* 5. 주요 루트 단어 — 받아치기 힘든 승리 루트 */
   const roots = list.filter(i => i.isRoot && !i.isRareRoot);
-  if (roots.length) return pickFree(roots);
+  if (roots.length) return pickRootVariety(roots);
 
   /* 5-1. 돌림 단어 — 끝 음절로 되돌리는 회전 단어. 루트가 없으면 돌림 단어로
          유리한 흐름을 만든다 (방어 파일의 '돌림' 표기와 겹쳐도 전용 셋이면 활용.
