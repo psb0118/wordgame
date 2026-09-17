@@ -2140,6 +2140,36 @@ button:active:not(:disabled) {
 .season-reward-item b {
   color: var(--accent);
 }
+
+/* 시즌 탭 */
+.season-panel-head { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.season-bar-wrap { margin-top: 10px; }
+.mission-group {
+  background: rgba(30, 41, 59, 0.45);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.mission-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 800;
+  font-size: 0.95rem;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.mission-group-title .mission-period {
+  font-weight: 600;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+.missions-empty {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  padding: 6px 0;
+}
 /* 랭크 자동 계속매칭 토글 */
 .autoqueue-label {
   display: flex;

@@ -57,8 +57,9 @@ let attendanceStreak = 0;
 let attendanceNextReward = 0;
 const attendanceReward = (streak) => Math.min(10000, 2000 + (streak - 1) * 1000);
 
-/* 일일 미션 & 최근 전적 상태 */
-let missionsState = [];
+/* 일일/주간/월간 미션 & 최근 전적 상태 */
+let missionsGroups = { daily: [], weekly: [], monthly: [] };
+let missionPeriods = {};
 let recentGamesState = [];
 let dailyCounters = null;
 
@@ -517,6 +518,10 @@ function switchToModeTab(mode, rankedInGame) {
     $("#rankedLobby")?.classList.toggle("hidden", !!rankedInGame);
     $("#rankedGame")?.classList.toggle("hidden", !rankedInGame);
   }
+  if (mode === "season") {
+    refreshSeasonBar();
+    if (socket && socketConnected) socket.emit("missions:status");
+  }
 }
 
 /* 재접속용 — 현재 방에 있는 상태를 세션에 기록한다 */
@@ -658,12 +663,11 @@ function initSocket() {
       recentGamesState = data.recentGames;
       renderRecentGames();
     }
-    if (data.daily) {
-      dailyCounters = data.daily;
-      if (missionsState.length > 0) {
-        applyDailyToMissions(data.daily);
-        renderMissions();
-      }
+    if (data.daily || data.weekly || data.monthly) {
+      if (data.daily) dailyCounters = data.daily;
+      const any = applyRankingToMissions(data);
+      if (!any && socket && socket.connected) socket.emit("missions:status");
+      renderMissions();
     }
     if (shopInfo) renderShop();
     renderAccTitles();
@@ -832,10 +836,20 @@ function initSocket() {
     }
   });
 
-  /* -- 일일 미션 ---------------------------------------- */
+  /* -- 일일/주간/월간 미션 ---------------------------------------- */
   socket.on("missions:status", (data) => {
-    if (!data || !Array.isArray(data.missions)) return;
-    missionsState = data.missions;
+    if (!data) return;
+    const safe = (arr) => Array.isArray(arr) ? arr : [];
+    if (data.groups) {
+      missionsGroups = {
+        daily: safe(data.groups.daily),
+        weekly: safe(data.groups.weekly),
+        monthly: safe(data.groups.monthly)
+      };
+    } else if (Array.isArray(data.missions)) {
+      missionsGroups.daily = data.missions;
+    }
+    if (data.periods) missionPeriods = data.periods || {};
     if (data.daily) dailyCounters = data.daily;
     renderMissions();
   });
@@ -843,8 +857,17 @@ function initSocket() {
   socket.on("missions:result", (data) => {
     if (!data) return;
     showMessage(data.reason || data.message || (data.ok ? "보상을 수령했습니다!" : "보상 수령에 실패했습니다."), data.ok ? "success" : "error");
+    const safe = (arr) => Array.isArray(arr) ? arr : [];
+    if (data.groups) {
+      missionsGroups = {
+        daily: safe(data.groups.daily),
+        weekly: safe(data.groups.weekly),
+        monthly: safe(data.groups.monthly)
+      };
+    } else if (Array.isArray(data.missions)) {
+      missionsGroups.daily = data.missions;
+    }
     if (data.daily) dailyCounters = data.daily;
-    if (Array.isArray(data.missions)) missionsState = data.missions;
     if (typeof data.money === "number") moneyBalance = data.money;
     if (Array.isArray(data.titles)) ownedTitles = data.titles;
     if (typeof data.currentTitle === "string") currentTitle = data.currentTitle;
@@ -2053,13 +2076,13 @@ function resetRankedBoard() {
 
 /* 시즌제 랭킹 — 현재 시즌/종료까지 남은 기간/지난 시즌 1위/보상 정보를 표시 */
 async function refreshSeasonBar() {
-  const bar = $("#rankedSeasonBar");
-  if (!bar) return;
+  const bars = [$("#rankedSeasonBar"), $("#seasonPanelBar")].filter(Boolean);
+  if (bars.length === 0) return;
   try {
     const info = await (await fetch(`/api/season`)).json();
     if (!info || info.ok === false) throw new Error("bad payload");
     const reward = (info.rewards || []).map(r => `<span class="season-reward-item"><b>${escapeHtml(r.rank)}</b> ${escapeHtml(r.value)}</span>`).join("");
-    bar.innerHTML = `<div class="season-bar">
+    const html = `<div class="season-bar">
         <div class="season-bar-top">
           <b>시즌 ${escapeHtml(info.key)}</b>
           <span>· 종료까지 <b>${Number(info.daysLeft || 0)}일</b></span>
@@ -2067,9 +2090,9 @@ async function refreshSeasonBar() {
         <div class="season-bar-prev">${info.previous ? `🏆 지난 시즌(${escapeHtml(info.previous.season)}) 1위 <b>${escapeHtml(info.previous.champion)}</b>` : "아직 종료된 시즌이 없습니다."}</div>
         <div class="season-bar-reward">${reward}</div>
       </div>`;
-    bar.classList.remove("hidden");
+    bars.forEach(b => { b.innerHTML = html; b.classList.remove("hidden"); });
   } catch (err) {
-    bar.classList.add("hidden");
+    bars.forEach(b => b.classList.add("hidden"));
   }
 }
 
@@ -2299,13 +2322,22 @@ function renderAccTitles() {
 }
 
 /* ---------------------------------------------------------
-   일일 미션 패널
+   미션 패널 (일일/주간/월간)
 --------------------------------------------------------- */
-function applyDailyToMissions(daily) {
-  missionsState.forEach(m => {
-    const cur = m.id === "rankedWins" ? (daily.rankedWins || 0) : (m.id === "oneShots" ? (daily.oneShots || 0) : (daily.streakDone || 0));
-    m.current = Math.min(m.target, cur);
+function applyRankingToMissions(payload) {
+  const scopeMap = { daily: "daily", weekly: "weekly", monthly: "monthly" };
+  let touched = false;
+  ["daily", "weekly", "monthly"].forEach(g => {
+    const raw = payload[scopeMap[g]];
+    if (!raw || !Array.isArray(missionsGroups[g]) || missionsGroups[g].length === 0) return;
+    missionsGroups[g].forEach(m => {
+      const cur = m.id === "rankedWins" ? (raw.rankedWins || 0) : (m.id === "oneShots" ? (raw.oneShots || 0) : (raw.streakDone || 0));
+      m.current = Math.min(m.target, cur);
+      m.claimed = Array.isArray(raw.claimed) && raw.claimed.includes(m.id) ? true : !!m.claimed;
+    });
+    touched = true;
   });
+  return touched;
 }
 
 function rewardLabel(m) {
@@ -2315,23 +2347,27 @@ function rewardLabel(m) {
   return parts.length ? parts.join(" + ") : "보상 없음";
 }
 
-function renderMissions() {
-  const list = $("#missionList");
-  const box = $("#missionBox");
-  const mini = $("#missionMiniCount");
-  if (missionsState.length === 0) {
-    if (box) box.classList.add("hidden");
-    if (list) list.innerHTML = "";
-    const miniBtn = $("#missionBtn");
-    if (miniBtn) miniBtn.classList.add("hidden");
+function missionGroupInfo(g) {
+  const map = {
+    daily: { listSel: "#missionListDaily", periodSel: "#missionPeriodDaily", name: "일일 미션" },
+    weekly: { listSel: "#missionListWeekly", periodSel: "#missionPeriodWeekly", name: "주간 미션" },
+    monthly: { listSel: "#missionListMonthly", periodSel: "#missionPeriodMonthly", name: "월간 미션" }
+  };
+  return map[g] || map.daily;
+}
+
+function renderMissionGroup(g) {
+  const info = missionGroupInfo(g);
+  const list = $(info.listSel);
+  if (!list) return;
+  const missions = Array.isArray(missionsGroups[g]) ? missionsGroups[g] : [];
+  const periodEl = $(info.periodSel);
+  if (periodEl && missionPeriods[g]) periodEl.textContent = `(${String(missionPeriods[g])})`;
+  if (missions.length === 0) {
+    list.innerHTML = `<div class="missions-empty">미션 정보를 불러오는 중...</div>`;
     return;
   }
-  if (box) box.classList.remove("hidden");
-  if (!list) return;
-  if (mini) mini.textContent = `${missionsState.filter(m => m.current >= m.target).length}/${missionsState.length}`;
-  const miniBtn = $("#missionBtn");
-  if (miniBtn) miniBtn.classList.remove("hidden");
-  list.innerHTML = missionsState.map(m => {
+  list.innerHTML = missions.map(m => {
     const done = m.current >= m.target;
     const claimed = !!m.claimed;
     const pct = m.target > 0 ? Math.min(100, Math.round((m.current / m.target) * 100)) : 0;
@@ -2343,16 +2379,36 @@ function renderMissions() {
       <div class="mission-bar"><div class="mission-bar-fill" style="width:${pct}%"></div></div>
       <div class="mission-foot">
         <span class="mission-reward">보상: ${escapeHtml(rewardLabel(m))}</span>
-        ${claimed ? "" : (done ? `<button type="button" class="mission-claim" data-mission-claim="${m.id}">받기</button>` : "")}
+        ${claimed ? "" : (done ? `<button type="button" class="mission-claim" data-group="${g}" data-mission-claim="${m.id}">받기</button>` : "")}
       </div>
     </div>`;
   }).join("");
   list.querySelectorAll("[data-mission-claim]").forEach(btn => {
     btn.addEventListener("click", () => {
+      const group = btn.dataset.group || "daily";
       const id = btn.dataset.missionClaim;
-      if (socket && socketConnected) socket.emit("missions:claim", { id });
+      if (socket && socketConnected) socket.emit("missions:claim", { group, id });
     });
   });
+}
+
+function renderMissions() {
+  ["daily", "weekly", "monthly"].forEach(renderMissionGroup);
+  const mini = $("#missionMiniCount");
+  let total = 0, done = 0;
+  ["daily", "weekly", "monthly"].forEach(g => {
+    const arr = Array.isArray(missionsGroups[g]) ? missionsGroups[g] : [];
+    total += arr.length;
+    done += arr.filter(m => m.current >= m.target).length;
+  });
+  const miniBtn = $("#missionBtn");
+  if (total === 0) {
+    if (miniBtn) miniBtn.classList.add("hidden");
+    if (mini) mini.textContent = "0/0";
+    return;
+  }
+  if (miniBtn) miniBtn.classList.remove("hidden");
+  if (mini) mini.textContent = `${done}/${total}`;
 }
 
 /* ---------------------------------------------------------
@@ -2834,10 +2890,8 @@ function openAccountPanel(force) {
   panel.classList.toggle("hidden", !open);
   if (open) {
     renderAccountInfo($("#nickInput")?.value.trim() || myNickname || "");
-    renderMissions();
     renderRecentGames();
     renderAccTitles();
-    if (socket && socketConnected) socket.emit("missions:status");
     setTimeout(() => $("#accPwInput")?.focus(), 60);
   }
 }
@@ -2849,8 +2903,6 @@ function renderAccountInfo(nick) {
   if (pw && myAdminRole !== "none" && !pw.value) {
     pw.placeholder = myAdminRole === "super" ? "최고 관리자 로그인됨" : "서브 관리자 로그인됨";
   }
-  const box = $("#accChangeBox");
-  if (box) box.classList.toggle("hidden", myAdminRole === "none");
 
   /* 비밀번호 저장 — 일반 사용자는 항상 자동 저장(선택 화면 없음), 관리자만 체크박스 표시 */
   const creWrap = $(".acc-save-creds");
@@ -2895,25 +2947,6 @@ function saveAccount() {
   } else {
     accountMsg("서버에 연결되지 않았습니다.", "error");
   }
-}
-
-function changeAccountPassword() {
-  const current = $("#accCurPw")?.value ?? "";
-  const next = $("#accNewPw")?.value ?? "";
-  if (next.length < 4) {
-    accountMsg("새 비밀번호는 4자 이상이어야 합니다.", "error");
-    return;
-  }
-  if (myAdminRole === "super") {
-    socket.emit("admin:setPassword", { current, next });
-  } else if (myAdminRole === "sub") {
-    socket.emit("admin:setSubPassword", { current, next });
-  } else {
-    accountMsg("관리자 계정으로 로그인해야 변경할 수 있습니다.", "error");
-    return;
-  }
-  if ($("#accCurPw")) $("#accCurPw").value = "";
-  if ($("#accNewPw")) $("#accNewPw").value = "";
 }
 
 /* 비밀번호 보기/숨기기 토글 — input을 감싸고 버튼을 붙인다 */
@@ -3254,6 +3287,9 @@ document.addEventListener("DOMContentLoaded", () => {
           socket.emit("attendance:status");
           socket.emit("word:list", { nickname: myNickname || undefined });
         }
+      } else if (currentMode === "season") {
+        refreshSeasonBar();
+        if (socket && socketConnected) socket.emit("missions:status");
       }
       loadSideRanking(sideRankMode, true);
     });
@@ -3310,7 +3346,15 @@ document.addEventListener("DOMContentLoaded", () => {
   bindAdminEnter("#wordReqInput", submitWordRequest);
   $("#shopWordReqSend")?.addEventListener("click", () => submitWordRequestFrom("#shopWordReqInput", "#shopWordReqStatus"));
   bindAdminEnter("#shopWordReqInput", () => submitWordRequestFrom("#shopWordReqInput", "#shopWordReqStatus"));
-  $("#missionBtn")?.addEventListener("click", () => openAccountPanel(true));
+  $("#missionBtn")?.addEventListener("click", () => {
+  if (currentMode === "season") {
+    switchToModeTab("season", true);
+    refreshSeasonBar();
+    if (socket && socketConnected) socket.emit("missions:status");
+  } else {
+    switchToModeTab("season", true);
+  }
+});
   $("#startOnline")?.addEventListener("click", () => {
     if (!socket || !socketConnected) return;
     socket.emit("game:start");
@@ -3493,7 +3537,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#accPwInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); saveAccount(); }
   });
-  $("#accPwSave")?.addEventListener("click", changeAccountPassword);
+  
   $("#accSaveCreds")?.addEventListener("change", (e) => {
     localStorage.setItem("kkSaveAdmin", e.target.checked ? "1" : "0");
     if (!e.target.checked && myAdminRole !== "none") localStorage.removeItem("kkPassword");

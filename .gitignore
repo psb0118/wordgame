@@ -5,3 +5,4 @@ data/admin-config.json
 data/friends.json
 data/custom-words.json
 data/season.json
+*.json.bak

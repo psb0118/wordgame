@@ -28,6 +28,10 @@ const PORT = process.env.PORT || 3000;
 const ROOT_DIR = path.join(__dirname, "..");
 const CLIENT_DIR = path.join(ROOT_DIR, "client");
 const DATA_DIR = path.join(ROOT_DIR, "data");
+/* 런타임 데이터(유저/시즌/친구/관리자 설정/커스텀 사전/버그 제보) 저장 위치.
+   재배포 시 저장소를 새로 클론하면 JSON 파일이 사라지므로, KK_DATA_DIR로
+   영속 디스크 경로를 지정할 수 있다. 미지정 시 기존과 동일하게 data/ 를 쓴다. */
+const RUNTIME_DATA_DIR = process.env.KK_DATA_DIR ? path.resolve(process.env.KK_DATA_DIR) : DATA_DIR;
 let MAX_HEARTS = 2;
 let TURN_TIME = 20;
 let MAX_PLAYERS = 10;
@@ -67,7 +71,7 @@ function notifySuperAdmins(payload) {
 }
 /* 접속 중인 소켓이 관리자 계정(닉네임+비밀번호) 인증을 통과했는지 — 닉네임만으로 관리자가 되지 못하게 함 */
 const adminAuthed = new Map();
-const adminConfigPath = path.join(DATA_DIR, "admin-config.json");
+const adminConfigPath = path.join(RUNTIME_DATA_DIR, "admin-config.json");
 
 function getConfig() {
   return {
@@ -111,27 +115,32 @@ function applyConfigValue(key, raw) {
 
 function saveAdminConfig() {
   try {
-    fs.writeFileSync(adminConfigPath, JSON.stringify({ adminPassword, subAdmins, watchlist: watchNicks, config: getConfig() }, null, 2));
+    writeStoreFile(adminConfigPath, { adminPassword, subAdmins, watchlist: watchNicks, config: getConfig() }, "adminConfig");
   } catch (e) { console.warn("관리자 설정 저장 실패:", e.message); }
 }
 
-function loadAdminConfig() {
+function applyAdminConfig(data) {
+  if (!data || typeof data !== "object") return;
+  if (typeof data.adminPassword === "string" && data.adminPassword) adminPassword = data.adminPassword;
+  if (Array.isArray(data.subAdmins)) {
+    /* 관리자는 닉네임 이름으로만 등록 — 계정 비밀번호는 본인이 계정 탭에서 설정/변경한다 */
+    subAdmins = data.subAdmins
+      .filter(s => s && String(s.nickname || "").trim())
+      .map(s => ({ nickname: String(s.nickname).trim(), password: String(s.password || "") }));
+  }
+  if (Array.isArray(data.watchlist)) watchNicks = data.watchlist.map(w => String(w || "").trim()).filter(Boolean);
+  const c = data.config || {};
+  for (const key of Object.keys(CONFIG_RANGES)) {
+    if (typeof c[key] === "number") applyConfigValue(key, c[key]);
+  }
+}
+
+async function loadAdminConfig() {
   try {
-    if (fs.existsSync(adminConfigPath)) {
-      const data = JSON.parse(fs.readFileSync(adminConfigPath, "utf8"));
-      if (typeof data.adminPassword === "string" && data.adminPassword) adminPassword = data.adminPassword;
-      if (Array.isArray(data.subAdmins)) {
-        /* 관리자는 닉네임 이름으로만 등록 — 계정 비밀번호는 본인이 계정 탭에서 설정/변경한다 */
-        subAdmins = data.subAdmins
-          .filter(s => s && String(s.nickname || "").trim())
-          .map(s => ({ nickname: String(s.nickname).trim(), password: String(s.password || "") }));
-      }
-      if (Array.isArray(data.watchlist)) watchNicks = data.watchlist.map(w => String(w || "").trim()).filter(Boolean);
-      const c = data.config || {};
-      for (const key of Object.keys(CONFIG_RANGES)) {
-        if (typeof c[key] === "number") applyConfigValue(key, c[key]);
-      }
-      console.log("관리자 설정 로드 완료:", JSON.stringify(getConfig()));
+    const data = await loadStoreJSON("adminConfig", adminConfigPath, null);
+    if (data) {
+      applyAdminConfig(data);
+      console.log(`관리자 설정 로드 완료(${dbMode === "pg" ? "DB" : "파일"}):`, JSON.stringify(getConfig()));
     }
   } catch (e) { console.warn("관리자 설정 로드 실패:", e.message); }
 }
@@ -159,24 +168,29 @@ function rebuildWordViews() {
 const customDictPath = path.join(ROOT_DIR, "custom-words.json");
 let customDict = { nextId: 1, pending: [], approved: [], rejected: [] };
 
-function loadCustomDict() {
+function applyCustomDict(data) {
+  if (!data || typeof data !== "object") return;
+  customDict = {
+    nextId: Number(data.nextId) || 1,
+    pending: Array.isArray(data.pending) ? data.pending : [],
+    approved: Array.isArray(data.approved) ? data.approved : [],
+    rejected: Array.isArray(data.rejected) ? data.rejected : []
+  };
+}
+
+async function loadCustomDict() {
   try {
-    if (fs.existsSync(customDictPath)) {
-      const data = JSON.parse(fs.readFileSync(customDictPath, "utf8"));
-      customDict = {
-        nextId: Number(data.nextId) || 1,
-        pending: Array.isArray(data.pending) ? data.pending : [],
-        approved: Array.isArray(data.approved) ? data.approved : [],
-        rejected: Array.isArray(data.rejected) ? data.rejected : []
-      };
-      console.log(`커스텀 사전 로드: 승인 ${customDict.approved.length}개 / 대기 ${customDict.pending.length}개`);
+    const data = await loadStoreJSON("customDict", customDictPath, null);
+    if (data) {
+      applyCustomDict(data);
+      console.log(`커스텀 사전 로드(${dbMode === "pg" ? "DB" : "파일"}): 승인 ${customDict.approved.length}개 / 대기 ${customDict.pending.length}개`);
     }
   } catch (e) { console.warn("커스텀 사전 로드 실패:", e.message); }
 }
 
 function saveCustomDict() {
   try {
-    fs.writeFileSync(customDictPath, JSON.stringify(customDict, null, 2));
+    writeStoreFile(customDictPath, customDict, "customDict");
   } catch (e) { console.warn("커스텀 사전 저장 실패:", e.message); }
 }
 
@@ -186,16 +200,20 @@ function saveCustomDict() {
    - pending: 승인 대기 신청  / rejected: 거절된 신청
 ========================================================= */
 
-const customWordsPath = path.join(DATA_DIR, "custom-words.json");
+const customWordsPath = path.join(RUNTIME_DATA_DIR, "custom-words.json");
 let customWords = { pending: [], approved: [], rejected: [] };
+
+function applyCustomWordsData(data) {
+  if (!data || typeof data !== "object") return;
+  customWords.pending = Array.isArray(data.pending) ? data.pending : [];
+  customWords.approved = Array.isArray(data.approved) ? data.approved : [];
+  customWords.rejected = Array.isArray(data.rejected) ? data.rejected : [];
+}
 
 function loadCustomWords() {
   try {
     if (fs.existsSync(customWordsPath)) {
-      const data = JSON.parse(fs.readFileSync(customWordsPath, "utf8"));
-      customWords.pending = Array.isArray(data.pending) ? data.pending : [];
-      customWords.approved = Array.isArray(data.approved) ? data.approved : [];
-      customWords.rejected = Array.isArray(data.rejected) ? data.rejected : [];
+      applyCustomWordsData(JSON.parse(fs.readFileSync(customWordsPath, "utf8")));
     }
     /* 승인된 커스텀 단어를 게임 사전에 반영 — WORD_SET + WORD_INDEX(첫 글자 버킷) */
     for (const w of customWords.approved) applyCustomWord(w);
@@ -203,9 +221,19 @@ function loadCustomWords() {
   } catch (e) { console.warn("커스텀 사전 로드 실패:", e.message); }
 }
 
+/* PG 모드에서 부팅 시 DB 값으로 덮어쓴다 — 파일이 사라진 재배포에서도 단어 사전 유지 */
+async function hydrateCustomWordsFromPG() {
+  if (dbMode !== "pg") return;
+  const data = await pgStoreGet("customWords");
+  if (!data) return;
+  applyCustomWordsData(data);
+  for (const w of customWords.approved) applyCustomWord(w);
+  console.log(`커스텀 사전 로드(DB): 승인 ${customWords.approved.length} / 대기 ${customWords.pending.length} / 거절 ${customWords.rejected.length}`);
+}
+
 function saveCustomWords() {
   try {
-    fs.writeFileSync(customWordsPath, JSON.stringify(customWords, null, 2));
+    writeStoreFile(customWordsPath, customWords, "customWords");
   } catch (e) { console.warn("커스텀 사전 저장 실패:", e.message); }
 }
 
@@ -230,7 +258,58 @@ loadCustomWords();
 let dbPool = null;
 let dbMode = null;
 const playerCache = new Map();
-const jsonPath = path.join(ROOT_DIR, "player-data.json");
+/* KK_DATA_DIR 지정 시 그 경로를, 미지정 시 기존 위치(저장소 루트)를 유지한다 */
+const jsonPath = process.env.KK_DATA_DIR
+  ? path.join(RUNTIME_DATA_DIR, "player-data.json")
+  : path.join(ROOT_DIR, "player-data.json");
+
+/* ---------------------------------------------------------
+   보조 저장소(friends/season/admin/custom/bug) 영속 계층
+   - PG 모드: kv_store 테이블에 JSON 문자열로 저장/복원
+   - JSON 모드: 파일 저장 + .bak 백업(쓰기 직전 회전)
+   이렇게 하면 DATABASE_URL이 설정된 배포에서는 재배포로 파일이
+   사라져도 모든 데이터가 DB에서 복구된다.
+--------------------------------------------------------- */
+async function pgStoreGet(key) {
+  if (dbMode !== "pg" || !dbPool) return null;
+  try {
+    const r = await dbPool.query("SELECT value FROM kv_store WHERE key = $1", [key]);
+    if (r.rows.length && r.rows[0].value != null) return JSON.parse(r.rows[0].value);
+  } catch (e) { console.warn(`저장소 '${key}' PG 읽기 실패:`, e.message); }
+  return null;
+}
+
+function pgStoreSet(key, value) {
+  if (dbMode !== "pg" || !dbPool) return;
+  dbPool.query(
+    "INSERT INTO kv_store (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+    [key, JSON.stringify(value)]
+  ).catch(e => console.warn(`저장소 '${key}' PG 쓰기 실패:`, e.message));
+}
+
+/* PG 우선 로드 — PG에 값이 있으면 그 값을, 없으면 파일을, 둘 다 없으면 fallback */
+async function loadStoreJSON(key, filePath, fallback = null) {
+  if (dbMode === "pg") {
+    const v = await pgStoreGet(key);
+    if (v !== null) return v;
+  }
+  try {
+    if (fs.existsSync(filePath)) return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (e) { console.warn(`저장소 '${key}' 파일 읽기 실패:`, e.message); }
+  return fallback;
+}
+
+/* 파일 저장 + .bak 백업 회전 + (PG 모드면) DB 미러 */
+function writeStoreFile(filePath, value, key) {
+  try {
+    if (fs.existsSync(filePath)) {
+      try { fs.copyFileSync(filePath, `${filePath}.bak`); } catch (e) { /* 백업 실패는 무시 */ }
+    }
+    fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
+  } catch (e) { console.warn(`저장소 '${key}' 파일 저장 실패:`, e.message); }
+  pgStoreSet(key, value);
+}
+
 
 /* 실사용자 이름이 없는 레코드(소켓 ID 키 + '플레이어' 닉네임)는 고스트로 분류 —
    랭킹/리더보드에서 제외하고, 계정을 만들면 사라진다 */
@@ -281,6 +360,13 @@ function mergePlayerRecords(a, b) {
 
 function loadJsonDb() {
   try {
+    /* 본 파일이 없는데 백업(.bak)이 있으면 복원 — 부분 유실/중단 복구 */
+    if (!fs.existsSync(jsonPath) && fs.existsSync(`${jsonPath}.bak`)) {
+      try {
+        fs.copyFileSync(`${jsonPath}.bak`, jsonPath);
+        console.warn("player-data.json 유실 감지 — 백업에서 복원했습니다.");
+      } catch (e) { console.warn("player-data.json 백업 복원 실패:", e.message); }
+    }
     if (fs.existsSync(jsonPath)) {
       const data = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
       const merged = new Map();
@@ -303,31 +389,36 @@ function loadJsonDb() {
 /* =========================================================
    친구 & 초대 — 닉네임이 곧 계정. 친구 목록/초대 대상 조회에 사용한다
 ========================================================= */
-const friendsJsonPath = path.join(DATA_DIR, "friends.json");
+const friendsJsonPath = path.join(RUNTIME_DATA_DIR, "friends.json");
 const friendsMap = new Map();            /* 정규화 닉네임 -> Set<정규화 닉네임> */
 const friendRequests = new Map();        /* 신청한 쪽 정규화 닉네임 -> Set<받는 쪽 정규화 닉네임> */
 const onlineNicks = new Map();           /* 정규화 닉네임 -> socketId(접속 중) */
 const socketNicks = new Map();           /* socketId -> 등록된 닉네임 (닉네임 재적용 전 새 소켓 구분) */
 const normKey = (nick) => String(nick || "").replace(/\s+/g, "").toLowerCase();
 
-function loadFriends() {
-  try {
-    if (fs.existsSync(friendsJsonPath)) {
-      const data = JSON.parse(fs.readFileSync(friendsJsonPath, "utf8"));
-      for (const [k, arr] of Object.entries(data)) {
-        if (!Array.isArray(arr)) continue;
-        if (k === "_requests") {
-          for (const [from, to] of arr) {
-            const f = normKey(from), t = normKey(to);
-            if (!f || !t) continue;
-            if (!friendRequests.has(f)) friendRequests.set(f, new Set());
-            friendRequests.get(f).add(t);
-          }
-          continue;
-        }
-        friendsMap.set(normKey(k), new Set((arr || []).map(f => normKey(f))));
+function applyFriendsData(data) {
+  if (!data || typeof data !== "object") return;
+  for (const [k, arr] of Object.entries(data)) {
+    if (!Array.isArray(arr)) continue;
+    if (k === "_requests") {
+      for (const [from, to] of arr) {
+        const f = normKey(from), t = normKey(to);
+        if (!f || !t) continue;
+        if (!friendRequests.has(f)) friendRequests.set(f, new Set());
+        friendRequests.get(f).add(t);
       }
-      console.log(`친구 데이터 로드: 친구 ${friendsMap.size}명, 대기 신청 ${friendRequests.size}명`);
+      continue;
+    }
+    friendsMap.set(normKey(k), new Set((arr || []).map(f => normKey(f))));
+  }
+}
+
+async function loadFriends() {
+  try {
+    const data = await loadStoreJSON("friends", friendsJsonPath, null);
+    if (data) {
+      applyFriendsData(data);
+      console.log(`친구 데이터 로드(${dbMode === "pg" ? "DB" : "파일"}): 친구 ${friendsMap.size}명, 대기 신청 ${friendRequests.size}명`);
     }
   } catch (e) { console.warn("친구 데이터 로드 실패:", e.message); }
 }
@@ -339,7 +430,7 @@ function saveFriends() {
     const reqs = [];
     for (const [from, set] of friendRequests) for (const to of set) reqs.push([from, to]);
     if (reqs.length) obj["_requests"] = reqs;
-    fs.writeFileSync(friendsJsonPath, JSON.stringify(obj, null, 2));
+    writeStoreFile(friendsJsonPath, obj, "friends");
   } catch (e) { console.warn("친구 데이터 저장 실패:", e.message); }
 }
 
@@ -379,6 +470,10 @@ function saveJsonDb() {
   try {
     const obj = {};
     for (const [k, v] of playerCache) obj[k] = v;
+    /* 쓰기 직전 이전 내용을 .bak으로 회전 — 유실 시 loadJsonDb가 복원 */
+    if (fs.existsSync(jsonPath)) {
+      try { fs.copyFileSync(jsonPath, `${jsonPath}.bak`); } catch (e) { /* 무시 */ }
+    }
     fs.writeFileSync(jsonPath, JSON.stringify(obj, null, 2));
   } catch (e) { console.warn("JSON DB 저장 실패:", e.message); }
 }
@@ -410,6 +505,8 @@ async function initDatabase() {
           attendance_streak INTEGER DEFAULT 0,
           recent_games TEXT DEFAULT '[]',
           daily TEXT DEFAULT '{}',
+          weekly TEXT DEFAULT '{}',
+          monthly TEXT DEFAULT '{}',
           single_rating INTEGER DEFAULT 1000,
           single_wins INTEGER DEFAULT 0,
           single_losses INTEGER DEFAULT 0,
@@ -437,7 +534,17 @@ async function initDatabase() {
           ADD COLUMN IF NOT EXISTS attendance_streak INTEGER DEFAULT 0,
           ADD COLUMN IF NOT EXISTS recent_games TEXT DEFAULT '[]',
           ADD COLUMN IF NOT EXISTS daily TEXT DEFAULT '{}',
+          ADD COLUMN IF NOT EXISTS weekly TEXT DEFAULT '{}',
+          ADD COLUMN IF NOT EXISTS monthly TEXT DEFAULT '{}',
           ADD COLUMN IF NOT EXISTS season TEXT DEFAULT '{}'
+      `);
+      /* 보조 저장소(친구/시즌/관리자 설정/커스텀 사전/버그 제보) — 재배포에도 유지 */
+      await dbPool.query(`
+        CREATE TABLE IF NOT EXISTS kv_store (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at TIMESTAMP DEFAULT NOW()
+        )
       `);
       dbMode = "pg";
       console.log("데이터베이스: PostgreSQL 연결 완료");
@@ -474,6 +581,8 @@ function migratePlayerData(p) {
   if (!Array.isArray(p.recentGames)) p.recentGames = [];
   else p.recentGames = p.recentGames.slice(-10).filter(g => g && typeof g === "object");
   p.daily = initDailyData(p.daily, getKstDate());
+  p.weekly = initWeeklyData(p.weekly, getKstWeek());
+  p.monthly = initMonthlyData(p.monthly, getKstMonth());
   if (!p.season || typeof p.season !== "object") p.season = null;
   else p.season = {
     season: String(p.season.season || ""),
@@ -516,6 +625,8 @@ async function getPlayerData(playerId) {
           attendanceStreak: row.attendance_streak || 0,
           recentGames: (() => { try { return JSON.parse(row.recent_games || "[]"); } catch { return []; } })(),
           daily: (() => { try { return JSON.parse(row.daily || "{}"); } catch { return {}; } })(),
+          weekly: (() => { try { return JSON.parse(row.weekly || "{}"); } catch { return {}; } })(),
+          monthly: (() => { try { return JSON.parse(row.monthly || "{}"); } catch { return {}; } })(),
           season: (() => { try { const v = JSON.parse(row.season || "null"); return v && typeof v === "object" ? v : null; } catch { return null; } })()
         };
         const migrated = migratePlayerData(data);
@@ -560,6 +671,8 @@ async function savePlayerData(playerId, data) {
   safe.attendanceStreak = Math.max(0, Math.floor(num(safe.attendanceStreak, 0)));
   safe.recentGames = Array.isArray(safe.recentGames) ? safe.recentGames.slice(-10).filter(g => g && typeof g === "object") : [];
   safe.daily = initDailyData(safe.daily, getKstDate());
+  safe.weekly = initWeeklyData(safe.weekly, getKstWeek());
+  safe.monthly = initMonthlyData(safe.monthly, getKstMonth());
   playerCache.set(key, safe);
   if (dbMode === "pg") {
     try {
@@ -569,8 +682,8 @@ async function savePlayerData(playerId, data) {
            ranked_rating, ranked_wins, ranked_losses, ranked_streak, ranked_best_streak,
            money, money_multiplier, rating_boost_games,
            titles, current_title, last_check_date, attendance_streak,
-           recent_games, daily, season, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,NOW())
+           recent_games, daily, weekly, monthly, season, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,NOW())
         ON CONFLICT (id) DO UPDATE SET
           nickname=$2, rating=$3, wins=$4, losses=$5,
           single_rating=$6, single_wins=$7, single_losses=$8,
@@ -578,7 +691,7 @@ async function savePlayerData(playerId, data) {
           ranked_streak=$12, ranked_best_streak=$13,
           money=$14, money_multiplier=$15, rating_boost_games=$16,
           titles=$17, current_title=$18, last_check_date=$19, attendance_streak=$20,
-          recent_games=$21, daily=$22, season=$23, updated_at=NOW()
+          recent_games=$21, daily=$22, weekly=$23, monthly=$24, season=$25, updated_at=NOW()
       `, [
         key, safe.nickname || "플레이어",
         safe.multi.rating, safe.multi.wins, safe.multi.losses,
@@ -589,6 +702,7 @@ async function savePlayerData(playerId, data) {
         JSON.stringify(safe.titles), safe.currentTitle,
         safe.lastCheckDate, safe.attendanceStreak,
         JSON.stringify(safe.recentGames), JSON.stringify(safe.daily),
+        JSON.stringify(safe.weekly), JSON.stringify(safe.monthly),
         JSON.stringify(safe.season || {})
       ]);
     } catch (err) { console.error("DB 쓰기 오류:", err.message); }
@@ -620,10 +734,6 @@ async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mo
   const key = mode === "ranked" ? "ranked" : "multi";
   const winner = await getPlayerData(winnerId);
   const loser = await getPlayerData(loserId);
-  touchSeason();
-  const seasonIdNow = getSeasonInfo().id;
-  winner.season = initSeasonData(seasonIdNow, winner.season);
-  loser.season = initSeasonData(seasonIdNow, loser.season);
   const { newWinnerRating, newLoserRating } = calculateElo(winner[key].rating, loser[key].rating);
   let wGain = newWinnerRating - winner[key].rating;
   let lChange = newLoserRating - loser[key].rating;
@@ -643,189 +753,12 @@ async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mo
   if (opts.decBoostWinner) winner.ratingBoostGames = Math.max(0, (winner.ratingBoostGames || 0) - 1);
   if (opts.decBoostLoser) loser.ratingBoostGames = Math.max(0, (loser.ratingBoostGames || 0) - 1);
 
-  /* 시즌 포인트(2주 사이클) — 온라인/랭크 경기 공통 집계, 랭크 부스트 배율 동일 적용 */
-  if (opts.trackSeason) {
-    const ew = 1 / (1 + Math.pow(10, (loser.season.rating - winner.season.rating) / 400));
-    const el = 1 / (1 + Math.pow(10, (winner.season.rating - loser.season.rating) / 400));
-    const K = 32;
-    winner.season.rating = Math.round(winner.season.rating + K * (1 - ew) * wBoost);
-    loser.season.rating = Math.round(loser.season.rating + K * (0 - el) * lBoost);
-    winner.season.wins += 1;
-    loser.season.losses += 1;
-    winner.season.games += 1;
-    loser.season.games += 1;
-    winner.season.streak = Math.max(0, (winner.season.streak || 0)) + 1;
-    winner.season.bestStreak = Math.max(winner.season.bestStreak || 0, winner.season.streak);
-    loser.season.streak = 0;
-    if (!Number.isFinite(winner.season.rating)) winner.season.rating = 1000;
-    if (!Number.isFinite(loser.season.rating)) loser.season.rating = 1000;
-    upsertSeasonBoard(winner, winnerNickname || winner.nickname);
-    upsertSeasonBoard(loser, loserNickname || loser.nickname);
-  }
-
   await savePlayerData(winnerId, winner);
   await savePlayerData(loserId, loser);
   return {
     winner: { ...winner, rank: calculateRank(winner[key].rating) },
     loser: { ...loser, rank: calculateRank(loser[key].rating) }
   };
-}
-
-/* =========================================================
-   시즌제 랭킹 — 2주 시즌 사이클
-   - 시즌 포인트(ELO)는 플레이어 데이터의 season에 누적된다
-   - 시즌 피크 집계(season-board.json)와 종료 시 아카이브(season-history.json) 유지
-   - 시즌이 종료되면 상위권(3경기 이상)에게 시즌 칭호를 지급한다
-   - 테스트용: SEASON_NOW_MS(현재 시각), SEASON_EPOCH_MS(기준 에폭) 환경변수 지원
-========================================================= */
-
-const SEASON_LENGTH_WEEKS = 2;
-const SEASON_EPOCH_DEFAULT = Date.UTC(2026, 0, 5); /* 2026-01-05(월) KST 기준 월요일 */
-const SEASON_WEEK_MS = 7 * 86400000;
-
-const seasonBoardPath = path.join(ROOT_DIR, "season-board.json");
-const seasonHistoryPath = path.join(ROOT_DIR, "season-history.json");
-let seasonBoard = { seasonId: "", entries: new Map() };
-let seasonArchives = [];
-
-function getSeasonNowMs() {
-  const v = Number(process.env.SEASON_NOW_MS);
-  return Number.isFinite(v) && v > 0 ? v : Date.now();
-}
-
-function getSeasonInfo(dateMs) {
-  const ms = dateMs == null ? getSeasonNowMs() : Number(dateMs);
-  const kst = ms + 9 * 3600000;
-  const dow = (new Date(kst).getUTCDay() + 6) % 7; /* 0 = 월요일 */
-  const monday = kst - dow * 86400000;
-  const m0 = new Date(monday);
-  m0.setUTCHours(0, 0, 0, 0);
-  const epoch = Number(process.env.SEASON_EPOCH_MS) || SEASON_EPOCH_DEFAULT;
-  const weekIdx = Math.floor((m0.getTime() - epoch) / SEASON_WEEK_MS);
-  const seasonIdx = Math.floor(weekIdx / SEASON_LENGTH_WEEKS);
-  const start = epoch + seasonIdx * SEASON_LENGTH_WEEKS * SEASON_WEEK_MS;
-  const end = start + SEASON_LENGTH_WEEKS * SEASON_WEEK_MS;
-  return { id: String(seasonIdx), name: `시즌 ${seasonIdx + 1}`, start, end, now: ms };
-}
-
-function initSeasonData(seasonId, season) {
-  const cur = season && typeof season === "object" ? season : {};
-  /* 시즌이 바뀌면(리셋) 새 시즌 기본값으로 시작, 같은 시즌이면 기존 통계 유지 */
-  const base = String(cur.seasonId || "") === String(seasonId) ? cur : {};
-  const s = Object.assign({}, SEASON_DEFAULT, base);
-  s.seasonId = String(seasonId);
-  if (!Number.isFinite(s.rating)) s.rating = 1000;
-  s.rating = Math.max(0, Math.round(s.rating));
-  s.wins = Math.max(0, Math.floor(Number(s.wins) || 0));
-  s.losses = Math.max(0, Math.floor(Number(s.losses) || 0));
-  s.games = Math.max(0, Math.floor(Number(s.games) || 0));
-  s.streak = Math.max(0, Math.floor(Number(s.streak) || 0));
-  s.bestStreak = Math.max(0, Math.floor(Number(s.bestStreak) || 0));
-  return s;
-}
-
-function loadSeasonFiles() {
-  try {
-    const t = getSeasonInfo();
-    seasonBoard = { seasonId: t.id, entries: new Map() };
-    if (fs.existsSync(seasonBoardPath)) {
-      const raw = JSON.parse(fs.readFileSync(seasonBoardPath, "utf8"));
-      if (raw && raw.seasonId && Array.isArray(raw.entries)) {
-        seasonBoard = {
-          seasonId: String(raw.seasonId),
-          entries: new Map(raw.entries.map(e => [String(e.id), e]))
-        };
-      }
-    }
-    if (fs.existsSync(seasonHistoryPath)) {
-      const h = JSON.parse(fs.readFileSync(seasonHistoryPath, "utf8"));
-      if (Array.isArray(h)) seasonArchives = h;
-    }
-  } catch (e) { console.warn("시즌 데이터 로드 실패:", e.message); }
-}
-
-function saveSeasonBoard() {
-  try {
-    fs.writeFileSync(seasonBoardPath, JSON.stringify({ seasonId: seasonBoard.seasonId, entries: [...seasonBoard.entries.values()] }, null, 2));
-  } catch (e) { console.warn("시즌 보드 저장 실패:", e.message); }
-}
-
-function saveSeasonHistory() {
-  try {
-    fs.writeFileSync(seasonHistoryPath, JSON.stringify(seasonArchives, null, 2));
-  } catch (e) { console.warn("시즌 히스토리 저장 실패:", e.message); }
-}
-
-/* 경기 반영 직전 호출 — 시즌 경계를 넘었으면 종료 처리 후 새 시즌 보드로 교체 */
-function touchSeason() {
-  const t = getSeasonInfo();
-  if (seasonBoard.seasonId === t.id) return false;
-  if (seasonBoard.seasonId) finalizeSeason(seasonBoard);
-  seasonBoard = { seasonId: t.id, entries: new Map() };
-  saveSeasonBoard();
-  return true;
-}
-
-function finalizeSeason(board) {
-  const entries = [...board.entries.values()];
-  if (entries.length === 0) {
-    seasonArchives.push({
-      seasonId: String(board.seasonId), name: `시즌 ${Number(board.seasonId) + 1}`,
-      endedAt: Date.now(), entries: []
-    });
-    if (seasonArchives.length > 30) seasonArchives.splice(0, seasonArchives.length - 30);
-    saveSeasonHistory();
-    return;
-  }
-  const sorted = entries
-    .sort((a, b) => (b.rating - a.rating) || (b.games - a.games) || String(a.id).localeCompare(String(b.id)));
-  const ranked = sorted.map((e, i) => ({ ...e, rank: i + 1 }));
-  const name = `시즌 ${Number(board.seasonId) + 1}`;
-  seasonArchives.push({
-    seasonId: String(board.seasonId), name, endedAt: Date.now(),
-    entries: ranked.map(e => ({ id: e.id, nickname: e.nickname, rating: e.rating, wins: e.wins, losses: e.losses, games: e.games, rank: e.rank }))
-  });
-  if (seasonArchives.length > 30) seasonArchives.splice(0, seasonArchives.length - 30);
-  saveSeasonHistory();
-  /* 시즌 칭호 — 3경기 이상 참가자만, 상위 10명 */
-  const honorable = ranked.filter(e => (e.games || 0) >= 3).slice(0, 10);
-  for (const e of honorable) {
-    const titleName = e.rank <= 3
-      ? (e.rank === 1 ? `${name} 챔피언` : e.rank === 2 ? `${name} 준우승` : `${name} 3위`)
-      : `${name} TOP 10`;
-    grantSeasonTitle(e.id, `t_season_${board.seasonId}_${e.rank}`, titleName);
-  }
-}
-
-function grantSeasonTitle(playerId, titleId, titleName) {
-  getPlayerData(playerId)
-    .then(pd => {
-      if (!pd || String(pd.id) === AI_PLAYER_ID) return;
-      if ((pd.titles || []).some(t => t && t.id === titleId)) return;
-      pd.titles.push({ id: titleId, name: titleName });
-      if (!pd.currentTitle) pd.currentTitle = titleName;
-      return savePlayerData(playerId, pd);
-    })
-    .catch(err => console.error("시즌 칭호 지급 오류:", err.message));
-}
-
-function upsertSeasonBoard(pd, nickname) {
-  const s = pd.season || {};
-  const id = String(pd.id || "");
-  const entry = seasonBoard.entries.get(id);
-  if (entry) {
-    entry.nickname = nickname;
-    entry.rating = s.rating; entry.wins = s.wins; entry.losses = s.losses;
-    entry.games = s.games; entry.streak = s.streak; entry.bestStreak = s.bestStreak;
-    entry.updatedAt = Date.now();
-  } else {
-    seasonBoard.entries.set(id, {
-      id, nickname,
-      rating: s.rating, wins: s.wins, losses: s.losses, games: s.games,
-      streak: s.streak, bestStreak: s.bestStreak, updatedAt: Date.now()
-    });
-  }
-  saveSeasonBoard();
 }
 
 /* =========================================================
@@ -880,21 +813,22 @@ function computeMoneyReward(base, player) {
    버그 제보 — 총관리자만 열람 가능
 ========================================================= */
 
-const bugReportsPath = path.join(DATA_DIR, "bug-reports.json");
+const bugReportsPath = path.join(RUNTIME_DATA_DIR, "bug-reports.json");
 let bugReports = [];
 
-function loadBugReports() {
+async function loadBugReports() {
   try {
-    if (fs.existsSync(bugReportsPath)) {
-      bugReports = JSON.parse(fs.readFileSync(bugReportsPath, "utf8"));
-      if (!Array.isArray(bugReports)) bugReports = [];
+    const data = await loadStoreJSON("bugReports", bugReportsPath, null);
+    if (data) {
+      bugReports = Array.isArray(data) ? data : [];
+      console.log(`버그 제보 로드(${dbMode === "pg" ? "DB" : "파일"}): ${bugReports.length}건`);
     }
   } catch (e) { console.warn("버그 제보 로드 실패:", e.message); }
 }
 
 function saveBugReports() {
   try {
-    fs.writeFileSync(bugReportsPath, JSON.stringify(bugReports, null, 2));
+    writeStoreFile(bugReportsPath, bugReports, "bugReports");
   } catch (e) { console.warn("버그 제보 저장 실패:", e.message); }
 }
 
@@ -965,7 +899,9 @@ async function getRankingPayload(socketId) {
       lastCheckDate: data.lastCheckDate || ""
     },
     recentGames: Array.isArray(data.recentGames) ? data.recentGames.slice(-10) : [],
-    daily: initDailyData(data.daily, getKstDate())
+    daily: initDailyData(data.daily, getKstDate()),
+    weekly: initWeeklyData(data.weekly, getKstWeek()),
+    monthly: initMonthlyData(data.monthly, getKstMonth())
   };
 }
 
@@ -975,8 +911,22 @@ function getKstDate(ts) {
 }
 const ATTENDANCE_REWARD = (streak) => Math.min(10000, 2000 + (streak - 1) * 1000);
 
+/* KST 기준 ISO 주차 키 "2026-W37" — 월요일 시작 주 */
+function getKstWeek(ts) {
+  const d = new Date((ts == null ? Date.now() : ts) + 9 * 3600 * 1000);
+  d.setUTCHours(0, 0, 0, 0);
+  const day = d.getUTCDay() || 7;                /* 월=1 ~ 일=7 */
+  d.setUTCDate(d.getUTCDate() + 4 - day);        /* 그 주의 목요일 기준 */
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
+}
+/* KST 기준 월 키 "2026-09" — 시즌 키와 동일하게 맞춘다 */
+function getKstMonth(ts) { return (getKstDate(ts) || "").slice(0, 7); }
+
 /* =========================================================
-   일일 미션 — 날짜가 바뀌면 카운터 리셋, 달성 시 코인/칭호 보상
+   미션 — 일일/주간/월간 3그룹. 그룹 키(KST 일/주/월)가 바뀌면
+   카운터가 리셋되고, 달성 시 코인/칭호 보상을 지급한다
 ========================================================= */
 
 const DAILY_MISSIONS = [
@@ -984,11 +934,24 @@ const DAILY_MISSIONS = [
   { id: "oneShots", label: "한방 단어 5번 성공", target: 5, coin: 2000 },
   { id: "streakDone", label: "랭크 2연승 달성", target: 1, coin: 1000, title: { id: "t_daily", name: "데일리 마스터" } }
 ];
+const WEEKLY_MISSIONS = [
+  { id: "rankedWins", label: "랭크에서 10승 올리기", target: 10, coin: 15000 },
+  { id: "oneShots", label: "한방 단어 15번 성공", target: 15, coin: 8000 },
+  { id: "streakDone", label: "랭크 2연승 3번 달성", target: 3, coin: 5000 }
+];
+const MONTHLY_MISSIONS = [
+  { id: "rankedWins", label: "랭크에서 30승 올리기", target: 30, coin: 50000 },
+  { id: "oneShots", label: "한방 단어 40번 성공", target: 40, coin: 20000 },
+  { id: "streakDone", label: "랭크 2연승 8번 달성", target: 8, coin: 10000 }
+];
 const DAILY_TITLE = DAILY_MISSIONS.find(m => m.title);
 
-function initDailyData(d, today) {
+function missionKeyOf(group) { return group === "weekly" ? getKstWeek() : (group === "monthly" ? getKstMonth() : getKstDate()); }
+function missionListOf(group) { return group === "weekly" ? WEEKLY_MISSIONS : (group === "monthly" ? MONTHLY_MISSIONS : DAILY_MISSIONS); }
+
+function initPeriodData(d, periodKey) {
   d = (d && typeof d === "object") ? d : {};
-  if (d.date !== today) d = { date: today, rankedWins: 0, oneShots: 0, streakDone: 0, claimed: [] };
+  if (d.date !== periodKey) d = { date: periodKey, rankedWins: 0, oneShots: 0, streakDone: 0, claimed: [] };
   if (!Array.isArray(d.claimed)) d.claimed = [];
   d.rankedWins = Math.max(0, Math.floor(Number(d.rankedWins) || 0));
   d.oneShots = Math.max(0, Math.floor(Number(d.oneShots) || 0));
@@ -996,33 +959,47 @@ function initDailyData(d, today) {
   return d;
 }
 
-function buildMissionProgress(daily) {
-  const current = (m) => m.id === "rankedWins" ? daily.rankedWins : (m.id === "oneShots" ? daily.oneShots : daily.streakDone);
-  return DAILY_MISSIONS.map(m => ({
+function initDailyData(d, today) { return initPeriodData(d, today); }
+function initWeeklyData(d, weekKey) { return initPeriodData(d, weekKey); }
+function initMonthlyData(d, monthKey) { return initPeriodData(d, monthKey); }
+
+const missionCurrent = (m, data) => m.id === "rankedWins" ? data.rankedWins : (m.id === "oneShots" ? data.oneShots : data.streakDone);
+
+function buildMissionProgress(missions, data) {
+  return missions.map(m => ({
     id: m.id,
     label: m.label,
     target: m.target,
-    current: Math.min(m.target, current(m)),
+    current: Math.min(m.target, missionCurrent(m, data)),
     coin: m.coin || 0,
     title: m.title || null,
-    claimed: daily.claimed.includes(m.id)
+    claimed: data.claimed.includes(m.id)
   }));
 }
 
-/* 미션 진행 누적 (랭크 승리 / 한방 / 연승 달성) — 비동기, 실패 무시 */
-function bumpDaily(playerId, key) {
+/* 미션 카운터 누적 (랭크 승리 / 한방 / 연승 달성) — 일일·주간·월간 동시 반영 */
+function bumpMission(playerId, key) {
   return getPlayerData(playerId)
     .then(async (pd) => {
-      const daily = initDailyData(pd.daily, getKstDate());
-      if (daily.claimed.includes("rankedWins") && key === "rankedWins") return;
-      if (key === "rankedWins") daily.rankedWins++;
-      else if (key === "oneShots") daily.oneShots++;
-      else if (key === "streakDone") daily.streakDone++;
-      pd.daily = daily;
+      const scopes = [
+        { field: "daily", key: getKstDate() },
+        { field: "weekly", key: getKstWeek() },
+        { field: "monthly", key: getKstMonth() }
+      ];
+      for (const sc of scopes) {
+        const data = initPeriodData(pd[sc.field], sc.key);
+        if (data.claimed.includes(key)) continue;
+        if (key === "rankedWins") data.rankedWins++;
+        else if (key === "oneShots") data.oneShots++;
+        else if (key === "streakDone") data.streakDone++;
+        pd[sc.field] = data;
+      }
       await savePlayerData(playerId, pd);
     })
-    .catch(err => console.error("일일 미션 누적 오류:", err.message));
+    .catch(err => console.error("미션 누적 오류:", err.message));
 }
+/* 이전 이름 유지 — 하위 호환 */
+function bumpDaily(playerId, key) { return bumpMission(playerId, key); }
 
 /* =========================================================
    시즌제 랭킹 — 매월 1일 00시(KST) 자동 전환.
@@ -1033,7 +1010,7 @@ function bumpDaily(playerId, key) {
    가능해 운영/테스트에서 시즌 전환을 직접 검증할 수 있다.
 ========================================================= */
 
-const seasonJsonPath = path.join(DATA_DIR, "season.json");
+const seasonJsonPath = path.join(RUNTIME_DATA_DIR, "season.json");
 const SEA_TITLE = { id: "t_season", name: "시즌 챔피언" };
 let seasonStore = null;
 
@@ -1051,25 +1028,24 @@ function seasonEndMs(key) {
 }
 function currentSeasonKey() { return seasonKeyOf(nowForSeason()); }
 
-function loadSeasonStore() {
-  const empty = { lastClosed: null, history: [] };
-  try {
-    if (fs.existsSync(seasonJsonPath)) {
-      const d = JSON.parse(fs.readFileSync(seasonJsonPath, "utf8"));
-      if (d && typeof d === "object") {
-        empty.lastClosed = typeof d.lastClosed === "string" && d.lastClosed ? d.lastClosed : null;
-        empty.history = Array.isArray(d.history) ? d.history : [];
-      }
-    }
-  } catch (e) { console.warn("시즌 데이터 로드 실패:", e.message); }
-  return empty;
+async function loadSeasonStore() {
+  const data = await loadStoreJSON("season", seasonJsonPath, null);
+  if (data && typeof data === "object") {
+    seasonStore = {
+      lastClosed: typeof data.lastClosed === "string" && data.lastClosed ? data.lastClosed : null,
+      history: Array.isArray(data.history) ? data.history : []
+    };
+  } else {
+    seasonStore = { lastClosed: null, history: [] };
+  }
+  return seasonStore;
 }
 function saveSeasonStore() {
-  try { fs.writeFileSync(seasonJsonPath, JSON.stringify(seasonStore, null, 2)); }
+  try { writeStoreFile(seasonJsonPath, seasonStore, "season"); }
   catch (e) { console.warn("시즌 데이터 저장 실패:", e.message); }
 }
 function getSeasonStore() {
-  if (!seasonStore) seasonStore = loadSeasonStore();
+  if (!seasonStore) seasonStore = { lastClosed: null, history: [] };
   return seasonStore;
 }
 
@@ -1615,7 +1591,7 @@ async function finishGame(room, winnerIndex, loserIndex) {
   const humanOnly = w && l && !w.isBot && !l.isBot;
   if (w && l && w.id !== l.id && (room.mode === "online" || room.mode === "ranked") && humanOnly) {
     const mode = room.mode === "ranked" ? "ranked" : "multi";
-    const updateOpts = { trackSeason: true };
+    const updateOpts = {};
     if (room.mode === "ranked") {
       const [wData, lData] = await Promise.all([getPlayerData(w.id), getPlayerData(l.id)]);
       updateOpts.winnerBoost = ((wData.ratingBoostGames || 0) > 0) ? 2 : 1;
@@ -2025,32 +2001,10 @@ app.get("/", (req, res) => {
 });
 
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length, rooms: ROOMS.size, customApproved: customDict.approved.length, customPending: customDict.pending.length, seasonId: getSeasonInfo().id, uptime: process.uptime() });
+  res.json({ ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length, rooms: ROOMS.size, customApproved: customDict.approved.length, customPending: customDict.pending.length, seasonId: currentSeasonKey(), uptime: process.uptime() });
 });
 
-/* 시즌 정보 — 현재 시즌 번호, 기간, 종료 시한, 참가자 수, TOP3, 지난 시즌 목록 */
-app.get("/api/season", (req, res) => {
-  try {
-    touchSeason();
-    const t = getSeasonInfo();
-    const current = [...seasonBoard.entries.values()]
-      .sort((a, b) => ((b.rating || 0) - (a.rating || 0)) || ((b.games || 0) - (a.games || 0)))
-      .slice(0, 3)
-      .map((e, i) => ({ rank: i + 1, nickname: e.nickname, rating: e.rating, games: e.games }));
-    res.json({
-      ok: true,
-      id: t.id, name: t.name,
-      start: t.start, end: t.end,
-      endsInMs: Math.max(0, t.end - t.now),
-      players: seasonBoard.entries.size,
-      top3: current,
-      history: seasonArchives.slice(-12).map(a => ({ id: a.seasonId, name: a.name, endedAt: a.endedAt, entries: a.entries.length }))
-    });
-  } catch (err) {
-    console.error("시즌 조회 오류:", err.message);
-    res.status(500).json({ ok: false, error: "시즌 정보를 불러오지 못했습니다." });
-  }
-});
+/* 시즌 정보 — 아래의 단일 /api/season 핸들러(월 단위 buildSeasonInfo)가 응답한다 */
 
 app.get("/api/leaderboard", async (req, res) => {
   try {
@@ -2059,16 +2013,30 @@ app.get("/api/leaderboard", async (req, res) => {
       ? rawMode : (rawMode === "ai" ? "single" : "multi");
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit || "10"), 10) || 10));
 
-    /* 시즌 모드 — 현재 시즌(season) 또는 지난 시즌 아카이브(시즌id 지정) */
+    /* 시즌 모드 — 현재 시즌(season) 또는 지난 시즌 아카이브(?seasonId 지정).
+       시즌은 매월 1일로 전환되는 월 단위. 현재 시즌은 해당 시즌에 1판 이상
+       랭크 게임을 한 플레이어를 현재 랭크 레이팅 순으로, 지난 시즌은
+       종료 시 집계 기록(seasonStore.history)에서 조회한다. */
     if (rawMode === "season" || rawMode === "seasonHistory") {
-      touchSeason();
-      const seasonId = String(req.query.seasonId || "");
+      const seasonKey = String(req.query.seasonId || "");
       let entries;
-      if (seasonId) {
-        const arch = seasonArchives.find(a => String(a.seasonId) === seasonId);
-        entries = arch ? arch.entries.map(e => ({ ...e })) : [];
+      if (seasonKey) {
+        const hist = getSeasonStore().history.find(h => h.season === seasonKey);
+        entries = hist ? (hist.top || []).map(t => ({
+          id: t.nickname, nickname: t.nickname,
+          rating: Number(t.rating) || 0, wins: Number(t.wins) || 0,
+          losses: Number(t.losses) || 0, games: 0, streak: 0
+        })) : [];
       } else {
-        entries = [...seasonBoard.entries.values()];
+        const key = currentSeasonKey();
+        entries = (await listAllPlayers())
+          .filter(p => p.season && p.season.season === key && (p.season.games || 0) > 0)
+          .map(p => ({
+            id: p.id, nickname: p.nickname || "플레이어",
+            rating: Number(p.season.rating) || 1000,
+            wins: p.season.wins || 0, losses: p.season.losses || 0,
+            games: p.season.games || 0, streak: p.season.bestStreak || 0
+          }));
       }
       const seenNicks = new Set();
       const rows = entries
@@ -2079,15 +2047,15 @@ app.get("/api/leaderboard", async (req, res) => {
           seenNicks.add(k);
           return true;
         })
-        .sort((a, b) => ((b.rating || 0) - (a.rating || 0)) || ((b.games || 0) - (a.games || 0)))
+        .sort((a, b) => ((Number(b.rating) || 0) - (Number(a.rating) || 0)) || ((Number(b.games) || 0) - (Number(a.games) || 0)))
         .slice(0, limit)
         .map((r, i) => ({
           id: r.id, nickname: r.nickname,
-          mode: seasonId ? "seasonHistory" : "season",
-          ranking: r.rating || 0, wins: r.wins || 0, losses: r.losses || 0,
-          money: 0, streak: r.streak || 0, bestStreak: r.bestStreak || 0,
-          games: r.games || 0, rank: i + 1,
-          tier: calculateRank(r.rating || 0)
+          mode: seasonKey ? "seasonHistory" : "season",
+          ranking: Number(r.rating) || 0, wins: Number(r.wins) || 0, losses: Number(r.losses) || 0,
+          money: 0, streak: Number(r.streak) || 0, bestStreak: Number(r.streak) || 0,
+          games: Number(r.games) || 0, rank: i + 1,
+          tier: calculateRank(Number(r.rating) || 0)
         }));
       return res.json(rows);
     }
@@ -3032,27 +3000,36 @@ io.on("connection", (socket) => {
     try {
       const pd = await getPlayerData(socket.id);
       const daily = initDailyData(pd.daily, getKstDate());
+      const weekly = initWeeklyData(pd.weekly, getKstWeek());
+      const monthly = initMonthlyData(pd.monthly, getKstMonth());
       socket.emit("missions:status", {
         ok: true,
+        periods: { daily: daily.date, weekly: weekly.date, monthly: monthly.date },
         daily,
-        missions: buildMissionProgress(daily)
+        missions: buildMissionProgress(DAILY_MISSIONS, daily),
+        groups: {
+          daily: buildMissionProgress(DAILY_MISSIONS, daily),
+          weekly: buildMissionProgress(WEEKLY_MISSIONS, weekly),
+          monthly: buildMissionProgress(MONTHLY_MISSIONS, monthly)
+        }
       });
     } catch (err) { console.error("미션 조회 오류:", err); }
   });
 
   socket.on("missions:claim", async (data) => {
     try {
+      const group = (data?.group === "weekly" || data?.group === "monthly") ? data.group : "daily";
       const missionId = String(data?.id || "");
-      const mission = DAILY_MISSIONS.find(m => m.id === missionId);
+      const mission = missionListOf(group).find(m => m.id === missionId);
       if (!mission) { socket.emit("missions:result", { ok: false, reason: "알 수 없는 미션입니다." }); return; }
       const pd = await getPlayerData(socket.id);
-      const daily = initDailyData(pd.daily, getKstDate());
-      if (daily.claimed.includes(missionId)) { socket.emit("missions:result", { ok: false, reason: "이미 수령한 보상입니다." }); return; }
-      const current = missionId === "rankedWins" ? daily.rankedWins : (missionId === "oneShots" ? daily.oneShots : daily.streakDone);
-      if (current < mission.target) { socket.emit("missions:result", { ok: false, reason: "아직 달성하지 못했습니다." }); return; }
+      const periodKey = missionKeyOf(group);
+      const store = initPeriodData(pd[group], periodKey);
+      if (store.claimed.includes(missionId)) { socket.emit("missions:result", { ok: false, reason: "이미 수령한 보상입니다." }); return; }
+      if (missionCurrent(mission, store) < mission.target) { socket.emit("missions:result", { ok: false, reason: "아직 달성하지 못했습니다." }); return; }
 
-      daily.claimed.push(missionId);
-      pd.daily = daily;
+      store.claimed.push(missionId);
+      pd[group] = store;
       let message = "보상을 수령했습니다.";
       if (mission.coin) {
         pd.money += mission.coin;
@@ -3064,9 +3041,16 @@ io.on("connection", (socket) => {
         message += ` 칭호 '${mission.title.name}'을 획득했습니다.`;
       }
       await savePlayerData(socket.id, pd);
+      const afterDaily = initDailyData(pd.daily, getKstDate());
       socket.emit("missions:result", {
-        ok: true, message, daily: pd.daily,
-        missions: buildMissionProgress(pd.daily),
+        ok: true, message, group,
+        daily: afterDaily,
+        missions: buildMissionProgress(DAILY_MISSIONS, afterDaily),
+        groups: {
+          daily: buildMissionProgress(DAILY_MISSIONS, afterDaily),
+          weekly: buildMissionProgress(WEEKLY_MISSIONS, initWeeklyData(pd.weekly, getKstWeek())),
+          monthly: buildMissionProgress(MONTHLY_MISSIONS, initMonthlyData(pd.monthly, getKstMonth()))
+        },
         money: pd.money, titles: pd.titles, currentTitle: pd.currentTitle
       });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
@@ -4005,14 +3989,17 @@ io.on("connection", (socket) => {
    서버 시작
 ========================================================= */
 
-initDatabase().then(() => {
-  loadAdminConfig();
-  loadFriends();
-  loadBugReports();
-  loadCustomDict();
+initDatabase().then(async () => {
+  /* PG 모드에서는 파일이 남아있지 않아도 DB(kv_store)에서 보조 저장소를 복구한다 */
+  await Promise.all([
+    loadAdminConfig(),
+    loadFriends(),
+    loadBugReports(),
+    loadCustomDict(),
+    hydrateCustomWordsFromPG()
+  ]);
   rebuildWordViews();
-  loadSeasonFiles();
-  touchSeason();
+  if (!seasonStore) await loadSeasonStore();
   ensureSeasonRollover().catch(err => console.error("시작 시 시즌 전환 오류:", err.message));
   /* 한 시간마다 시즌 전환 감지 — 달이 바뀌는 순간을 놓치지 않도록 */
   setInterval(() => { ensureSeasonRollover().catch(() => {}); }, 60 * 60 * 1000);
@@ -4024,6 +4011,10 @@ initDatabase().then(() => {
     console.log(`방어 단어: ${DEFENSE_WORDS.size.toLocaleString()}개`);
     console.log(`데이터베이스: ${dbMode === "pg" ? "PostgreSQL" : "JSON 파일"}`);
     console.log(`공격 단어 금지 턴: ${ONESHOT_FREE_TURNS}턴`);
+    if (dbMode === "json") {
+      console.log("⚠ 데이터가 JSON 파일로만 저장됩니다 — 재배포/새 클론 시 유실될 수 있습니다.");
+      console.log("  DATABASE_URL(PostgreSQL) 또는 KK_DATA_DIR(영속 디스크) 설정을 권장합니다.");
+    }
     console.log("========================================");
   });
 }).catch(err => {

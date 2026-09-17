@@ -23,6 +23,7 @@
       <button data-mode="single" class="active">싱글플레이</button>
       <button data-mode="online">온라인 멀티</button>
       <button data-mode="ranked">랭크 매칭</button>
+      <button data-mode="season">시즌</button>
       <button data-mode="shop">상점</button>
     </nav>
 
@@ -30,7 +31,7 @@
       <span class="money-chip">💰 <b id="moneyDisplay">0</b></span>
       <span class="boost-chip hidden" id="boostChip" title="다음 N번 게임 동안 레이팅/승리 보상 2배">물약 <b id="boostCount">0</b>판</span>
       <span class="title-chip hidden" id="titleChip"></span>
-      <button id="missionBtn" class="mission-mini hidden" title="일일 미션 보기">📋 미션 <b id="missionMiniCount">0/0</b></button>
+      <button id="missionBtn" class="mission-mini hidden" title="일일/주간/월간 미션 보기 (시즌 탭)">📋 미션 <b id="missionMiniCount">0/0</b></button>
       <button id="soundToggle" class="sound-chip" title="소리/진동 켜기·끄기">🔊</button>
     </div>
 
@@ -326,6 +327,26 @@
         <button id="bugBtn" class="wide secondary">🐞 버그 제보</button>
       </div>
     </section>
+
+    <!-- 시즌 -->
+    <section id="season" class="panel hidden">
+      <div class="season-panel-head">
+        <div class="rule-notice">시즌은 <b>매월 1일</b>에 전환됩니다. 시즌 종료 시 상위권에게 코인 보상을 지급하고, 일일/주간/월간 미션을 달성하면 보상을 받을 수 있어요.</div>
+        <div id="seasonPanelBar" class="season-bar-wrap hidden"></div>
+      </div>
+      <div class="mission-group">
+        <div class="mission-group-title">📋 일일 미션 <span class="mission-period" id="missionPeriodDaily"></span></div>
+        <div id="missionListDaily" class="acc-mission-list"></div>
+      </div>
+      <div class="mission-group">
+        <div class="mission-group-title">📅 주간 미션 <span class="mission-period" id="missionPeriodWeekly"></span></div>
+        <div id="missionListWeekly" class="acc-mission-list"></div>
+      </div>
+      <div class="mission-group">
+        <div class="mission-group-title">🗓 월간 미션 <span class="mission-period" id="missionPeriodMonthly"></span></div>
+        <div id="missionListMonthly" class="acc-mission-list"></div>
+      </div>
+    </section>
   </main>
 
   <!-- 항상 표시되는 실시간 랭킹 패널 (우측 상단) -->
@@ -428,10 +449,6 @@
         <div class="acc-row"><span>소지금</span><strong id="accMoney">0</strong></div>
         <div class="acc-row"><span>칭호</span><strong id="accTitle">없음</strong></div>
       </div>
-      <div id="missionBox" class="acc-change hidden">
-        <div class="acc-change-title">일일 미션 (매일 자정에 초기화)</div>
-        <div id="missionList" class="acc-mission-list"></div>
-      </div>
       <div id="recentGamesBox" class="acc-change hidden">
         <div class="acc-change-title">최근 10판 전적</div>
         <div id="recentGamesList" class="acc-recent-list"></div>
@@ -439,13 +456,6 @@
       <div id="accTitleBox" class="acc-change hidden">
         <div class="acc-change-title">칭호 선택 (보유한 칭호를 클릭하면 게임과 리더보드에 표시됩니다)</div>
         <div id="accTitleList" class="acc-title-list"></div>
-      </div>
-      <div id="accChangeBox" class="acc-change hidden">
-        <div class="acc-change-title">관리자 계정 비밀번호 변경 (관리자 전용)</div>
-        <input type="password" id="accCurPw" placeholder="현재 비밀번호" autocomplete="off" data-pw-toggle>
-        <input type="password" id="accNewPw" placeholder="새 비밀번호 (4자 이상)" autocomplete="off" data-pw-toggle>
-        <button id="accPwSave" class="wide">비밀번호 변경</button>
-        <div class="acc-change-help">일반 사용자는 비밀번호가 없습니다. 관리자 계정만 현재/새 비밀번호를 입력한 뒤 [비밀번호 변경]을 누르면 변경됩니다.</div>
       </div>
     </div>
   </div>
