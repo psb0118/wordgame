@@ -53,3 +53,11 @@ Render 등 **임시 파일 시스템** 환경에서는 기본 JSON 파일 저장
 - **`KK_DATA_DIR` 지정 시**: 설정한 디렉터리에 JSON 파일들을 보존합니다. (예: `/app/data`)
 - 두 설정이 모두 없으면 기본 JSON 파일(`data/*.json`)에 저장하며, 안정성을 위해 `.bak` 파일이 자동 생성되고 원본 손상 시 복원됩니다.
 - 단어 목록(`word.txt`, `attack.txt`)은 git에 포함되어 있어 초기화되지 않습니다.
+
+### Render에서 PostgreSQL 연결하기 (무료)
+1. Render 대시보드 → **New** → **PostgreSQL** → 무료 인스턴스 생성.
+2. 생성된 DB의 **Internal Database URL**을 복사합니다.
+3. Render 대시보드 → 본 **웹 서비스** → **Environment** → **DATABASE_URL**에 붙여넣고 저장(재배포 자동 진행).
+4. 재배포 후 `https://<서비스주소>/api/health`를 열어 응답이 `"db":"postgres"`인지 확인합니다.
+   - `"db":"json"`으로 나오면 환경변수가 안 들어갔거나 연결이 실패한 것이므로 Render 로그에서 `PostgreSQL 연결 실패` 오류를 확인하세요.
+- 이전에 임시 파일 시스템에만 있던 데이터는 복구할 수 없지만, 연결 이후에는 재배포/재시작에도 돈·점수·시즌·친구 등이 유지됩니다.

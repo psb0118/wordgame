@@ -2001,7 +2001,14 @@ app.get("/", (req, res) => {
 });
 
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length, rooms: ROOMS.size, customApproved: customDict.approved.length, customPending: customDict.pending.length, seasonId: currentSeasonKey(), uptime: process.uptime() });
+  res.json({
+    ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length,
+    rooms: ROOMS.size, customApproved: customDict.approved.length,
+    customPending: customDict.pending.length, seasonId: currentSeasonKey(),
+    db: dbMode === "pg" ? "postgres" : "json",
+    dataDir: RUNTIME_DATA_DIR || null,
+    uptime: process.uptime()
+  });
 });
 
 /* 시즌 정보 — 아래의 단일 /api/season 핸들러(월 단위 buildSeasonInfo)가 응답한다 */
