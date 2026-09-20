@@ -491,6 +491,8 @@ async function initDatabase() {
           rating INTEGER DEFAULT 1000,
           wins INTEGER DEFAULT 0,
           losses INTEGER DEFAULT 0,
+          streak INTEGER DEFAULT 0,
+          best_streak INTEGER DEFAULT 0,
           ranked_rating INTEGER DEFAULT 1000,
           ranked_wins INTEGER DEFAULT 0,
           ranked_losses INTEGER DEFAULT 0,
@@ -520,6 +522,8 @@ async function initDatabase() {
           ADD COLUMN IF NOT EXISTS single_rating INTEGER DEFAULT 1000,
           ADD COLUMN IF NOT EXISTS single_wins INTEGER DEFAULT 0,
           ADD COLUMN IF NOT EXISTS single_losses INTEGER DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS streak INTEGER DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS best_streak INTEGER DEFAULT 0,
           ADD COLUMN IF NOT EXISTS ranked_rating INTEGER DEFAULT 1000,
           ADD COLUMN IF NOT EXISTS ranked_wins INTEGER DEFAULT 0,
           ADD COLUMN IF NOT EXISTS ranked_losses INTEGER DEFAULT 0,
@@ -558,7 +562,7 @@ async function initDatabase() {
   console.log("데이터베이스: JSON 파일 모드");
 }
 
-const MODE_DEFAULT = { rating: 1000, wins: 0, losses: 0 };
+const MODE_DEFAULT = { rating: 1000, wins: 0, losses: 0, streak: 0, bestStreak: 0 };
 const SEASON_DEFAULT = { rating: 1000, wins: 0, losses: 0, games: 0, streak: 0, bestStreak: 0 };
 
 function migratePlayerData(p) {
@@ -613,7 +617,7 @@ async function getPlayerData(playerId) {
         const data = {
           id: row.id,
           nickname: row.nickname,
-          multi: { rating: row.rating, wins: row.wins, losses: row.losses },
+          multi: { rating: row.rating, wins: row.wins, losses: row.losses, streak: row.streak, bestStreak: row.best_streak },
           single: { rating: row.single_rating, wins: row.single_wins, losses: row.single_losses },
           ranked: { rating: row.ranked_rating, wins: row.ranked_wins, losses: row.ranked_losses, streak: row.ranked_streak, bestStreak: row.ranked_best_streak },
           money: row.money,
@@ -678,23 +682,26 @@ async function savePlayerData(playerId, data) {
     try {
       await dbPool.query(`
         INSERT INTO players
-          (id, nickname, rating, wins, losses, single_rating, single_wins, single_losses,
+          (id, nickname, rating, wins, losses, streak, best_streak,
+           single_rating, single_wins, single_losses,
            ranked_rating, ranked_wins, ranked_losses, ranked_streak, ranked_best_streak,
            money, money_multiplier, rating_boost_games,
            titles, current_title, last_check_date, attendance_streak,
            recent_games, daily, weekly, monthly, season, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,NOW())
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,NOW())
         ON CONFLICT (id) DO UPDATE SET
           nickname=$2, rating=$3, wins=$4, losses=$5,
-          single_rating=$6, single_wins=$7, single_losses=$8,
-          ranked_rating=$9, ranked_wins=$10, ranked_losses=$11,
-          ranked_streak=$12, ranked_best_streak=$13,
-          money=$14, money_multiplier=$15, rating_boost_games=$16,
-          titles=$17, current_title=$18, last_check_date=$19, attendance_streak=$20,
-          recent_games=$21, daily=$22, weekly=$23, monthly=$24, season=$25, updated_at=NOW()
+          streak=$6, best_streak=$7,
+          single_rating=$8, single_wins=$9, single_losses=$10,
+          ranked_rating=$11, ranked_wins=$12, ranked_losses=$13,
+          ranked_streak=$14, ranked_best_streak=$15,
+          money=$16, money_multiplier=$17, rating_boost_games=$18,
+          titles=$19, current_title=$20, last_check_date=$21, attendance_streak=$22,
+          recent_games=$23, daily=$24, weekly=$25, monthly=$26, season=$27, updated_at=NOW()
       `, [
         key, safe.nickname || "플레이어",
         safe.multi.rating, safe.multi.wins, safe.multi.losses,
+        safe.multi.streak, safe.multi.bestStreak,
         safe.single.rating, safe.single.wins, safe.single.losses,
         safe.ranked.rating, safe.ranked.wins, safe.ranked.losses,
         safe.ranked.streak, safe.ranked.bestStreak,
@@ -743,7 +750,7 @@ async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mo
   loser[key].rating = Math.round(loser[key].rating + lChange * lBoost);
   winner[key].wins += 1; winner.nickname = winnerNickname || winner.nickname;
   loser[key].losses += 1; loser.nickname = loserNickname || loser.nickname;
-  if (key === "ranked") {
+  if (key === "ranked" || key === "multi") {
     winner[key].streak = Math.max(0, (winner[key].streak || 0)) + 1;
     winner[key].bestStreak = Math.max((winner[key].bestStreak || 0), winner[key].streak);
     loser[key].streak = 0;
@@ -923,6 +930,24 @@ function getKstWeek(ts) {
 }
 /* KST 기준 월 키 "2026-09" — 시즌 키와 동일하게 맞춘다 */
 function getKstMonth(ts) { return (getKstDate(ts) || "").slice(0, 7); }
+
+/* KST 기준 주간/월간 날짜 범위 문자열 (표시용) */
+function kstWeekRange(ts) {
+  const d = new Date((ts == null ? Date.now() : ts) + 9 * 3600 * 1000);
+  const day = d.getUTCDay() || 7;               /* 월=1 ~ 일=7 */
+  const mon = new Date(d);
+  mon.setUTCDate(d.getUTCDate() - day + 1);
+  const sun = new Date(mon);
+  sun.setUTCDate(mon.getUTCDate() + 6);
+  return `${mon.toISOString().slice(0, 10)} ~ ${sun.toISOString().slice(0, 10)}`;
+}
+function kstMonthRange(ts) {
+  const d = new Date((ts == null ? Date.now() : ts) + 9 * 3600 * 1000);
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  return `${new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10)} ~ ${new Date(Date.UTC(y, m, last)).toISOString().slice(0, 10)}`;
+}
 
 /* =========================================================
    미션 — 일일/주간/월간 3그룹. 그룹 키(KST 일/주/월)가 바뀌면
@@ -2016,7 +2041,7 @@ app.get("/api/health", (req, res) => {
 app.get("/api/leaderboard", async (req, res) => {
   try {
     const rawMode = String(req.query.mode || "multi");
-    const mode = ["multi", "single", "ranked", "money", "streak"].includes(rawMode)
+    const mode = ["multi", "single", "ranked", "money", "streak", "tier"].includes(rawMode)
       ? rawMode : (rawMode === "ai" ? "single" : "multi");
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit || "10"), 10) || 10));
 
@@ -2082,14 +2107,16 @@ app.get("/api/leaderboard", async (req, res) => {
                FROM players WHERE id <> $1
                ORDER BY ranked_best_streak DESC, ranked_rating DESC LIMIT $2`;
       } else {
-        const isRanked = mode === "ranked";
+        const isRanked = mode === "ranked" || mode === "tier";
         const isSingle = mode === "single";
         const col = isRanked ? "ranked_rating" : isSingle ? "single_rating" : "rating";
         const winCol = isRanked ? "ranked_wins" : isSingle ? "single_wins" : "wins";
         const lossCol = isRanked ? "ranked_losses" : isSingle ? "single_losses" : "losses";
+        const stCol = mode === "multi" ? "streak" : (isRanked ? "ranked_streak" : "0");
+        const bstCol = mode === "multi" ? "best_streak" : (isRanked ? "ranked_best_streak" : "0");
         sql = `SELECT id, nickname, ${col} AS stat_rating, ${winCol} AS stat_wins, ${lossCol} AS stat_losses,
-                      0 AS stat_money, ${isRanked ? "ranked_streak" : "0"} AS stat_streak,
-                      ${isRanked ? "ranked_best_streak" : "0"} AS stat_best_streak
+                      0 AS stat_money, ${stCol} AS stat_streak,
+                      ${bstCol} AS stat_best_streak
                FROM players WHERE id <> $1 ORDER BY ${col} DESC LIMIT $2`;
       }
       rows = (await dbPool.query(sql, params)).rows;
@@ -2101,12 +2128,14 @@ app.get("/api/leaderboard", async (req, res) => {
           if (mode === "money") {
             s = { rating: p.money, wins: 0, losses: 0, streak: 0, bestStreak: 0, money: p.money };
           } else {
-            const rk = (mode === "ranked" || mode === "streak") ? p.ranked : mode === "single" ? p.single : p.multi;
+            const rk = (mode === "ranked" || mode === "streak" || mode === "tier") ? p.ranked
+                     : mode === "single" ? p.single : p.multi;
+            const useStreak = mode === "ranked" || mode === "streak" || mode === "tier" || mode === "multi";
             const m = rk || { rating: 1000, wins: 0, losses: 0 };
             s = {
               rating: m.rating, wins: m.wins, losses: m.losses,
-              streak: mode === "ranked" || mode === "streak" ? (m.streak || 0) : 0,
-              bestStreak: mode === "ranked" || mode === "streak" ? (m.bestStreak || 0) : 0,
+              streak: useStreak ? (m.streak || 0) : 0,
+              bestStreak: useStreak ? (m.bestStreak || 0) : 0,
               money: p.money
             };
           }
@@ -2127,6 +2156,14 @@ app.get("/api/leaderboard", async (req, res) => {
     /* 같은 닉네임(같은 계정)이 좀비 레코드 때문에 중복 집계되는 것을 방지.
        정렬은 위에서 끝났으므로 닉네임당 첫 번째(최고 순위) 레코드만 남긴다.
        이름 없는 고스트('플레이어' 등)는 리더보드에서 제외한다. */
+    if (mode === "tier") {
+      const TIER_IDX = ["Bronze", "Silver", "Gold", "Platinum", "Diamond", "Master", "Grandmaster", "Challenger"];
+      rows.sort((a, b) => {
+        const ia = TIER_IDX.indexOf(calculateRank(a.stat_rating).tier);
+        const ib = TIER_IDX.indexOf(calculateRank(b.stat_rating).tier);
+        return (ib - ia) || (b.stat_rating - a.stat_rating);
+      });
+    }
     const seenNicks = new Set();
     rows = rows.filter(r => {
       const k = String(r.nickname || "").trim();
@@ -2982,7 +3019,7 @@ io.on("connection", (socket) => {
       if (pd.money < title.price) { socket.emit("shop:result", { ok: false, reason: "돈이 부족합니다." }); return; }
       pd.money -= title.price;
       pd.titles.push({ id: title.id, name: title.name });
-      if (!pd.currentTitle) pd.currentTitle = title.name;
+      pd.currentTitle = title.name;
       await savePlayerData(socket.id, pd);
       socket.emit("shop:result", { ok: true, message: `칭호 '${title.name}'을 구매했습니다.`, money: pd.money, titles: pd.titles, currentTitle: pd.currentTitle });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
@@ -3011,7 +3048,13 @@ io.on("connection", (socket) => {
       const monthly = initMonthlyData(pd.monthly, getKstMonth());
       socket.emit("missions:status", {
         ok: true,
-        periods: { daily: daily.date, weekly: weekly.date, monthly: monthly.date },
+        periods: {
+          daily: daily.date,
+          weekly: weekly.date,
+          monthly: monthly.date,
+          weeklyRange: kstWeekRange(),
+          monthlyRange: kstMonthRange()
+        },
         daily,
         missions: buildMissionProgress(DAILY_MISSIONS, daily),
         groups: {
@@ -3406,7 +3449,7 @@ io.on("connection", (socket) => {
         return;
       }
       const pd = await getPlayerData(id);
-      pd[mode].rating = clampNum(data?.rating, 0, 9999, pd[mode].rating);
+      if (mode !== "single") pd[mode].rating = clampNum(data?.rating, 0, 9999, pd[mode].rating);
       pd[mode].wins = clampNum(data?.wins, 0, 100000, pd[mode].wins);
       pd[mode].losses = clampNum(data?.losses, 0, 100000, pd[mode].losses);
       await savePlayerData(id, pd);

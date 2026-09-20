@@ -401,6 +401,18 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+/* 방 목록 새로고침/랜덤 입장/닫기 — 크기 통일 */
+.room-list-actions button {
+  min-width: 96px;
+  padding: 10px 12px;
+  text-align: center;
+  justify-content: center;
+}
+
+.room-list-actions button.secondary {
+  margin-top: 0;
+}
+
 #roomListBody {
   display: flex;
   flex-direction: column;
@@ -1374,6 +1386,11 @@ button:disabled {
   color: var(--text);
   font-size: 0.88rem;
   margin: 8px 0 4px;
+}
+
+.admin-single-hint {
+  font-size: 0.78rem;
+  color: var(--text-faint);
 }
 
 .admin-stats-mode {

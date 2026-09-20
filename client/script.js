@@ -64,7 +64,7 @@ let recentGamesState = [];
 let dailyCounters = null;
 
 /* 실시간 랭킹 패널 상태 */
-let sideRankMode = "multi";
+let sideRankMode = "ranked";
 const SIDE_RANK_LIMIT = 10;
 
 /* ---------------------------------------------------------
@@ -624,12 +624,8 @@ function initSocket() {
     const sng = data.single || { rank: null, rating: null, wins: 0, losses: 0 };
     const mul = data.multi || { rank: null, rating: null, wins: 0, losses: 0 };
     const rkd = data.ranked || { rank: null, rating: null, wins: 0, losses: 0 };
-    setText(["#singleRank"], formatRank(sng.rank || calculateRank(sng.rating)));
-    setText(["#singleRating"], sng.rating);
     setText(["#onlineRank"], formatRank(mul.rank || calculateRank(mul.rating)));
     setText(["#onlineRating"], mul.rating);
-    setText(["#accSingleRating"], sng.rating);
-    setText(["#accSingleRank"], sng.rank ? formatRank(sng.rank) : "");
     setText(["#accMultiRating"], mul.rating);
     setText(["#accMultiRank"], mul.rank ? formatRank(mul.rank) : "");
     setText(["#accRankedRating"], rkd.rating);
@@ -1179,13 +1175,13 @@ function initSocket() {
     renderRoomList();
   });
 
-  /* -- 커스텀 사전 (단어 신청) ------------------------- */
+  /* -- 커스텀 사전 (단어 신청) — 상점 탭에서만 사용 ------------------------- */
   socket.on("word:requestResult", (data) => {
     if (!data) return;
     if (data.ok) {
-      setWordReqStatus(data.message || "신청이 접수되었습니다.", "ok");
+      setWordReqStatusFrom("#shopWordReqStatus", data.message || "신청이 접수되었습니다.", "ok");
     } else {
-      setWordReqStatus(data.reason || "신청에 실패했습니다.", "error");
+      setWordReqStatusFrom("#shopWordReqStatus", data.reason || "신청에 실패했습니다.", "error");
     }
     fetchWordList();
   });
@@ -1922,39 +1918,15 @@ function randomJoinRoom() {
 }
 
 /* -- 커스텀 사전 (단어 신청) --------------------------- */
-let wordReqOpen = false;
-
-function openWordPanel() {
-  wordReqOpen = true;
-  const panel = $("#wordPanel");
-  if (!panel) return;
-  panel.classList.remove("hidden");
-  fetchWordList();
-}
-
-function closeWordPanel() {
-  wordReqOpen = false;
-  const panel = $("#wordPanel");
-  if (panel) panel.classList.add("hidden");
-}
-
 function fetchWordList() {
   if (!socket || !socketConnected) return;
   socket.emit("word:list", { nickname: myNickname || undefined });
-}
-
-function setWordReqStatus(text, type) {
-  return setWordReqStatusFrom("#wordReqStatus", text, type);
 }
 
 function setWordReqStatusFrom(statusSel, text, type) {
   const el = $(statusSel);
   if (!el) return;
   el.innerHTML = `<div class="room-list-status ${type === "ok" ? "" : type === "error" ? "error" : ""}">${escapeHtml(text)}</div>`;
-}
-
-function submitWordRequest() {
-  return submitWordRequestFrom("#wordReqInput", "#wordReqStatus");
 }
 
 function submitWordRequestFrom(inputSel, statusSel) {
@@ -1991,8 +1963,6 @@ function wordListMarkup(data) {
 
 function renderWordList(data) {
   const markup = wordListMarkup(data);
-  const main = $("#wordReqMyList");
-  if (main) main.innerHTML = markup;
   const shop = $("#shopWordReqMyList");
   if (shop) shop.innerHTML = markup;
 }
@@ -2362,7 +2332,11 @@ function renderMissionGroup(g) {
   if (!list) return;
   const missions = Array.isArray(missionsGroups[g]) ? missionsGroups[g] : [];
   const periodEl = $(info.periodSel);
-  if (periodEl && missionPeriods[g]) periodEl.textContent = `(${String(missionPeriods[g])})`;
+  if (periodEl) {
+    const key = missionPeriods[g];
+    const range = g === "daily" ? key : (missionPeriods[g + "Range"] || key);
+    if (range) periodEl.textContent = `(${String(range)})`;
+  }
   if (missions.length === 0) {
     list.innerHTML = `<div class="missions-empty">미션 정보를 불러오는 중...</div>`;
     return;
@@ -2721,12 +2695,12 @@ function renderAdminFound(data) {
   }
   const p = data.player;
   adminFoundNick = p.nickname;
-  const statsRow = (mode, label) => {
+  const statsRow = (mode, label, hasRating) => {
     const s = p[mode] || {};
     return `
       <div class="admin-stats-mode">
         <div class="admin-stats-title">${label}</div>
-        <label class="admin-row"><span>점수</span><input type="number" class="admin-num" data-admin-m="${mode}" data-admin-f="rating" value="${s.rating ?? 0}" min="0" max="9999"></label>
+        ${hasRating ? `<label class="admin-row"><span>점수</span><input type="number" class="admin-num" data-admin-m="${mode}" data-admin-f="rating" value="${s.rating ?? 0}" min="0" max="9999"></label>` : `<div class="admin-row"><span>점수</span><b>${s.rating ?? 0}</b> <span class="admin-single-hint">(싱글은 점수가 없습니다)</span></div>`}
         <label class="admin-row"><span>승 (플레이어 승)</span><input type="number" class="admin-num" data-admin-m="${mode}" data-admin-f="wins" value="${s.wins ?? 0}" min="0"></label>
         <label class="admin-row"><span>패 (AI 승)</span><input type="number" class="admin-num" data-admin-m="${mode}" data-admin-f="losses" value="${s.losses ?? 0}" min="0"></label>
         <div class="admin-row"><span></span><button type="button" class="admin-apply" data-admin-stats="${mode}">${label} 통계 적용</button></div>
@@ -2734,9 +2708,10 @@ function renderAdminFound(data) {
   };
   wrap.innerHTML = `
     <div class="admin-found-head">대상: <b>${escapeHtml(p.nickname)}</b></div>
-    ${statsRow("single", "싱글 (AI 대전)")}
-    ${statsRow("multi", "멀티 (온라인)")}
-    <div class="admin-info">※ 승·패·점수를 직접 조정합니다. 저장 후 새 게임 결과부터 반영됩니다.</div>
+    ${statsRow("single", "싱글 (AI 대전)", false)}
+    ${statsRow("multi", "멀티 (온라인)", true)}
+    ${statsRow("ranked", "랭크 (랭크 매칭)", true)}
+    <div class="admin-info">※ 승·패·점수를 직접 조정합니다. 점수를 바꾸면 티어가 자동으로 다시 계산됩니다. 저장 후 새 게임 결과부터 반영됩니다.</div>
   `;
   wrap.querySelectorAll("[data-admin-stats]").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -3106,7 +3081,7 @@ function lbMarkup(rows, mode, showToggle = true) {
             <span class="lb-rank">${r.rank}</span>
             <span class="lb-name">${escapeHtml(r.nickname || "플레이어")}</span>
             <span class="lb-tier">${escapeHtml(tier)}</span>
-            <span class="lb-rating"><strong>${r.ranking}점</strong> · ${r.wins}승 ${r.losses}패</span>
+            <span class="lb-rating"><strong>${r.ranking}점</strong> · ${r.wins}승 ${r.losses}패 · ${r.streak || 0}연승</span>
           </div>`;
     }).join("");
   }
@@ -3121,7 +3096,7 @@ function bindLbToggles(box, btn, fetchFn) {
 }
 
 /* ---------------------------------------------------------
-   실시간 랭킹 패널 — 멀티/랭크/돈/연승 탭, 상시 렌더
+   실시간 랭킹 패널 — 랭크/돈/연승/티어 탭, 상시 렌더
 --------------------------------------------------------- */
 function sideRankMarkup(rows, mode) {
   if (!Array.isArray(rows) || rows.length === 0) return `<div class="side-rank-empty">기록이 없습니다.</div>`;
@@ -3131,6 +3106,7 @@ function sideRankMarkup(rows, mode) {
     let sub = `${r.wins || 0}승 ${r.losses || 0}패`;
     if (mode === "money") { val = Number(r.money || 0).toLocaleString() + "원"; sub = ""; }
     else if (mode === "streak") { val = (r.bestStreak || 0) + "연승"; sub = `현재 ${r.streak || 0}`; }
+    else if (mode === "tier") { val = formatRank(r.tier); sub = `${r.wins || 0}승 ${r.losses || 0}패`; }
     const cls = (r.rank === 1 ? " top1" : r.rank <= 3 ? " top3" : "") + (me ? " lb-me" : "");
     return `<div class="side-rank-row${cls}">
       <span class="side-rank-num">${r.rank}</span>
@@ -3145,7 +3121,8 @@ async function loadSideRanking(mode = sideRankMode, silent = false) {
   if (mode === "money") sideRankMode = "money";
   else if (mode === "streak") sideRankMode = "streak";
   else if (mode === "ranked") sideRankMode = "ranked";
-  else sideRankMode = "multi";
+  else if (mode === "tier") sideRankMode = "tier";
+  else sideRankMode = "ranked";
   const body = $("#sideRankBody");
   if (!body) return;
   if (!silent) {
@@ -3185,7 +3162,7 @@ function initSideRanking() {
   if (closedInit || window.innerWidth < 1080) {
     closeRanking();
   }
-  loadSideRanking("multi");
+  loadSideRanking("ranked");
   setInterval(() => { if (!$("#sideRank").classList.contains("closed")) loadSideRanking(sideRankMode, true); }, 180000);
 }
 
@@ -3339,11 +3316,6 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#roomListRefresh")?.addEventListener("click", fetchRoomList);
   $("#roomListRandom")?.addEventListener("click", randomJoinRoom);
   $("#roomListClose")?.addEventListener("click", closeRoomList);
-  $("#wordRequestBtn")?.addEventListener("click", openWordPanel);
-  $("#wordReqRefresh")?.addEventListener("click", fetchWordList);
-  $("#wordReqClose")?.addEventListener("click", closeWordPanel);
-  $("#wordReqSend")?.addEventListener("click", submitWordRequest);
-  bindAdminEnter("#wordReqInput", submitWordRequest);
   $("#shopWordReqSend")?.addEventListener("click", () => submitWordRequestFrom("#shopWordReqInput", "#shopWordReqStatus"));
   bindAdminEnter("#shopWordReqInput", () => submitWordRequestFrom("#shopWordReqInput", "#shopWordReqStatus"));
   $("#missionBtn")?.addEventListener("click", () => {

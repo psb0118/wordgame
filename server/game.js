@@ -447,11 +447,51 @@ function chooseStartWord(usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH) {
    AI — 첫 턴(턴 0) 시작 단어 선택
    - 반드시 주어진 시작 음절로 시작
    - 공격 단어/한방 단어/이미 사용한 단어/방어 단어 배제
-   - 시작 단어 = 상대 대응지(끝 음절 버킷)가 좁은 수 우선 — 켄(자르브뤼켄 등)·꾼류의
-     좁은 끝밭침 오프닝으로 상대를 골목으로 몰아 넣는다. 같은 좁음 안에서는
-     희귀루트 > 루트 > 돌림 > 일반 순서로 무작위 다양하게
+   - 절대 지는 단어 금지: 상대 응수 중 하나라도 (한방이거나) 그 뒤 AI가 받아칠 후보가
+     0개인 단어는 시작 단어에서 제외한다. 예) "다운스윙" → 상대가 "윙윙"으로 받으면
+     AI는 받아칠 단어가 없어 즉시 패배 → 배제
+   - 같은 안전함 안에서는 상대가 받아칠 수 있는 루트/희귀루트 단어 개수가 적은 순으로
+     우선 (받아칠 루트가 빈약할수록 유리), 그다음 상대 대응지(끝 음절 버킷)가 좁은 순,
+     같은 좁음 안에서는 희귀루트 > 루트 > 돌림 > 일반 순으로 무작위 다양하게
    - 어떤 경우에도 방어 단어는 시작으로 절대 두지 않는다
+   - 성능: 사전(첫 글자/끝 음절) 요약 테이블을 한 번 만들면 후보당 O(끝음절 허용 글자 수)
+     로 평가하고, 최종 후보(상위 5개)만 실제 응수 목록으로 정밀 검증한다
 ========================================================= */
+
+/* 턴0 정밀 검증용 공용 빈 used 집합 — 검색 함수들은 읽기만 한다 */
+const EMPTY_USED = new Set();
+
+/* 첫 글자/끝 음절 요약 테이블 — 사전이 커스텀 단어 병합 등으로 바뀌지 않으면 재사용 */
+let _startTblKey = null;
+let _startTbls = null;
+function startTables(WORD_INDEX, rootSet, rareRootSet) {
+  const key = `${WORD_INDEX.size}|${rootSet.size}|${rareRootSet.size}`;
+  if (_startTblKey === key && _startTbls) return _startTbls;
+  const endSizes = new Map();
+  for (const [ch, bucket] of WORD_INDEX) endSizes.set(ch, bucket.length);
+  const memo = new Map();
+  const endPool = (endChar) => {
+    if (memo.has(endChar)) return memo.get(endChar);
+    let n = 0;
+    for (const fc of allowedFirstChars(endChar)) n += endSizes.get(fc) || 0;
+    memo.set(endChar, n);
+    return n;
+  };
+  const rareFirstCnt = new Map();
+  const deadFirstCnt = new Map();
+  for (const [fc, bucket] of WORD_INDEX) {
+    let rf = 0, df = 0;
+    for (const word of bucket) {
+      if (rootSet.has(word) || rareRootSet.has(word)) rf++;
+      if (endPool(word.at(-1)) === 0) df++;
+    }
+    rareFirstCnt.set(fc, rf);
+    deadFirstCnt.set(fc, df);
+  }
+  _startTblKey = key;
+  _startTbls = { endSizes, endPool, rareFirstCnt, deadFirstCnt };
+  return _startTbls;
+}
 
 function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS) {
   const used = usedWords instanceof Set ? usedWords : new Set();
@@ -461,43 +501,79 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
   const dolrimSet = DOLRIM_WORDS || new Set();
   const syllableF = normalizeWord(syllable);
   if (!syllableF) return null;
+
+  /* 끝 음절 별 상대 대응풀(endSizes)과 첫 글자 별 요약 테이블을 한 번에 세운다 */
+  const { endSizes, endPool, rareFirstCnt, deadFirstCnt } = startTables(WORD_INDEX, rootSet, rareRootSet);
+
+  /* 시작 단어 후보 — 공격/방어/한방(끝음절 0-대응풀) 배제 */
   const legal = [];
   for (const w of getCandidates(syllableF, used, WORD_INDEX)) {
     if (!w.startsWith(syllableF)) continue;
     if (isAttackWord(w, ATTACK_DEPTH)) continue;
-    if (isOneShot(w, used, WORD_INDEX)) continue;
     if (defenseSet.has(w)) continue;
+    if (used.size === 0) {
+      /* 턴0: 받아칠 수 있는 후보 = 끝음절 대응풀 - (스스로 같은 글자로 시작하면 -1) */
+      const selfFollows = allowedFirstChars(w.at(-1)).includes(w[0]) ? 1 : 0;
+      if (endPool(w.at(-1)) - selfFollows <= 0) continue;
+    } else if (isOneShot(w, used, WORD_INDEX)) continue;
     legal.push(w);
   }
   if (legal.length === 0) return null;
 
-  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
-
-  /* 시작 단어 = "상대 대응지(내 끝 음절 버킷)가 가장 좁은 수"를 우선.
-     켄(자르브뤼켄·마우어하켄·시클로헥사데켄·나주켄)이나 꾼처럼 남은 버킷이 좁은
-     오프닝이면 상대를 골목으로 몰아 넣을 수 있다. 같은 좁은-끝음절 안에서는
-     희귀루트 > 루트 > 돌림 > 일반 순으로 우선하되 무작위로 다양하게 고른다 */
+  /* 절대 지는 수 판정 + 받아칠 루트/희귀루트 수 — 응수를 낱낱이 훑지 않고 첫 글자
+     요약 테이블로 O(1)에 끝낸다 */
   const tierOf = (nw) => rareRootSet.has(nw) ? 4 : rootSet.has(nw) ? 3 : dolrimSet.has(nw) ? 2 : 1;
-
-  /* 끝 음절의 실제 상대 대응 수 — 두음법칙 확장(리→이 등)까지 포함해
-     "상대가 이 수를 받은 뒤 답할 수 있는 후보"를 센다 */
-  const endSizes = new Map();
-  for (const [ch, bucket] of WORD_INDEX) endSizes.set(ch, bucket.length);
-  const replyPoolOf = (endChar) => {
-    let n = 0;
-    for (const fc of allowedFirstChars(endChar)) n += endSizes.get(fc) || 0;
-    return n;
-  };
-
-  const ranked = legal.map(w => {
-    const nw = normalizeWord(w);
-    /* 켄 계열(자르브뤼켄·마우어하켄·시클로헥사데켄·나주켄 등)은 상대 대응 버킷이
-       좁아 골목으로 몰아넣기에 유리해 가산 -25 */
+  const scored = [];
+  for (const w of legal) {
+    const nw = w;
+    let rareCount = 0, deadly = false;
+    const allowed = allowedFirstChars(nw.at(-1));
+    for (const fc of allowed) {
+      rareCount += rareFirstCnt.get(fc) || 0;
+      if ((deadFirstCnt.get(fc) || 0) > 0) deadly = true;
+    }
+    if (deadly) continue;
     const bias = nw.endsWith("켄") ? 25 : 0;
-    return { w, nw, endBucket: replyPoolOf(nw.at(-1)) - bias, tier: tierOf(nw) };
-  });
-  ranked.sort((a, b) => a.endBucket - b.endBucket || b.tier - a.tier);
-  return pick(ranked.slice(0, Math.min(5, ranked.length))).w;
+    scored.push({ w, nw, endBucket: endPool(nw.at(-1)) - bias, tier: tierOf(nw), rareCount });
+  }
+  if (scored.length === 0) return null;
+
+  /* 정밀 검증 — 후보의 실제 응수 목록을 훑어 "AI 즉시 패배 응수"가 없는지 확정한다 */
+  const turn0Safe = (nw) => {
+    if (endPool(nw.at(-1)) === 0) return false;
+    const usedAfterOpen = new Set(EMPTY_USED);
+    usedAfterOpen.add(nw);
+    for (const r of getCandidates(nw, usedAfterOpen, WORD_INDEX)) {
+      const e = r.at(-1);
+      const pool = endPool(e);
+      if (pool === 0) return false;
+      /* 응수풀 안에서 "이미 판에 있는" 단어는 뺀다. 턴0엔 시작 단어(nw)와 응수(r)뿐 */
+      let usedInPool = 0;
+      if (allowedFirstChars(e).includes(nw[0])) usedInPool++;
+      if (allowedFirstChars(e).includes(r[0])) usedInPool++;
+      if (pool - usedInPool <= 0) return false;
+    }
+    return true;
+  };
+  const usedSafe = (nw) => {
+    const usedAfterOpen = new Set(used);
+    usedAfterOpen.add(nw);
+    for (const r of getCandidates(nw, usedAfterOpen, WORD_INDEX)) {
+      const u2 = new Set(usedAfterOpen);
+      u2.add(r);
+      if (getCandidates(r, u2, WORD_INDEX, 1).length === 0) return false;
+    }
+    return true;
+  };
+  const safe = used.size === 0 ? turn0Safe : usedSafe;
+
+  scored.sort((a, b) => a.rareCount - b.rareCount || a.endBucket - b.endBucket || b.tier - a.tier);
+
+  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+  const shortlist = scored.slice(0, Math.min(5, scored.length)).filter(s => safe(s.nw));
+  if (shortlist.length > 0) return pick(shortlist).w;
+  for (const s of scored) { if (safe(s.nw)) return s.w; }
+  return pick(scored).w;
 }
 
 /* =========================================================
