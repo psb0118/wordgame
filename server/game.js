@@ -493,6 +493,13 @@ function startTables(WORD_INDEX, rootSet, rareRootSet) {
   return _startTbls;
 }
 
+/* AI 오프닝 단어를 고를 때 "유저가 받아칠 수 있는 끝음절 대응풀"의 최소값.
+   endPool(endSyllable) - selfFollows(1) 미만이면 즉시 continue로 후보에서 버린다.
+   이 상수가 정의되지 않으면 turn0Safe 전수 검증이 무력화되고 ReferenceError로
+   인해 선택 루프가 죽어 무작위 fallback으로 빠지는데, 그 fallback에 '쯔' 같은
+   희귀 끝음절이 그대로 섞여 유저를 강제한다. 따라서 반드시 3 이상으로 유지한다. */
+const MIN_OPEN_REPLY_POOL = 4;
+
 function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS) {
   const used = usedWords instanceof Set ? usedWords : new Set();
   const defenseSet = DEFENSE_WORDS || new Set();
@@ -508,14 +515,18 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
   /* 시작 단어 후보 — 공격/방어/한방(끝음절 0-대응풀) 배제 */
   const legal = [];
   for (const w of getCandidates(syllableF, used, WORD_INDEX)) {
-    if (!w.startsWith(syllableF)) continue;
-    if (isAttackWord(w, ATTACK_DEPTH)) continue;
-    if (defenseSet.has(w)) continue;
-    if (used.size === 0) {
-      /* 턴0: 받아칠 수 있는 후보 = 끝음절 대응풀 - (스스로 같은 글자로 시작하면 -1) */
-      const selfFollows = allowedFirstChars(w.at(-1)).includes(w[0]) ? 1 : 0;
-      if (endPool(w.at(-1)) - selfFollows <= 0) continue;
-    } else if (isOneShot(w, used, WORD_INDEX)) continue;
+      if (!w.startsWith(syllableF)) continue;
+      if (isAttackWord(w, ATTACK_DEPTH)) continue;
+      if (defenseSet.has(w)) continue;
+      if (used.size === 0) {
+        /* 턴0: 받아칠 수 있는 후보 = 끝음절 대응풀 - (스스로 같은 글자로 시작하면 -1)
+           "유저가 답할 수 있는 단어가 넉넉한" 끝음절로만 연다.
+           단 1개만 있는 '쯔'류 끝음절로 강제하지 않도록 최소 대응풀을 요구한다
+           (그 위에서 turn0Safe가 유저의 모든 응수를 AI가 받아칠 수 있는지 전수 검증하므로
+           유저가 답이 없어 못 하거나, 답했더니 바로 죽는 사태는 원천 차단된다). */
+        const selfFollows = allowedFirstChars(w.at(-1)).includes(w[0]) ? 1 : 0;
+        if (endPool(w.at(-1)) - selfFollows < MIN_OPEN_REPLY_POOL) continue;
+      } else if (isOneShot(w, used, WORD_INDEX)) continue;
     legal.push(w);
   }
   if (legal.length === 0) return null;

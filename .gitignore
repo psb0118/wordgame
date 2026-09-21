@@ -6,3 +6,7 @@ data/friends.json
 data/custom-words.json
 data/season.json
 *.json.bak
+
+# 에디터 프로젝트 파일(.ent) — 커밋 대상 아님
+entry/
+*.ent

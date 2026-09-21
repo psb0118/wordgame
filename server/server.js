@@ -287,6 +287,40 @@ function pgStoreSet(key, value) {
   ).catch(e => console.warn(`저장소 '${key}' PG 쓰기 실패:`, e.message));
 }
 
+/* JSON → PG 플레이어 일회성 자동 이관
+   - JSON 모드로 오래 굴리다가 DATABASE_URL을 붙여 PG로 전환할 때,
+     살아있는(실제 닉네임) 유저 기록을 PG에 업서트로 한 번만 옮긴다.
+   - 이관 마커(kv_store)로 정확히 1회만 실행된다.
+   - 파일이 없거나 실패해도 부팅을 막지 않는다(안전).
+   - savePlayerData의 검증된 upsert 경로를 그대로 재사용해 필드 매핑이 갈라지지 않는다. */
+async function migrateJsonPlayersToPg() {
+  if (dbMode !== "pg" || !dbPool) return;
+  try {
+    if (!fs.existsSync(jsonPath)) return;
+    const marker = await pgStoreGet("json_pg_import_v1");
+    if (marker) { console.log("JSON→PG 플레이어 이관: 이미 완료됨 (건너뜀)"); return; }
+    const raw = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+    if (!raw || typeof raw !== "object") return;
+    let imported = 0;
+    for (const [key, rec] of Object.entries(raw)) {
+      if (!rec || typeof rec !== "object") continue;
+      const nk = normKey(String(rec.nickname || "").trim());
+      const hasRealNick = nk.length > 0 && nk !== normKey("플레이어");
+      if (!hasRealNick) continue;                  /* 고스트는 이관하지 않는다 */
+      await savePlayerData(key, rec);              /* 검증된 upsert 경로 재사용 */
+      imported++;
+    }
+    await dbPool.query(
+      "INSERT INTO kv_store (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+      ["json_pg_import_v1", JSON.stringify({ imported, at: new Date().toISOString() })]
+    );
+    console.log(`JSON→PG 플레이어 이관 완료: ${imported}명`);
+  } catch (err) {
+    /* 파일 파손/읽기 오류 등은 치명적이지 않다 — 다음 부팅에서 다시 시도 가능 */
+    console.warn("JSON→PG 플레이어 이관 생략(안전 모드):", err.message);
+  }
+}
+
 /* PG 우선 로드 — PG에 값이 있으면 그 값을, 없으면 파일을, 둘 다 없으면 fallback */
 async function loadStoreJSON(key, filePath, fallback = null) {
   if (dbMode === "pg") {
@@ -4040,6 +4074,9 @@ io.on("connection", (socket) => {
 ========================================================= */
 
 initDatabase().then(async () => {
+  /* JSON 모드로 굴리다가 PG로 넘어왔을 때, 살아있는 유저 기록을 DB로 1회만 이관한다.
+     마커 보호라서 재배포돼도 두 번 실행되지 않는다. */
+  await migrateJsonPlayersToPg();
   /* PG 모드에서는 파일이 남아있지 않아도 DB(kv_store)에서 보조 저장소를 복구한다 */
   await Promise.all([
     loadAdminConfig(),
