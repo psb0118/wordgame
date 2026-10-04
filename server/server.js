@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 const http = require("http");
 const fs = require("fs");
@@ -307,6 +307,9 @@ async function migrateJsonPlayersToPg() {
       const nk = normKey(String(rec.nickname || "").trim());
       const hasRealNick = nk.length > 0 && nk !== normKey("플레이어");
       if (!hasRealNick) continue;                  /* 고스트는 이관하지 않는다 */
+      /* 부분 이관 후 재시도해도 이미 PG에 있는 계정의 새 진행 기록은 덮어쓰지 않는다. */
+      const existing = await dbPool.query("SELECT id FROM players WHERE id = $1", [nk]);
+      if (existing.rows.length > 0) continue;
       await savePlayerData(key, rec);              /* 검증된 upsert 경로 재사용 */
       imported++;
     }
@@ -357,7 +360,9 @@ function mergePlayerRecords(a, b) {
   const sumMode = (x, y) => ({
     rating: Math.max(Number(x?.rating) || 1000, Number(y?.rating) || 1000),
     wins: (Number(x?.wins) || 0) + (Number(y?.wins) || 0),
-    losses: (Number(x?.losses) || 0) + (Number(y?.losses) || 0)
+    losses: (Number(x?.losses) || 0) + (Number(y?.losses) || 0),
+    streak: Math.max(Number(x?.streak) || 0, Number(y?.streak) || 0),
+    bestStreak: Math.max(Number(x?.bestStreak) || 0, Number(y?.bestStreak) || 0)
   });
   const ra = a.ranked || {}, rb = b.ranked || {};
   const titles = [...(Array.isArray(a.titles) ? a.titles : []), ...(Array.isArray(b.titles) ? b.titles : [])]
@@ -509,7 +514,10 @@ function saveJsonDb() {
       try { fs.copyFileSync(jsonPath, `${jsonPath}.bak`); } catch (e) { /* 무시 */ }
     }
     fs.writeFileSync(jsonPath, JSON.stringify(obj, null, 2));
-  } catch (e) { console.warn("JSON DB 저장 실패:", e.message); }
+  } catch (e) {
+    console.warn("JSON DB 저장 실패:", e.message);
+    throw e;
+  }
 }
 
 async function initDatabase() {
@@ -642,7 +650,7 @@ function resolvePlayerId(playerId) {
 
 async function getPlayerData(playerId) {
   const key = resolvePlayerId(playerId);
-  if (playerCache.has(key)) return migratePlayerData({ ...playerCache.get(key) });
+  if (playerCache.has(key)) return migratePlayerData(structuredClone(playerCache.get(key)));
   if (dbMode === "pg") {
     try {
       const result = await dbPool.query("SELECT * FROM players WHERE id = $1", [key]);
@@ -669,9 +677,12 @@ async function getPlayerData(playerId) {
         };
         const migrated = migratePlayerData(data);
         playerCache.set(key, migrated);
-        return { ...migrated };
+        return structuredClone(migrated);
       }
-    } catch (err) { console.error("DB 읽기 오류:", err.message); }
+    } catch (err) {
+      console.error("DB 읽기 오류:", err.message);
+      throw err; // DB 장애를 신규 계정으로 오인해 기존 기록을 덮어쓰지 않는다.
+    }
   }
   /* 이름 없는 소켓 기본값 — 고스트를 캐시에 쌓지 않는다 (랭킹 초기화/중복의 원인이었음) */
   const defaultData = migratePlayerData({ id: key, nickname: "플레이어" });
@@ -679,13 +690,12 @@ async function getPlayerData(playerId) {
 }
 
 async function savePlayerData(playerId, data) {
-  const safe = migratePlayerData(data);
+  const safe = migratePlayerData(structuredClone(data));
   const nk = normKey(String(safe.nickname || "").trim());
   const hasRealNick = nk.length > 0 && nk !== normKey("플레이어");
   /* 저장 키는 닉네임(계정) 키를 우선 — 소켓 ID와 무관하게 한 명당 한 레코드 */
   let key = hasRealNick ? nk : (socketNicks.has(playerId) ? normKey(socketNicks.get(playerId)) : playerId);
   safe.id = key;
-  if (key !== playerId && playerCache.has(playerId)) playerCache.delete(playerId);
   if (!hasRealNick) return;   /* 이름 없는 고스트 소켓은 영속하지 않는다 */
   const num = (v, fallback) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };
   const rankedStreak = Math.max(0, Math.floor(num(data.ranked && data.ranked.streak, 0)));
@@ -693,7 +703,9 @@ async function savePlayerData(playerId, data) {
   const modeCore = (m) => ({
     rating: num(m.rating, 1000),
     wins: Math.max(0, num(m.wins, 0)),
-    losses: Math.max(0, num(m.losses, 0))
+    losses: Math.max(0, num(m.losses, 0)),
+    streak: Math.max(0, Math.floor(num(m.streak, 0))),
+    bestStreak: Math.max(0, Math.floor(num(m.bestStreak, 0)))
   });
   safe.single = modeCore(safe.single);
   safe.multi = modeCore(safe.multi);
@@ -711,7 +723,6 @@ async function savePlayerData(playerId, data) {
   safe.daily = initDailyData(safe.daily, getKstDate());
   safe.weekly = initWeeklyData(safe.weekly, getKstWeek());
   safe.monthly = initMonthlyData(safe.monthly, getKstMonth());
-  playerCache.set(key, safe);
   if (dbMode === "pg") {
     try {
       await dbPool.query(`
@@ -746,13 +757,26 @@ async function savePlayerData(playerId, data) {
         JSON.stringify(safe.weekly), JSON.stringify(safe.monthly),
         JSON.stringify(safe.season || {})
       ]);
-    } catch (err) { console.error("DB 쓰기 오류:", err.message); }
-  } else {
-    saveJsonDb();
+    } catch (err) {
+      console.error("DB 쓰기 오류:", err.message);
+      throw err; // 이관/보상 호출자가 실패를 알아야 완료 처리하지 않는다.
+    }
   }
+  const previous = playerCache.get(key);
+  playerCache.set(key, safe);
+  if (dbMode !== "pg") {
+    try {
+      saveJsonDb();
+    } catch (err) {
+      if (previous) playerCache.set(key, previous);
+      else playerCache.delete(key);
+      throw err;
+    }
+  }
+  if (key !== playerId && playerCache.has(playerId)) playerCache.delete(playerId);
 }
 
-function updateSingleResult(playerId, won) {
+function updateSingleResult(playerId, won, socketId = playerId) {
   return (async () => {
     const pd = await getPlayerData(playerId);
     if (won) pd.single.wins = (pd.single.wins || 0) + 1;
@@ -762,7 +786,7 @@ function updateSingleResult(playerId, won) {
     const next = Math.round(r + 32 * ((won ? 1 : 0) - expected));
     pd.single.rating = Number.isFinite(next) ? next : 1000;
     await savePlayerData(playerId, pd);
-    const s = io.sockets.sockets.get(playerId);
+    const s = io.sockets.sockets.get(socketId);
     if (s) s.emit("player:ranking", {
       ...pd,
       single: { ...pd.single, rank: calculateRank(pd.single.rating) }
@@ -773,6 +797,9 @@ function updateSingleResult(playerId, won) {
 
 async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mode = "multi", opts = {}) {
   const key = mode === "ranked" ? "ranked" : "multi";
+  /* 퇴장/연결 종료로 소켓 매핑이 지워져도 경기 참가자의 계정 키는 유지한다. */
+  winnerId = normKey(winnerNickname) || resolvePlayerId(winnerId);
+  loserId = normKey(loserNickname) || resolvePlayerId(loserId);
   const winner = await getPlayerData(winnerId);
   const loser = await getPlayerData(loserId);
   const { newWinnerRating, newLoserRating } = calculateElo(winner[key].rating, loser[key].rating);
@@ -1239,7 +1266,8 @@ async function recordMatchHistory(room, winnerIndex, loserIndex) {
   for (const p of room.players) {
     if (p.isBot) continue;
     try {
-      const pd = await getPlayerData(p.id);
+      const accountId = normKey(p.nickname) || p.id;
+      const pd = await getPlayerData(accountId);
       const mine = (room.history || []).filter(h => h.player === p.playerIndex && typeof h.word === "string" && h.word.length > 0);
       const wordCount = mine.length;
       const avgWordLen = wordCount > 0 ? Math.round((mine.reduce((a, w) => a + w.word.length, 0) / wordCount) * 10) / 10 : 0;
@@ -1255,7 +1283,7 @@ async function recordMatchHistory(room, winnerIndex, loserIndex) {
         avgWordLen
       });
       pd.recentGames = list.slice(-10);
-      await savePlayerData(p.id, pd);
+      await savePlayerData(accountId, pd);
     } catch (e) { console.error("전적 기록 오류:", e.message); }
   }
 }
@@ -1559,6 +1587,8 @@ function stopTurnTimer(room) {
 function startTurnTimer(room, gameSessionId) {
   stopTurnTimer(room);
   if (!room || room.finished || !room.started) return;
+  /* 한 명이라도 재접속 유예 중이면 경기 전체를 계속 일시정지한다. */
+  if (room.players.some(p => !p.isBot && !p.connected && !p.eliminated && !p.waiting)) return;
   const player = getPlayerByIndex(room, room.turnPlayerIndex);
   if (!player || player.eliminated) return;
 
@@ -1640,26 +1670,37 @@ async function finishGame(room, winnerIndex, loserIndex) {
   room.winner = winnerIndex;
   room.loser = loserIndex;
   stopTurnTimer(room);
+  /* UI에서 바로 재시작하거나 방이 정리되어도 저장할 경기 결과는 바뀌지 않는다. */
+  const resultRoom = {
+    mode: room.mode,
+    players: room.players.map(p => ({ ...p })),
+    history: (room.history || []).map(h => ({ ...h }))
+  };
+  /* 마지막 한방의 미션 저장이 끝난 뒤 점수/전적을 읽어 덮어쓰기 경쟁을 막는다. */
+  if (room.pendingMissionWrites) await room.pendingMissionWrites;
+  let resultSave;
 
   const winnerName = winnerIndex !== null ? room.players[winnerIndex]?.nickname : "무승부";
   console.log(`[GAME END] Room:${room.id} Winner:${winnerName} (${winnerIndex}) Loser:(${loserIndex})`);
 
   /* 레이팅 반영 — 싱글(AI)은 레이팅 미반영, 온라인=멀티 레이팅, 랭크드=랭크드 레이팅+돈 보상 */
-  const w = winnerIndex != null ? room.players[winnerIndex] : null;
-  const l = loserIndex != null ? room.players[loserIndex] : null;
+  const w = winnerIndex != null ? resultRoom.players[winnerIndex] : null;
+  const l = loserIndex != null ? resultRoom.players[loserIndex] : null;
+  const winnerAccountId = w ? normKey(w.nickname) || w.id : null;
+  const loserAccountId = l ? normKey(l.nickname) || l.id : null;
   const humanOnly = w && l && !w.isBot && !l.isBot;
   if (w && l && w.id !== l.id && (room.mode === "online" || room.mode === "ranked") && humanOnly) {
     const mode = room.mode === "ranked" ? "ranked" : "multi";
     const updateOpts = {};
     if (room.mode === "ranked") {
-      const [wData, lData] = await Promise.all([getPlayerData(w.id), getPlayerData(l.id)]);
+      const [wData, lData] = await Promise.all([getPlayerData(winnerAccountId), getPlayerData(loserAccountId)]);
       updateOpts.winnerBoost = ((wData.ratingBoostGames || 0) > 0) ? 2 : 1;
       updateOpts.loserBoost = ((lData.ratingBoostGames || 0) > 0) ? 2 : 1;
       updateOpts.decBoostWinner = true;
       updateOpts.decBoostLoser = true;
     }
-    updateRating(
-      w.id, l.id,
+    resultSave = updateRating(
+      winnerAccountId, loserAccountId,
       w.nickname || "플레이어", l.nickname || "플레이어",
       mode, updateOpts
     )
@@ -1673,38 +1714,39 @@ async function finishGame(room, winnerIndex, loserIndex) {
 
         if (room.mode === "ranked") {
           /* 일일 미션 — 랭크 승리 누적, 연승 2회 달성 */
-          await bumpDaily(w.id, "rankedWins");
-          if ((result.winner.ranked && result.winner.ranked.streak) >= 2) await bumpDaily(w.id, "streakDone");
-          const winnerData = await getPlayerData(w.id);
+          await bumpDaily(winnerAccountId, "rankedWins");
+          if ((result.winner.ranked && result.winner.ranked.streak) >= 2) await bumpDaily(winnerAccountId, "streakDone");
+          const winnerData = await getPlayerData(winnerAccountId);
           const base = rollMoney();
           const earned = computeMoneyReward(base, winnerData);
           winnerData.money += earned;
-          await savePlayerData(w.id, winnerData);
+          await savePlayerData(winnerAccountId, winnerData);
           const ws = io.sockets.sockets.get(w.socketId);
           if (ws) ws.emit("money:received", { amount: earned, base, multiplier: Math.round(earned / base), roomId: room.id });
         }
 
         /* 시즌 참가 누적 — 승/패 각각 현재 시즌에 기록 */
         if (room.mode === "ranked") {
-          await bumpSeasonFor(w.id, "win");
-          await bumpSeasonFor(l.id, "lose");
+          await bumpSeasonFor(winnerAccountId, "win");
+          await bumpSeasonFor(loserAccountId, "lose");
         }
 
         /* 전적 기록은 레이팅/미션 저장이 모두 끝난 뒤에 — 동시 기록 시 덮어쓰기 손실 방지 */
-        await recordMatchHistory(room, winnerIndex, loserIndex);
+        await recordMatchHistory(resultRoom, winnerIndex, loserIndex);
       })
       .catch((err) => console.error("레이팅 반영 오류:", err.message));
   } else {
-    /* 레이팅 미반영 경기(AI/싱글, 방장 이탈 등)는 즉시 전적 기록 */
-    recordMatchHistory(room, winnerIndex, loserIndex).catch(err => console.error("전적 기록 오류:", err.message));
-    /* 싱글(AI) — 인간 플레이어의 승/패와 레이팅을 서버에 누적 (계정 통계 3모드 통일) */
-    if (room.mode === "ai" && winnerIndex !== null) {
-      const human = room.players.find(p => !p.isBot);
-      if (human && human.playerIndex !== undefined) {
-        updateSingleResult(human.id, human.playerIndex === winnerIndex)
-          .catch(err => console.error("싱글 레이팅 반영 오류:", err.message));
+    /* 전적과 싱글 점수 저장을 순차 처리해 이전 스냅샷이 새 전적을 덮어쓰지 않는다. */
+    resultSave = (async () => {
+      await recordMatchHistory(resultRoom, winnerIndex, loserIndex);
+      if (resultRoom.mode === "ai" && winnerIndex !== null) {
+        const human = resultRoom.players.find(p => !p.isBot);
+        if (human && human.playerIndex !== undefined) {
+          const accountId = normKey(human.nickname) || human.id;
+          await updateSingleResult(accountId, human.playerIndex === winnerIndex, human.socketId || human.id);
+        }
       }
-    }
+    })().catch(err => console.error("싱글 결과 저장 오류:", err.message));
   }
 
   /* 방장이 탈락/이탈했으면 생존자에게 방장 이전 (재시작 데드락 방지) */
@@ -1728,6 +1770,7 @@ async function finishGame(room, winnerIndex, loserIndex) {
   if (connectedHumans.length === 0) {
     ROOMS.delete(room.id);
   }
+  await resultSave;
 }
 
 /* =========================================================
@@ -1897,7 +1940,11 @@ function playWord(room, player, rawWord, gameSessionId) {
     });
 
     /* 일일 미션 — '한방 단어' 성공 횟수 누적 */
-    if (!player.isBot) bumpDaily(player.id, "oneShots");
+    if (!player.isBot) {
+      const accountId = normKey(player.nickname) || player.id;
+      room.pendingMissionWrites = (room.pendingMissionWrites || Promise.resolve())
+        .then(() => bumpDaily(accountId, "oneShots"));
+    }
 
     const alive = getAlivePlayers(room);
     if (alive.length === 0) { finishGame(room, null, null); return { ok: true, finished: true }; }
@@ -2025,6 +2072,9 @@ function removePlayer(room, socketId, reason) {
     if (room.turnPlayerIndex === player.playerIndex) {
       const next = findNextAlivePlayer(room, player.playerIndex);
       if (next !== null) { room.turnPlayerIndex = next; room.turnNumber++; startTurnTimer(room, room.gameSessionId); }
+    } else if (room.timer == null) {
+      /* 비차례 플레이어의 재접속 유예가 끝나도 남은 플레이어의 타이머를 복구한다. */
+      startTurnTimer(room, room.gameSessionId);
     }
   } else {
     room.players.splice(index, 1);
@@ -2281,9 +2331,6 @@ io.on("connection", (socket) => {
 
       const room = ROOMS.get(roomId);
       if (!room) { socket.emit("room:error", { ok: false, reason: "방을 찾을 수 없습니다." }); return; }
-      if (room.players.filter(p => !p.isBot).length >= MAX_PLAYERS) {
-        socket.emit("room:error", { ok: false, reason: "방이 가득 찼습니다." }); return;
-      }
 
       const existing = room.players.find(p => p.socketId === socket.id);
       if (existing) {
@@ -2327,6 +2374,10 @@ io.on("connection", (socket) => {
       if (nicknameExists) {
         socket.emit("room:error", { ok: false, reason: `"${nickname}" 닉네임은 이미 사용 중입니다.` });
         return;
+      }
+      /* 정원 검사는 기존 좌석의 재접속 처리 후에 한다. */
+      if (room.players.filter(p => !p.isBot).length >= MAX_PLAYERS) {
+        socket.emit("room:error", { ok: false, reason: "방이 가득 찼습니다." }); return;
       }
 
       /* 입장 확정 전에 이전 방(싱글/AI 방 포함)에서 분리 — 한 소켓이 여러 방에
@@ -3906,9 +3957,10 @@ io.on("connection", (socket) => {
       }
       /* 닉네임(정규화 키)이 곧 계정 저장 키 — 소켓 ID에 얽매이지 않아 재접속시에도
          돈/랭킹/연승이 초기화되는 문제가 없다 */
-      const playerData = await getPlayerData(socket.id);
+      const accountId = normKey(nickname);
+      const playerData = await getPlayerData(accountId);
       playerData.nickname = nickname;
-      await savePlayerData(socket.id, playerData);
+      await savePlayerData(accountId, playerData);
       registerOnline(socket.id, nickname);
       socket.emit("player:nameUpdated", { ok: true, nickname });
       if (room) broadcastRoomState(room);
