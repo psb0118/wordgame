@@ -578,13 +578,20 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
   };
   const safe = used.size === 0 ? turn0Safe : usedSafe;
 
-  scored.sort((a, b) => a.rareCount - b.rareCount || a.endBucket - b.endBucket || b.tier - a.tier);
+  /* ① 시작은 무조건 루트/희귀루트만 사용한다(방어·공격 단어는 이미 legal 단계에서 배제).
+     루트/희귀루트 후보가 전혀 없을 때만 기존(넓은 후보)으로 폴백한다. */
+  const rootPreferred = scored.filter(s => s.tier >= 3);
+  const startPool = rootPreferred.length ? rootPreferred : scored;
+  const cmp = (a, b) => a.rareCount - b.rareCount || a.endBucket - b.endBucket || b.tier - a.tier;
+  startPool.sort(cmp);
+  scored.sort(cmp);
 
   const pick = arr => arr[Math.floor(Math.random() * arr.length)];
-  const shortlist = scored.slice(0, Math.min(5, scored.length)).filter(s => safe(s.nw));
+  const shortlist = startPool.slice(0, Math.min(5, startPool.length)).filter(s => safe(s.nw));
   if (shortlist.length > 0) return pick(shortlist).w;
+  for (const s of startPool) { if (safe(s.nw)) return s.w; }
   for (const s of scored) { if (safe(s.nw)) return s.w; }
-  return pick(scored).w;
+  return pick(startPool).w;
 }
 
 /* =========================================================
@@ -733,6 +740,8 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     let score = 0;
     if (info.isValue) score += 90;
     if (info.isRoot) score += 35;
+    /* ⑤ 공격 단어는 공격 깊이가 낮을수록(승리가 가까울수록) 더 높게 점수를 매긴다 */
+    if (info.isAttack) score += 70 - Math.min(info.depth, 12) * 4;
     if (info.isDolrim) score += 18; /* 돌림 단어 — 순환이나 상대 빗겨가기에 유리해 보너스 */
     /* 유도 보너스 — 끝밭침 뒤에 남은 단어가 적을수록 상대를 좁은 골목으로 몰아넣는다
        (꾼·늬처럼 남은 단어 1~2개뿐인 끝밭침이면 사실상 확정 승리 도미노) */
@@ -844,13 +853,43 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     }
     return false;
   };
-  const eligible = list.filter(i =>
+  /* ② 선택지 확대 — 값/루트/희귀 루트/유효 펀넬 돌림 후보에 공격 단어를 추가로 포함한다.
+        특수 후보가 하나도 없으면 수를 내지 않고 패배했던 이전 동작 대신, 일반 후보까지
+        후보 폭을 넓혀 수를 낸다(§5 공격 단어는 깊이 낮은 순이 점수로 반영됨). */
+  const special = list.filter(i =>
     i.isValue ||
     i.isRoot ||
     i.isRareRoot ||
     (i.isDolrim && funnelOf(i) >= 60 && rootFollow(i)));
-  if (!eligible.length) return null; /* 값/루트/희귀루트/유효 펀넬이 없으면 수를 내지 않는다 */
-  return bestFrom(eligible);
+  /* ③ 돌림 단어 — 펀넬 점수가 60 이상(상대 말밭을 좁게 묶음)이면 루트 팔로우와 무관하게
+        후보에 넣는다. ⑤ 공격 단어도 함께 확대 후보에 포함한다. */
+  const extended = list.filter(i =>
+    !special.includes(i) && (i.isAttack || (i.isDolrim && funnelOf(i) >= 60)));
+  let playPool = special;
+  if (extended.length) playPool = playPool.concat(extended);
+  if (!playPool.length) playPool = list;
+
+  /* ⑤ 공격 단어를 쓸 때는 공격 깊이가 낮은 순으로 고른다 — 깊이가 가장 낮은(승리가
+        가장 가까운) 공격 단어를 대표 후보로 정하고, 그 후보를 나머지 후보와 점수로 비교한다. */
+  const atkPool = playPool.filter(i => i.isAttack);
+  const nonAtkPool = playPool.filter(i => !i.isAttack);
+  let bestAttack = null;
+  let attackScore = -Infinity;
+  if (atkPool.length) {
+    let minDepth = Infinity;
+    for (const i of atkPool) if (i.depth < minDepth) minDepth = i.depth;
+    for (const i of atkPool) {
+      if (i.depth !== minDepth) continue;
+      const s = oppScore(i);
+      if (s > attackScore) { attackScore = s; bestAttack = i; }
+    }
+  }
+  const bestNormal = nonAtkPool.length ? bestFrom(nonAtkPool) : null;
+  if (!bestAttack) return bestNormal;
+  if (!bestNormal) return bestAttack.w;
+  const normalInfo = nonAtkPool.find(i => i.w === bestNormal);
+  const normalScore = normalInfo ? oppScore(normalInfo) : -Infinity;
+  return attackScore >= normalScore ? bestAttack.w : bestNormal;
 }
 
 /* =========================================================
