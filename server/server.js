@@ -557,9 +557,13 @@ async function initDatabase() {
           single_losses INTEGER DEFAULT 0,
           created_at TIMESTAMP DEFAULT NOW(),
           updated_at TIMESTAMP DEFAULT NOW(),
-          season TEXT DEFAULT '{}'
+          season TEXT DEFAULT '{}',
+          firebase_uid TEXT DEFAULT NULL,
+          firebase_email TEXT DEFAULT '',
+          firebase_name TEXT DEFAULT ''
         )
       `);
+      await dbPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_players_firebase_uid ON players(firebase_uid)`);
       await dbPool.query(`
         ALTER TABLE players
           ADD COLUMN IF NOT EXISTS single_rating INTEGER DEFAULT 1000,
@@ -583,8 +587,12 @@ async function initDatabase() {
           ADD COLUMN IF NOT EXISTS daily TEXT DEFAULT '{}',
           ADD COLUMN IF NOT EXISTS weekly TEXT DEFAULT '{}',
           ADD COLUMN IF NOT EXISTS monthly TEXT DEFAULT '{}',
-          ADD COLUMN IF NOT EXISTS season TEXT DEFAULT '{}'
+          ADD COLUMN IF NOT EXISTS season TEXT DEFAULT '{}',
+          ADD COLUMN IF NOT EXISTS firebase_uid TEXT DEFAULT NULL,
+          ADD COLUMN IF NOT EXISTS firebase_email TEXT DEFAULT '',
+          ADD COLUMN IF NOT EXISTS firebase_name TEXT DEFAULT ''
       `);
+      await dbPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_players_firebase_uid ON players(firebase_uid)`);
       /* 보조 저장소(친구/시즌/관리자 설정/커스텀 사전/버그 제보) — 재배포에도 유지 */
       await dbPool.query(`
         CREATE TABLE IF NOT EXISTS kv_store (
@@ -700,6 +708,10 @@ function migratePlayerData(p) {
   p.multi = Object.assign({ ...MODE_DEFAULT }, p.multi || {});
   p.ranked = Object.assign({ ...MODE_DEFAULT }, p.ranked || {});
   p.season = Object.assign({ ...SEASON_DEFAULT }, p.season && typeof p.season === "object" ? p.season : {});
+  /* Firebase 연결 — 문자열이 아니면 버린다. PG/JSON에 그대로 영속된다 */
+  p.firebaseUid = typeof p.firebaseUid === "string" ? p.firebaseUid : "";
+  p.firebaseEmail = typeof p.firebaseEmail === "string" ? p.firebaseEmail : "";
+  p.firebaseName = typeof p.firebaseName === "string" ? p.firebaseName : "";
   p.ranked.streak = Number.isFinite(p.ranked.streak) ? Math.max(0, Math.floor(p.ranked.streak)) : 0;
   p.ranked.bestStreak = Number.isFinite(p.ranked.bestStreak) ? Math.max(0, Math.floor(p.ranked.bestStreak)) : 0;
   if (typeof p.money !== "number" || !Number.isFinite(p.money)) p.money = typeof p.money === "number" ? Math.max(0, p.money) : 0;
@@ -761,7 +773,10 @@ async function getPlayerData(playerId) {
           daily: (() => { try { return JSON.parse(row.daily || "{}"); } catch { return {}; } })(),
           weekly: (() => { try { return JSON.parse(row.weekly || "{}"); } catch { return {}; } })(),
           monthly: (() => { try { return JSON.parse(row.monthly || "{}"); } catch { return {}; } })(),
-          season: (() => { try { const v = JSON.parse(row.season || "null"); return v && typeof v === "object" ? v : null; } catch { return null; } })()
+          season: (() => { try { const v = JSON.parse(row.season || "null"); return v && typeof v === "object" ? v : null; } catch { return null; } })(),
+          firebaseUid: row.firebase_uid || "",
+          firebaseEmail: row.firebase_email || "",
+          firebaseName: row.firebase_name || ""
         };
         const migrated = migratePlayerData(data);
         playerCache.set(key, migrated);
@@ -820,8 +835,9 @@ async function savePlayerData(playerId, data) {
            ranked_rating, ranked_wins, ranked_losses, ranked_streak, ranked_best_streak,
            money, money_multiplier, rating_boost_games,
            titles, current_title, last_check_date, attendance_streak,
-           recent_games, daily, weekly, monthly, season, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,NOW())
+           recent_games, daily, weekly, monthly, season,
+           firebase_uid, firebase_email, firebase_name, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,NOW())
         ON CONFLICT (id) DO UPDATE SET
           nickname=$2, rating=$3, wins=$4, losses=$5,
           streak=$6, best_streak=$7,
@@ -830,7 +846,8 @@ async function savePlayerData(playerId, data) {
           ranked_streak=$14, ranked_best_streak=$15,
           money=$16, money_multiplier=$17, rating_boost_games=$18,
           titles=$19, current_title=$20, last_check_date=$21, attendance_streak=$22,
-          recent_games=$23, daily=$24, weekly=$25, monthly=$26, season=$27, updated_at=NOW()
+          recent_games=$23, daily=$24, weekly=$25, monthly=$26, season=$27,
+          firebase_uid=$28, firebase_email=$29, firebase_name=$30, updated_at=NOW()
       `, [
         key, safe.nickname || "플레이어",
         safe.multi.rating, safe.multi.wins, safe.multi.losses,
@@ -843,7 +860,8 @@ async function savePlayerData(playerId, data) {
         safe.lastCheckDate, safe.attendanceStreak,
         JSON.stringify(safe.recentGames), JSON.stringify(safe.daily),
         JSON.stringify(safe.weekly), JSON.stringify(safe.monthly),
-        JSON.stringify(safe.season || {})
+        JSON.stringify(safe.season || {}),
+        safe.firebaseUid || null, safe.firebaseEmail || "", safe.firebaseName || ""
       ]);
     } catch (err) {
       console.error("DB 쓰기 오류:", err.message);
