@@ -9,11 +9,11 @@
    ※ 값이 비어 있으면 Firebase 로그인 버튼이 자동으로 숨겨집니다.
 ======================================================== */
 window.FIREBASE_CONFIG = {
-  apiKey: "AIzaSyBu3jsJixIqsM3rSx4nvwpMcY5qVulAGNM",
-  authDomain: "wordgame-8e201.firebaseapp.com",
-  projectId: "wordgame-8e201",
-  storageBucket: "wordgame-8e201.firebasestorage.app",
-  messagingSenderId: "603397246848",
-  appId: "1:603397246848:web:d0c356501e15ece7053b65",
-  measurementId: "G-D7S2156ECR"
+  apiKey: "AIzaSyC-XzMGpwWNjedIgBbjrSmELmb3X7kjVIs",
+  authDomain: "wordgame-9703e.firebaseapp.com",
+  projectId: "wordgame-9703e",
+  storageBucket: "wordgame-9703e.firebasestorage.app",
+  messagingSenderId: "1008018983923",
+  appId: "1:1008018983923:web:bc06e466aebd80c4d32086",
+  measurementId: "G-RMW91THCY6"
 };

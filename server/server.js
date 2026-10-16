@@ -23,6 +23,7 @@ const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
   transports: ["websocket", "polling"]
 });
+app.use(express.json({ limit: "256kb" }));
 
 const PORT = process.env.PORT || 3000;
 const ROOT_DIR = path.join(__dirname, "..");
@@ -2207,7 +2208,7 @@ app.get("/api/health", (req, res) => {
     db: dbMode === "pg" ? "postgres" : "json",
     firebase: firebaseReady,
     dataDir: RUNTIME_DATA_DIR || null,
-    uptime: process.uptime()
+    uptime: process.uptime(),
   });
 });
 
@@ -2219,6 +2220,18 @@ app.get("/api/leaderboard", async (req, res) => {
     const mode = ["multi", "single", "ranked", "money", "streak", "tier", "firebase"].includes(rawMode)
       ? rawMode : (rawMode === "ai" ? "single" : "multi");
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit || "10"), 10) || 10));
+    /* 고스트/중복 필터링 뒤에도 limit만큼 채우기 위해 넉넉히 가져온 뒤 자른다 */
+    const fetchN = Math.min(200, limit * 4 + 25);
+    /* 동점자는 같은 순위를 받는다(dense rank) — rating/wins가 모두 같으면 동점 */
+    const applyDenseRank = (list, keyFn) => {
+      let rank = 0;
+      let prev = null;
+      return list.map((r) => {
+        const k = keyFn(r);
+        if (prev === null || k !== prev) { rank += 1; prev = k; }
+        return { ...r, rank };
+      });
+    };
 
     /* 시즌 모드 — 현재 시즌(season) 또는 지난 시즌 아카이브(?seasonId 지정).
        시즌은 매월 1일로 전환되는 월 단위. 현재 시즌은 해당 시즌에 1판 이상
@@ -2232,7 +2245,9 @@ app.get("/api/leaderboard", async (req, res) => {
         entries = hist ? (hist.top || []).map(t => ({
           id: t.nickname, nickname: t.nickname,
           rating: Number(t.rating) || 0, wins: Number(t.wins) || 0,
-          losses: Number(t.losses) || 0, games: 0, streak: 0
+          losses: Number(t.losses) || 0,
+          games: (Number(t.wins) || 0) + (Number(t.losses) || 0),
+          streak: 0
         })) : [];
       } else {
         const key = currentSeasonKey();
@@ -2246,7 +2261,7 @@ app.get("/api/leaderboard", async (req, res) => {
           }));
       }
       const seenNicks = new Set();
-      const rows = entries
+      const rows = applyDenseRank(entries
         .filter(r => {
           const k = String(r.nickname || "").trim();
           if (!k) return true;
@@ -2256,14 +2271,14 @@ app.get("/api/leaderboard", async (req, res) => {
         })
         .sort((a, b) => ((Number(b.rating) || 0) - (Number(a.rating) || 0)) || ((Number(b.games) || 0) - (Number(a.games) || 0)))
         .slice(0, limit)
-        .map((r, i) => ({
+        .map((r) => ({
           id: r.id, nickname: r.nickname,
           mode: seasonKey ? "seasonHistory" : "season",
           ranking: Number(r.rating) || 0, wins: Number(r.wins) || 0, losses: Number(r.losses) || 0,
           money: 0, streak: Number(r.streak) || 0, bestStreak: Number(r.streak) || 0,
-          games: Number(r.games) || 0, rank: i + 1,
+          games: Number(r.games) || 0,
           tier: calculateRank(Number(r.rating) || 0)
-        }));
+        })), r => `${r.ranking}|${r.wins}`);
       return res.json(rows);
     }
 
@@ -2299,17 +2314,17 @@ app.get("/api/leaderboard", async (req, res) => {
     let rows = [];
     if (dbMode === "pg") {
       let sql;
-      let params = [AI_PLAYER_ID, limit];
+      let params = [AI_PLAYER_ID, fetchN];
       if (mode === "money") {
         sql = `SELECT id, nickname, money AS stat_rating, 0 AS stat_wins, 0 AS stat_losses,
                       money AS stat_money, 0 AS stat_streak, 0 AS stat_best_streak
-               FROM players WHERE id <> $1 ORDER BY money DESC LIMIT $2`;
+               FROM players WHERE id <> $1 ORDER BY money DESC, nickname ASC LIMIT $2`;
       } else if (mode === "streak") {
         sql = `SELECT id, nickname, ranked_rating AS stat_rating, ranked_wins AS stat_wins,
                       ranked_losses AS stat_losses, 0 AS stat_money,
                       ranked_streak AS stat_streak, ranked_best_streak AS stat_best_streak
                FROM players WHERE id <> $1
-               ORDER BY ranked_best_streak DESC, ranked_rating DESC LIMIT $2`;
+               ORDER BY ranked_best_streak DESC, ranked_rating DESC, nickname ASC LIMIT $2`;
       } else {
         const isRanked = mode === "ranked" || mode === "tier";
         const isSingle = mode === "single";
@@ -2321,7 +2336,7 @@ app.get("/api/leaderboard", async (req, res) => {
         sql = `SELECT id, nickname, ${col} AS stat_rating, ${winCol} AS stat_wins, ${lossCol} AS stat_losses,
                       0 AS stat_money, ${stCol} AS stat_streak,
                       ${bstCol} AS stat_best_streak
-               FROM players WHERE id <> $1 ORDER BY ${col} DESC LIMIT $2`;
+               FROM players WHERE id <> $1 ORDER BY ${col} DESC, ${winCol} DESC, nickname ASC LIMIT $2`;
       }
       rows = (await dbPool.query(sql, params)).rows;
     } else {
@@ -2346,12 +2361,13 @@ app.get("/api/leaderboard", async (req, res) => {
           return { id: p.id, nickname: p.nickname, ...s };
         })
         .sort((a, b) => {
-          if (mode === "streak") return (b.bestStreak - a.bestStreak) || ((b.rating || 1000) - (a.rating || 1000));
+          if (mode === "streak") return (b.bestStreak - a.bestStreak) || ((b.rating || 1000) - (a.rating || 1000)) || String(a.nickname || "").localeCompare(String(b.nickname || ""));
           const da = (mode === "money" ? a.money : a.rating) || 0;
           const db = (mode === "money" ? b.money : b.rating) || 0;
-          return db - da;
+          if (db !== da) return db - da;
+          return ((b.wins || 0) - (a.wins || 0)) || String(a.nickname || "").localeCompare(String(b.nickname || ""));
         })
-        .slice(0, limit)
+        .slice(0, fetchN)
         .map(r => ({
           id: r.id, nickname: r.nickname, stat_rating: r.rating, stat_wins: r.wins, stat_losses: r.losses,
           stat_money: r.money, stat_streak: r.streak, stat_best_streak: r.bestStreak
@@ -2369,21 +2385,23 @@ app.get("/api/leaderboard", async (req, res) => {
       });
     }
     const seenNicks = new Set();
-    rows = rows.filter(r => {
+    const filtered = rows.filter(r => {
       const k = String(r.nickname || "").trim();
       if (!k || !normKey(k) || normKey(k) === normKey("플레이어")) return false;
       if (seenNicks.has(k)) return false;
       seenNicks.add(k);
       return true;
-    });
-    res.json(rows.map((r, i) => ({
+    }).slice(0, limit);
+    const ranked = applyDenseRank(filtered.map((r) => ({
       id: r.id, nickname: r.nickname, mode,
       ranking: r.stat_rating, wins: r.stat_wins, losses: r.stat_losses,
       money: r.stat_money || 0,
       streak: r.stat_streak || 0, bestStreak: r.stat_best_streak || 0,
-      rank: i + 1,
       tier: (mode === "money" || mode === "streak") ? null : calculateRank(r.stat_rating)
-    })));
+    })), r => mode === "money" ? `${r.money}`
+      : mode === "streak" ? `${r.bestStreak}|${r.ranking}`
+      : `${r.ranking}|${r.wins}`);
+    res.json(ranked);
   } catch (err) {
     console.error("리더보드 조회 오류:", err.message);
     res.status(500).json({ ok: false, error: "리더보드를 불러오지 못했습니다." });

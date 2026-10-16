@@ -10,3 +10,10 @@ data/season.json
 # 에디터 프로젝트 파일(.ent) — 커밋 대상 아님
 entry/
 *.ent
+
+# Firebase 서비스 계정 키 / 환경 변수 — 절대 커밋 금지
+*-firebase-adminsdk-*.json
+serviceAccountKey.json
+firebase-service-account.json
+.env
+.env.local
