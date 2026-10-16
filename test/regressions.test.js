@@ -42,6 +42,7 @@ function context(extra = {}) {
     adminAuthed: new Map(), disconnectedPlayers: new Map(), REMATCHES: new Map(),
     ROOMS: new Map(),
     dbMode: "json", dbPool: null,
+    firebaseReady: false, firebaseAuth: null,
     saveJsonDb() {},
     getKstDate: () => "2026-10-04",
     getKstWeek: () => "2026-W40",
@@ -67,6 +68,7 @@ function context(extra = {}) {
   for (const name of [
     "initPeriodData", "initDailyData", "initWeeklyData", "initMonthlyData",
     "migratePlayerData", "resolvePlayerId", "getPlayerData", "savePlayerData",
+    "verifyFirebaseIdToken",
     "registerOnline", "unregisterOnline", "updateRating", "updateSingleResult",
     "recordMatchHistory", "finishGame", "migrateJsonPlayersToPg",
     "getPlayerBySocket", "getPlayerByIndex", "getAlivePlayers", "findNextAlivePlayer",
@@ -372,8 +374,7 @@ test("timer stays paused until all disconnected active players are resolved", ()
   assert.equal(c.getAlivePlayers(r).length, 2);
 });
 
-test("full room accepts a reconnect into its existing seat", () => {
-  const { c } = context();
+test("full room accepts a reconnect into its existing seat", () => {  const { c } = context();
   const r = room(c, 10);
   r.players[2].connected = false;
   c.disconnectedPlayers.set("s2", { timer: {}, roomId: r.id });
@@ -385,4 +386,20 @@ test("full room accepts a reconnect into its existing seat", () => {
   assert.equal(r.players[2].connected, true);
   assert.ok(s.emissions.some(([event, data]) => event === "room:joined" && data.reconnect));
   assert.ok(r.timer);
+});
+
+test("firebase token verification throws when service account is missing", async () => {
+  const { c } = context();
+  await assert.rejects(c.verifyFirebaseIdToken("aaa.bbb.ccc"), /firebase_not_configured/);
+});
+
+test("firebase login without service account explains setup instead of crashing", async () => {
+  const { c } = context();
+  const s = socket("s9");
+  installHandler(c, "player:firebaseAuth", s);
+  await s.handlers.get("player:firebaseAuth")({ idToken: "aaa.bbb.ccc" });
+  const hit = s.emissions.find(([event]) => event === "player:firebaseAuthResult");
+  assert.ok(hit);
+  assert.equal(hit[1].ok, false);
+  assert.match(String(hit[1].reason || ""), /FIREBASE_SERVICE_ACCOUNT/);
 });

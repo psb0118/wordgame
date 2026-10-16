@@ -2290,18 +2290,23 @@ app.get("/api/leaderboard", async (req, res) => {
         await flushFirebaseScores();
         const snap = await firebaseDb.collection("leaderboards")
           .orderBy("ranked.rating", "desc").limit(limit).get();
-        const fbRows = snap.docs.map((doc, i) => {
+        let fbRank = 0;
+        let fbPrev = null;
+        const fbRows = snap.docs.map((doc) => {
           const v = doc.data() || {};
           const rating = Number(v.ranked && v.ranked.rating) || 1000;
+          const wins = Number(v.ranked && v.ranked.wins) || 0;
+          const k = `${rating}|${wins}`;
+          if (fbPrev === null || k !== fbPrev) { fbRank += 1; fbPrev = k; }
           return {
             id: doc.id, nickname: v.nickname || "플레이어", mode: "firebase",
             ranking: rating,
-            wins: Number(v.ranked && v.ranked.wins) || 0,
+            wins,
             losses: Number(v.ranked && v.ranked.losses) || 0,
             money: Number(v.money) || 0,
             streak: Number(v.ranked && v.ranked.streak) || 0,
             bestStreak: Number(v.ranked && v.ranked.bestStreak) || 0,
-            rank: i + 1, tier: calculateRank(rating)
+            rank: fbRank, tier: calculateRank(rating)
           };
         });
         return res.json(fbRows);
