@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "express": "^5.1.0",
-    "socket.io": "^4.8.1",
-    "pg": "^8.13.0"
+    "firebase-admin": "^14.5.0",
+    "pg": "^8.13.0",
+    "socket.io": "^4.8.1"
   }
 }

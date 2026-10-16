@@ -335,6 +335,7 @@
       <button data-side-mode="money">돈</button>
       <button data-side-mode="streak">연승</button>
       <button data-side-mode="tier">티어</button>
+      <button data-side-mode="firebase">🔥 파이어</button>
     </div>
     <div id="sideRankBody" class="side-rank-body"></div>
     <div class="side-rank-foot">3분마다 자동 갱신</div>
@@ -416,6 +417,16 @@
         <span id="accSaveCredsLabel">관리자 비밀번호 저장</span>
       </label>
       <div id="accountMsg"></div>
+      <div id="fbBox" class="acc-fb hidden">
+        <div class="acc-fb-title">🔗 Firebase (Google) 로그인</div>
+        <div class="acc-fb-desc">Google 계정을 연동하면 파이어 랭킹에 참여할 수 있습니다. (닉네임·전적 그대로 유지)</div>
+        <div class="acc-fb-actions">
+          <button id="fbGoogleBtn" type="button" class="acc-fb-google">Google로 로그인</button>
+          <button id="fbLogoutBtn" type="button" class="acc-fb-logout hidden">로그아웃</button>
+        </div>
+        <div id="fbStatus" class="acc-fb-status"></div>
+        <div id="fbMsg" class="acc-fb-msg"></div>
+      </div>
       <div class="account-scores">
         <div class="acc-row"><span>싱글 전적</span><span id="accSingleWL" class="acc-wl"></span></div>
         <div class="acc-row"><span>멀티 점수</span><strong id="accMultiRating">-</strong><span id="accMultiRank" class="acc-rank"></span><span id="accMultiWL" class="acc-wl"></span></div>
@@ -478,6 +489,10 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="script.js?v=15"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="script.js?v=16"></script>
+  <script src="firebase-auth.js?v=1"></script>
 </body>
 </html>

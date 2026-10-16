@@ -604,6 +604,93 @@ async function initDatabase() {
   console.log("데이터베이스: JSON 파일 모드");
 }
 
+/* =========================================================
+   Firebase — Google 로그인(ID 토큰 검증) + Firestore 점수/순위
+   · FIREBASE_SERVICE_ACCOUNT(서비스 계정 JSON 또는 base64)가 있으면 활성화
+   · 없으면 조용히 비활성화되어 기존 기능/부팅에 영향이 없다
+======================================================== */
+let firebaseAuth = null;
+let firebaseDb = null;
+let firebaseReady = false;
+const firebaseDirty = new Set();
+
+function initFirebase() {
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!raw) {
+    console.log("Firebase: FIREBASE_SERVICE_ACCOUNT 미설정 — 로그인/파이어 랭킹 비활성");
+    return;
+  }
+  try {
+    let text = String(raw).trim();
+    if (!text.startsWith("{")) text = Buffer.from(text, "base64").toString("utf8");
+    const sa = JSON.parse(text);
+    const { initializeApp, cert, getApps } = require("firebase-admin/app");
+    const { getAuth } = require("firebase-admin/auth");
+    const { getFirestore } = require("firebase-admin/firestore");
+    const app = getApps().length ? getApps()[0] : initializeApp({ credential: cert(sa) });
+    firebaseAuth = getAuth(app);
+    firebaseDb = getFirestore(app);
+    firebaseReady = true;
+    console.log(`Firebase 초기화 완료 — 프로젝트: ${sa.project_id || "(알 수 없음)"}`);
+  } catch (err) {
+    firebaseReady = false;
+    console.error("Firebase 초기화 실패:", err.message);
+  }
+}
+
+/* 점수 변경 시 Firestore에 반영할 플레이어를 표시하고, 짧게 모아서 배치 반영한다.
+   (매 저장마다 쓰면 과금/지연이 커지므로 dirty-set + 주기 flush) */
+function markFirebaseDirty(key) {
+  if (!firebaseReady || !key) return;
+  firebaseDirty.add(key);
+}
+
+async function flushFirebaseScores() {
+  if (!firebaseReady || firebaseDirty.size === 0) return;
+  const { FieldValue } = require("firebase-admin/firestore");
+  const keys = Array.from(firebaseDirty);
+  firebaseDirty.clear();
+  for (const key of keys) {
+    const p = playerCache.get(key);
+    if (!p) continue;
+    try {
+      await firebaseDb.collection("leaderboards").doc(key).set({
+        nickname: p.nickname || "플레이어",
+        multi: {
+          rating: Number(p.multi?.rating) || 1000,
+          wins: Number(p.multi?.wins) || 0,
+          losses: Number(p.multi?.losses) || 0,
+          streak: Number(p.multi?.streak) || 0,
+          bestStreak: Number(p.multi?.bestStreak) || 0
+        },
+        ranked: {
+          rating: Number(p.ranked?.rating) || 1000,
+          wins: Number(p.ranked?.wins) || 0,
+          losses: Number(p.ranked?.losses) || 0,
+          streak: Number(p.ranked?.streak) || 0,
+          bestStreak: Number(p.ranked?.bestStreak) || 0
+        },
+        single: {
+          rating: Number(p.single?.rating) || 1000,
+          wins: Number(p.single?.wins) || 0,
+          losses: Number(p.single?.losses) || 0
+        },
+        money: Math.max(0, Math.floor(Number(p.money) || 0)),
+        firebaseUid: p.firebaseUid || "",
+        updatedAt: FieldValue.serverTimestamp()
+      }, { merge: true });
+    } catch (err) {
+      console.error("Firebase 점수 동기화 실패:", key, err.message);
+    }
+  }
+}
+setInterval(() => { flushFirebaseScores().catch(() => {}); }, 20000);
+
+async function verifyFirebaseIdToken(idToken) {
+  if (!firebaseReady || !firebaseAuth) throw new Error("firebase_not_configured");
+  return firebaseAuth.verifyIdToken(String(idToken || ""));
+}
+
 const MODE_DEFAULT = { rating: 1000, wins: 0, losses: 0, streak: 0, bestStreak: 0 };
 const SEASON_DEFAULT = { rating: 1000, wins: 0, losses: 0, games: 0, streak: 0, bestStreak: 0 };
 
@@ -773,6 +860,9 @@ async function savePlayerData(playerId, data) {
       throw err;
     }
   }
+  /* Firebase 연동 시 Firestore 리더보드에도 점수를 반영하도록 표시 (저장 성공 후).
+     격리 VM 테스트 하네스에는 이 함수가 없으므로 방어적으로 존재 여부를 확인한다. */
+  if (typeof markFirebaseDirty === "function") markFirebaseDirty(key);
   if (key !== playerId && playerCache.has(playerId)) playerCache.delete(playerId);
 }
 
@@ -2115,6 +2205,7 @@ app.get("/api/health", (req, res) => {
     rooms: ROOMS.size, customApproved: customDict.approved.length,
     customPending: customDict.pending.length, seasonId: currentSeasonKey(),
     db: dbMode === "pg" ? "postgres" : "json",
+    firebase: firebaseReady,
     dataDir: RUNTIME_DATA_DIR || null,
     uptime: process.uptime()
   });
@@ -2125,7 +2216,7 @@ app.get("/api/health", (req, res) => {
 app.get("/api/leaderboard", async (req, res) => {
   try {
     const rawMode = String(req.query.mode || "multi");
-    const mode = ["multi", "single", "ranked", "money", "streak", "tier"].includes(rawMode)
+    const mode = ["multi", "single", "ranked", "money", "streak", "tier", "firebase"].includes(rawMode)
       ? rawMode : (rawMode === "ai" ? "single" : "multi");
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit || "10"), 10) || 10));
 
@@ -2174,6 +2265,35 @@ app.get("/api/leaderboard", async (req, res) => {
           tier: calculateRank(Number(r.rating) || 0)
         }));
       return res.json(rows);
+    }
+
+    /* Firebase(Firestore) 리더보드 — '파이어' 탭. 랭크 레이팅 순으로 서버가
+       주기적으로 미러링한 점수를 정렬해 돌려준다. */
+    if (rawMode === "firebase") {
+      if (!firebaseReady) return res.json([]);
+      try {
+        await flushFirebaseScores();
+        const snap = await firebaseDb.collection("leaderboards")
+          .orderBy("ranked.rating", "desc").limit(limit).get();
+        const fbRows = snap.docs.map((doc, i) => {
+          const v = doc.data() || {};
+          const rating = Number(v.ranked && v.ranked.rating) || 1000;
+          return {
+            id: doc.id, nickname: v.nickname || "플레이어", mode: "firebase",
+            ranking: rating,
+            wins: Number(v.ranked && v.ranked.wins) || 0,
+            losses: Number(v.ranked && v.ranked.losses) || 0,
+            money: Number(v.money) || 0,
+            streak: Number(v.ranked && v.ranked.streak) || 0,
+            bestStreak: Number(v.ranked && v.ranked.bestStreak) || 0,
+            rank: i + 1, tier: calculateRank(rating)
+          };
+        });
+        return res.json(fbRows);
+      } catch (err) {
+        console.error("Firebase 리더보드 오류:", err.message);
+        return res.json([]);
+      }
     }
 
     let rows = [];
@@ -3972,6 +4092,44 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("닉네임 설정 오류:", err); }
   });
 
+  /* Firebase(Google) 로그인 — 클라이언트가 받은 ID 토큰을 검증해 현재 닉네임
+     계정에 firebaseUid를 연결한다. (닉네임 유지 + Firebase 연동: 기존 돈/랭킹 보존) */
+  socket.on("player:firebaseAuth", async (data) => {
+    try {
+      if (!firebaseReady) {
+        socket.emit("player:firebaseAuthResult", { ok: false, reason: "서버에 Firebase가 설정되지 않았습니다. (FIREBASE_SERVICE_ACCOUNT)" });
+        return;
+      }
+      const idToken = String(data?.idToken || "");
+      if (!idToken) {
+        socket.emit("player:firebaseAuthResult", { ok: false, reason: "로그인 토큰이 없습니다." });
+        return;
+      }
+      const decoded = await verifyFirebaseIdToken(idToken);
+      const pd = await getPlayerData(socket.id);
+      const nick = pd.nickname && normKey(pd.nickname) !== normKey("플레이어") ? pd.nickname : "";
+      if (!nick) {
+        socket.emit("player:firebaseAuthResult", {
+          ok: false, needNickname: true,
+          name: decoded.name || "", email: decoded.email || "",
+          reason: "닉네임을 먼저 저장한 뒤 Google 로그인을 완료해주세요."
+        });
+        return;
+      }
+      pd.firebaseUid = decoded.uid;
+      pd.firebaseEmail = decoded.email || "";
+      pd.firebaseName = decoded.name || "";
+      await savePlayerData(socket.id, pd);
+      socket.emit("player:firebaseAuthResult", {
+        ok: true, uid: decoded.uid, email: decoded.email || "",
+        name: decoded.name || "", picture: decoded.picture || "", nickname: nick
+      });
+      console.log(`[FIREBASE] '${nick}' ← ${decoded.email || decoded.uid}`);
+    } catch (err) {
+      socket.emit("player:firebaseAuthResult", { ok: false, reason: "Firebase 인증 실패: " + err.message });
+    }
+  });
+
   /* =========================================================
      친구 — 신청/수락/거절/삭제/목록, 온라인 상태 포함 (양방향 친구)
   ========================================================= */
@@ -4126,6 +4284,8 @@ io.on("connection", (socket) => {
 ========================================================= */
 
 initDatabase().then(async () => {
+  /* Firebase(로그인 토큰 검증 + Firestore 랭킹 미러링) 초기화 */
+  initFirebase();
   /* JSON 모드로 굴리다가 PG로 넘어왔을 때, 살아있는 유저 기록을 DB로 1회만 이관한다.
      마커 보호라서 재배포돼도 두 번 실행되지 않는다. */
   await migrateJsonPlayersToPg();
@@ -4149,6 +4309,7 @@ initDatabase().then(async () => {
     console.log(`공격 단어: ${Object.keys(ATTACK_DEPTH).length.toLocaleString()}개`);
     console.log(`방어 단어: ${DEFENSE_WORDS.size.toLocaleString()}개`);
     console.log(`데이터베이스: ${dbMode === "pg" ? "PostgreSQL" : "JSON 파일"}`);
+    console.log(`Firebase: ${firebaseReady ? "연결됨 (로그인 + 파이어 랭킹)" : "미설정"}`);
     console.log(`공격 단어 금지 턴: ${ONESHOT_FREE_TURNS}턴`);
     if (dbMode === "json") {
       console.log("⚠ 데이터가 JSON 파일로만 저장됩니다 — 재배포/새 클론 시 유실될 수 있습니다.");
@@ -4163,5 +4324,5 @@ initDatabase().then(async () => {
   });
 });
 
-process.on("SIGINT", () => { for (const room of ROOMS.values()) stopTurnTimer(room); server.close(() => process.exit(0)); });
-process.on("SIGTERM", () => { for (const room of ROOMS.values()) stopTurnTimer(room); server.close(() => process.exit(0)); });
+process.on("SIGINT", () => { for (const room of ROOMS.values()) stopTurnTimer(room); flushFirebaseScores().finally(() => server.close(() => process.exit(0))); });
+process.on("SIGTERM", () => { for (const room of ROOMS.values()) stopTurnTimer(room); flushFirebaseScores().finally(() => server.close(() => process.exit(0))); });

@@ -3122,6 +3122,7 @@ async function loadSideRanking(mode = sideRankMode, silent = false) {
   else if (mode === "streak") sideRankMode = "streak";
   else if (mode === "ranked") sideRankMode = "ranked";
   else if (mode === "tier") sideRankMode = "tier";
+  else if (mode === "firebase") sideRankMode = "firebase";
   else sideRankMode = "ranked";
   const body = $("#sideRankBody");
   if (!body) return;
@@ -3155,6 +3156,14 @@ function initSideRanking() {
   $all(".side-rank-tabs button").forEach(btn => {
     btn.addEventListener("click", () => loadSideRanking(btn.dataset.sideMode));
   });
+  /* 파이어 탭 상태 — 서버 Firebase 설정 여부 반영 */
+  fetch("/api/health").then(r => r.json()).then(h => {
+    const fbBtn = document.querySelector('.side-rank-tabs button[data-side-mode="firebase"]');
+    if (fbBtn && (!h || h.firebase !== true)) {
+      fbBtn.classList.add("side-rank-tab-off");
+      fbBtn.title = "서버에 Firebase가 설정되지 않았습니다 (FIREBASE_SERVICE_ACCOUNT)";
+    }
+  }).catch(() => {});
   $("#sideRankClose")?.addEventListener("click", closeRanking);
   $("#sideRankOpen")?.addEventListener("click", openRanking);
   let closedInit = false;

@@ -2817,3 +2817,82 @@ button:active:not(:disabled) {
   color: var(--text);
   font-size: 1.05rem;
 }
+
+/* ---------------------------------------------------------
+   Firebase (Google) 로그인 박스 — 계정 패널
+--------------------------------------------------------- */
+.acc-fb {
+  margin: 10px 0 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--card-soft);
+  border: 1px solid var(--border);
+}
+
+.acc-fb.hidden { display: none; }
+
+.acc-fb-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.acc-fb-desc {
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.acc-fb-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.acc-fb-google,
+.acc-fb-logout {
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  background: #fff;
+  color: var(--text);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.acc-fb-google {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.acc-fb-google:hover { background: var(--accent); color: #fff; }
+.acc-fb-logout:hover { border-color: var(--accent); color: var(--accent); }
+.acc-fb-actions .hidden { display: none; }
+
+.acc-fb-status {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #9ca3af;
+}
+.acc-fb-status.ok { color: var(--green); }
+.acc-fb-status.error { color: var(--red); }
+
+.acc-fb-msg {
+  margin-top: 4px;
+  font-size: 12px;
+  min-height: 1em;
+  color: #9ca3af;
+}
+.acc-fb-msg[data-type="ok"] { color: var(--green); }
+.acc-fb-msg[data-type="error"] { color: var(--red); }
+
+/* 파이어 랭킹 탭 — 서버에 Firebase 미설정 시 흐리게 */
+.side-rank-tabs button.side-rank-tab-off {
+  opacity: 0.45;
+  cursor: help;
+}
