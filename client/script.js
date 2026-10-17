@@ -3027,6 +3027,7 @@ async function loadSideRanking(mode = sideRankMode, silent = false) {
 function initSideRanking() {
   const closeRanking = () => {
     $("#sideRank").classList.add("closed");
+    $("#sideRank").style.display = "";
     $("#sideRankOpen").classList.remove("hidden");
     try { localStorage.setItem("kkSideRankClosed", "1"); } catch (e) { /* 무시 */ }
   };
