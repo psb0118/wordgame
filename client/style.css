@@ -1113,6 +1113,7 @@ button:disabled {
 
 .lb-row.top1 {
   background: var(--gold-soft);
+  border-radius: 8px;
 }
 
 .lb-row.top1 .lb-rank {
@@ -1129,6 +1130,7 @@ button:disabled {
   background: var(--accent-soft);
   outline: 1px solid rgba(99, 102, 241, 0.5);
   border-left: 4px solid var(--accent);
+  border-radius: 8px;
 }
 
 .lb-rank {
@@ -2653,6 +2655,7 @@ button:active:not(:disabled) {
   display: flex;
   border-bottom: 1px solid var(--border);
   background: var(--card-soft);
+  border-radius: 10px;
 }
 
 .side-rank-tabs button {
@@ -3182,6 +3185,8 @@ button:focus-visible {
 .how-head {
   background: linear-gradient(135deg, #4f46e5, #7c3aed);
   color: #fff;
+  border-radius: 10px;
+  padding: 8px 12px;
 }
 
 .account-panel { border-radius: 20px; overflow: hidden; }
@@ -3386,6 +3391,114 @@ html.dark .friends-count {
 html.dark .panel {
   background: var(--card);
 }
+
+/* =========================================================
+   다크 모드 — 밝은 배경용 하드코딩 텍스트/테두리 교체 (가독성)
+========================================================= */
+
+/* 강조 텍스트: indigo-500은 어두운 배경에서 흐려서 indigo-300으로 */
+html.dark .stats span,
+html.dark .cards strong,
+html.dark .room-list-row .rl-code,
+html.dark .room-list-row .rl-join,
+html.dark .room-code,
+html.dark .rank-badge,
+html.dark .rank-info strong,
+html.dark .last-char,
+html.dark .timer-value,
+html.dark .history-item.latest,
+html.dark .history-item.latest .history-word,
+html.dark .lb-row.top3 .lb-rank,
+html.dark .lb-tier,
+html.dark .admin-stats-title,
+html.dark .acc-row strong,
+html.dark .season-reward-item b,
+html.dark .shop-buy,
+html.dark .side-rank-val,
+html.dark .acc-fb-logout:hover,
+html.dark .tabs button:hover,
+html.dark .item-current b,
+html.dark .items-title-chip:hover,
+html.dark .shop-sub,
+html.dark .history-word:hover,
+html.dark .replay-word:hover {
+  color: #a5b4fc;
+}
+html.dark .lb-tier { border-color: #4653a8; }
+
+/* 초록 계열: 진한 emerald/blue-green → 밝은 emerald */
+html.dark .message[data-type="success"],
+html.dark .message[data-type="my-turn"],
+html.dark .name-bar #nickMsg[data-type="ok"],
+html.dark .admin-msg.ok,
+html.dark .admin-status[data-type="ok"],
+html.dark .account-msg.ok,
+html.dark #bugMsg[data-type="ok"],
+html.dark .ai-winrate[data-level="good"],
+html.dark .turn-indicator[data-turn="mine"] {
+  color: #34d399;
+}
+
+/* 파랑 계열 */
+html.dark .message[data-type="info"],
+html.dark .last-hint,
+html.dark .last-hint .dueum-tag {
+  color: #60a5fa;
+}
+html.dark .last-hint .dueum-tag { border-color: #33507e; }
+
+/* 앰버/브라운 계열 */
+html.dark .message[data-type="win"],
+html.dark .message[data-type="opponent-turn"],
+html.dark .name-bar #nickMsg[data-type="warn"],
+html.dark .lb-row.top1 .lb-rank,
+html.dark .ai-winrate[data-level="mid"],
+html.dark .ranked-prize span:last-child {
+  color: #fbbf24;
+}
+html.dark .ranked-prize span:last-child { background: var(--gold-soft); }
+
+html.dark .message[data-type="warning"] { color: #fb923c; }
+
+html.dark .turn-indicator[data-turn="ai"],
+html.dark .admin-msg.warn {
+  color: #fcd34d;
+}
+
+/* 규칙 안내 박스 */
+html.dark .rule-notice {
+  color: #93c5fd;
+  border-color: #33507e;
+}
+html.dark .rule-notice[data-active="true"] {
+  color: #fcd34d;
+  border-color: #a16207;
+}
+
+/* 빨강/장밋빛 계열 */
+html.dark .message[data-type="error"],
+html.dark .message[data-type="lose"],
+html.dark .name-bar #nickMsg[data-type="error"],
+html.dark .admin-msg.error,
+html.dark .admin-status[data-type="error"],
+html.dark .account-msg.error,
+html.dark .acc-fb-msg[data-type="error"],
+html.dark #bugMsg[data-type="error"],
+html.dark .ai-winrate[data-level="bad"],
+html.dark .kick-btn,
+html.dark .items-title-chip.items-unset,
+html.dark .rec-lose {
+  color: #f87171;
+}
+html.dark .items-title-chip.items-unset { background: var(--red-soft); }
+
+/* 보라 계열 */
+html.dark .last-hint .dueum-tag.recv { color: #c084fc; }
+
+/* 밝은 하드코딩 배경/테두리 교체 */
+html.dark .shop-support { background: rgba(255, 255, 255, 0.04); }
+html.dark .side-rank-row:nth-child(2n) { background: rgba(255, 255, 255, 0.04); }
+html.dark .attendance-card { border-color: #0e7490; }
 
 /* =========================================================
    신규 컴포넌트 — 리플레이 / 단어 뜻 / 튜토리얼 / 차트 / 관전
