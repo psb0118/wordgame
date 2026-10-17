@@ -20,7 +20,6 @@ let countdownTimer = null;
 let gameSessionId = 0;
 let startingGame = false;
 let myNickname = localStorage.getItem("kkNickname") || "";
-let myPassword = localStorage.getItem("kkPassword") || "";
 let friends = [];
 let friendRequests = [];
 let friendsPanelOpen = false;
@@ -237,11 +236,7 @@ const bar = $(".name-bar");
   updateAdminVisibility();
 }
 
-/* 관리자 패널은 'blossomIng_0' 이름을 가진 사람에게만 보임 (대소문자 무시) */
-function isAdminNick(nick) {
-  return String(nick || "").replace(/\s+/g, "").toLowerCase() === ADMIN_NICKNAME.replace(/\s+/g, "").toLowerCase();
-}
-
+/* 관리자 패널은 서버가 검증한 Google 관리자 계정에만 보임 */
 function updateAdminVisibility() {
   const isAdmin = myAdminRole !== "none";
   $all(".admin-btn").forEach(b => b.classList.toggle("hidden", !isAdmin));
@@ -262,7 +257,6 @@ function openAdminPanel() {
 
 function saveNickname() {
   const raw = normalizeWord($("#nickInput")?.value || "");
-  const password = $("#accPwInput")?.value ?? "";
   const msg = $("#nickMsg");
   if (!raw) {
     if (msg) { msg.textContent = "이름을 입력해주세요."; msg.dataset.type = "error"; }
@@ -273,44 +267,12 @@ function saveNickname() {
     return;
   }
   if (socket && socketConnected && socket.id) {
-    socket.emit("player:setName", { nickname: raw, password });
+    /* 이름은 Google 로그인 세션이 있어야 정할 수 있다 (서버가 검증) */
+    socket.emit("player:setName", { nickname: raw });
   } else {
     myNickname = raw;
-    myPassword = password;
     localStorage.setItem("kkNickname", myNickname);
-    persistPassword(password);
     updateNicknameUI();
-  }
-}
-
-/* 비밀번호 localStorage 저장 규칙
-   - 일반 사용자: 입력한 비밀번호 무조건 저장 (다시 물어보지 않게)
-   - 관리자: '비밀번호 저장' 체크박스가 켜져 있을 때만 저장, 꺼져 있으면 삭제 */
-
-/* 비밀번호 localStorage 저장 규칙
-   - 일반 사용자: 입력한 비밀번호 무조건 저장 (다시 물어보지 않게)
-   - 관리자: '비밀번호 저장' 체크박스가 켜져 있을 때만 저장, 꺼져 있으면 삭제 */
-function persistPassword(pw) {
-  const saveAdmin = localStorage.getItem("kkSaveAdmin") === "1";
-  const isAdmin = myAdminRole !== "none";
-  if (isAdmin && !saveAdmin) {
-    localStorage.removeItem("kkPassword");
-    return;
-  }
-  if (pw) {
-    localStorage.setItem("kkPassword", pw);
-    myPassword = pw;
-  } else if (localStorage.getItem("kkPassword")) {
-    localStorage.setItem("kkPassword", myPassword || "");
-  }
-}
-
-/* 관리자로 로그인됐는데 저장 옵션이 꺼져 있으면 저장된 비밀번호 제거 */
-function syncSavedCredentials() {
-  const saveAdmin = localStorage.getItem("kkSaveAdmin") === "1";
-  const isAdmin = myAdminRole !== "none";
-  if (isAdmin && !saveAdmin) {
-    localStorage.removeItem("kkPassword");
   }
 }
 
@@ -584,9 +546,8 @@ function initSocket() {
   socket.on("connect", () => {
     socketConnected = true;
     console.log("[SOCKET] 연결됨:", socket.id);
-    /* 브라우저 새로고침 후에도 자동 로그인되도록 저장된 비밀번호를 함께 전송
-       (일반 사용자는 입력한 비밀번호 자동 저장 / 관리자는 체크박스 선택 시에만 저장) */
-    if (myNickname) socket.emit("player:setName", { nickname: myNickname, password: myPassword });
+    /* 저장된 이름으로 재등록 (Google 세션이 있으면 서버가 연결을 복원한다) */
+    if (myNickname) socket.emit("player:setName", { nickname: myNickname });
     socket.emit("admin:getRole");
     /* 연결이 늦어져 싱글 게임 자동 시작 타이머를 놓친 경우를 대비해 재시도 */
     if (currentMode === "single" && !roomId && !gameState && !startingGame) {
@@ -621,6 +582,10 @@ function initSocket() {
   /* -- 랭킹 ------------------------------------------- */
   socket.on("player:ranking", (data) => {
     if (!data) return;
+    if ("isAdmin" in data) {
+      myAdminRole = data.isAdmin ? "super" : "none";
+      updateAdminVisibility();
+    }
     const sng = data.single || { rank: null, rating: null, wins: 0, losses: 0 };
     const mul = data.multi || { rank: null, rating: null, wins: 0, losses: 0 };
     const rkd = data.ranked || { rank: null, rating: null, wins: 0, losses: 0 };
@@ -822,6 +787,7 @@ function initSocket() {
       if (typeof data.currentTitle === "string" && data.currentTitle !== currentTitle) {
         currentTitle = data.currentTitle;
         renderMoneyBar();
+        renderAccTitles();
         const chip = $("#titleChip");
         if (chip) applyFx(chip, "fx-title-pop", 900);
       }
@@ -942,30 +908,20 @@ function initSocket() {
     if (!data) return;
     if (data.ok && data.nickname) {
       myNickname = data.nickname;
-      const currentPw = $("#accPwInput")?.value;
-      if (currentPw) {
-        myPassword = currentPw;
-        $("#accPwInput").value = "";
-        persistPassword(currentPw);
-      }
       localStorage.setItem("kkNickname", myNickname);
       updateNicknameUI();
       renderAccountInfo();
-      showMessage("닉네임이 저장되었습니다.", "success");
+      showMessage("이름이 저장되었습니다.", "success");
       accountMsg("적용되었습니다.", "ok");
       socket.emit("admin:getRole");
       socket.emit("friends:list");
       socket.emit("player:getRanking");
-    } else if (data.adminRequired) {
+    } else if (data.needGoogleLogin) {
       const msg = $("#nickMsg");
-      const hint = data.reason || "관리자 계정입니다. 계정 탭에서 비밀번호를 입력해 로그인해주세요.";
+      const hint = data.reason || "먼저 Google 로그인을 해주세요.";
       if (msg) { msg.textContent = hint; msg.dataset.type = "error"; }
       else showMessage(hint, "error");
-      const accPw = $("#accPwInput");
-      if (accPw) {
-        openAccountPanel(true);
-        accPw.focus();
-      }
+      openAccountPanel(true);
     } else if (data.reason) {
       const msg = $("#nickMsg");
       if (msg) { msg.textContent = data.reason; msg.dataset.type = "error"; }
@@ -977,10 +933,9 @@ function initSocket() {
   /* -- 관리자 패널 ------------------------------------- */
   socket.on("admin:role", (data) => {
     if (!data) return;
-    myAdminRole = data.role === "super" || data.role === "sub" ? data.role : "none";
+    myAdminRole = data.role === "super" ? data.role : "none";
     updateAdminVisibility();
     renderAccountInfo();
-    syncSavedCredentials();
   });
 
   socket.on("admin:panel", (data) => {
@@ -989,9 +944,6 @@ function initSocket() {
        경량 결과로 패널이 초기화되어 반영이 안 보이는 문제 방지 */
     if ("role" in data) {
       renderAdminBody(data);
-    } else if (data.ok && "hasPassword" in data && adminModalOpen) {
-      /* 비밀번호 변경 후 경량 응답에는 패널 데이터가 없으므로 전체 패널을 다시 요청 */
-      socket.emit("admin:getPanel");
     }
     if (data.ok === false && data.reason) {
       setAdminStatus(data.reason, "error");
@@ -2179,14 +2131,15 @@ function renderMoneyBar() {
   }
   const titleChip = $("#titleChip");
   if (titleChip) {
-    if (currentTitle) { titleChip.textContent = currentTitle; titleChip.classList.remove("hidden"); }
+    const shown = myAdminRole === "super" ? "관리자" : currentTitle;
+    if (shown) { titleChip.textContent = shown; titleChip.classList.remove("hidden"); }
     else titleChip.classList.add("hidden");
   }
 }
 
 function renderAccountScoresStatic() {
   setText(["#accMoney"], moneyBalance.toLocaleString());
-  setText(["#accTitle"], currentTitle || "없음");
+  setText(["#accTitle"], myAdminRole === "super" ? "관리자" : (currentTitle || "없음"));
 }
 
 /* 랭크 대기실 연승 칩 — 현재/최대 연승 표시 */
@@ -2279,15 +2232,21 @@ function renderAccTitles() {
   if (!box || !list) return;
   box.classList.toggle("hidden", ownedTitles.length === 0);
   if (ownedTitles.length === 0) { list.innerHTML = ""; return; }
+  const unsetBtn = currentTitle
+    ? `<button type="button" class="acc-title-chip acc-title-unset" data-title-unset="1">칭호 해제</button>`
+    : "";
   list.innerHTML = ownedTitles.map(t => {
     const isCur = currentTitle === t.name;
     return `<button type="button" class="acc-title-chip${isCur ? " current" : ""}" data-title-id="${escapeHtml(t.id)}">${isCur ? "장착중 · " : ""}${escapeHtml(t.name)}</button>`;
-  }).join("");
+  }).join("") + unsetBtn;
   list.querySelectorAll("[data-title-id]").forEach(btn => {
     btn.addEventListener("click", () => {
       if (btn.classList.contains("current")) return;
       if (socket && socketConnected) socket.emit("shop:setTitle", { titleId: btn.dataset.titleId });
     });
+  });
+  list.querySelector("[data-title-unset]")?.addEventListener("click", () => {
+    if (socket && socketConnected) socket.emit("shop:unsetTitle");
   });
 }
 
@@ -2429,9 +2388,8 @@ function renderAdminBugs(reports) {
 }
 
 /* ---------------------------------------------------------
-   관리자 패널 (닉네임이 blossomlng_0인 사람에게만 보이는 버튼)
+   관리자 패널 (서버 검증 Google 관리자 계정에만 보이는 버튼)
 --------------------------------------------------------- */
-const ADMIN_NICKNAME = "blossomlng_0";
 let myAdminRole = "none";
 let adminModalOpen = false;
 let adminFoundNick = null;
@@ -2462,8 +2420,8 @@ function renderAdminBody(data) {
     return;
   }
 
-  const isSuper = data.isSuper === true;
-  const role = data.role === "super" ? "super" : "sub";
+  const isSuper = true;
+  const role = "super";
   const cfg = data.config || {};
 
   /* 수치 조정 — 최고 관리자 전용 */
@@ -2479,7 +2437,6 @@ function renderAdminBody(data) {
     <div class="admin-card">
       <h4>게임 규칙 설정 (게임 전체에 적용 — 최고 관리자 전용)</h4>
       <div class="admin-info">아래 값들을 바꾸고 [적용]을 누르면 다음 게임부터 반영됩니다. 값은 1 이상이어야 합니다.</div>
-      <input type="password" id="adminPw" placeholder="관리자 비밀번호 (변경 시 필요)" autocomplete="off" data-pw-toggle>
       ${rows}
     </div>
   ` : "";
@@ -2503,27 +2460,6 @@ function renderAdminBody(data) {
     </div>
   ` : "";
 
-  /* 서브 관리자 목록/추가/제거/비밀번호 재설정 — 최고 관리자 전용 */
-  const subList = (data.subAdmins || []).map(n => `
-    <li class="admin-sub-row">
-      <span>${escapeHtml(n)}</span>
-      <button type="button" class="admin-apply" data-admin-resetsub="${escapeHtml(n)}">비밀번호 변경</button>
-      <button type="button" class="admin-apply" data-admin-remove="${escapeHtml(n)}">제거</button>
-    </li>
-  `).join("");
-  const subCard = isSuper ? `
-    <div class="admin-card">
-      <h4>관리자 추가 (최고 관리자 전용)</h4>
-      <div class="admin-row">
-        <input type="text" id="adminSubNick" class="admin-text" placeholder="관리자로 추가할 닉네임" autocomplete="off" data-admin-enter="[data-admin-addsub]">
-        <button type="button" class="admin-apply" data-admin-addsub="1">관리자로 추가</button>
-      </div>
-      <div class="admin-info">※ 닉네임만 입력하면 바로 관리자(개인 통계 관리 권한)로 추가됩니다.<br>
-        추가된 관리자는 첫 로그인 시 본인이 '계정' 탭에서 비밀번호(4자 이상)를 직접 설정하며, 이후 '닉네임 + 계정 비밀번호'로 로그인해야 관리자 권한을 받습니다.</div>
-      <ul class="admin-sub-list">${subList || '<li class="admin-info">등록된 서브 관리자가 없습니다.</li>'}</ul>
-    </div>
-  ` : "";
-
   /* 감시 닉네임 — 등록된 닉이 로그인하면 최고 관리자에게 알림 */
   const watchItems = (data.watchlist || []).map(n => `
     <li class="admin-sub-row">
@@ -2543,24 +2479,10 @@ function renderAdminBody(data) {
     </div>
   ` : "";
 
-  /* 계정 비밀번호 초기화 — 이름 검색으로, 최고 관리자 전용 */
-  const resetCard = isSuper ? `
-    <div class="admin-card">
-      <h4>계정 비밀번호 초기화 (이름 검색)</h4>
-      <div class="admin-row">
-        <input type="text" id="adminResetNick" class="admin-text" placeholder="초기화할 관리자 닉네임" autocomplete="off" data-admin-enter="[data-admin-resetsub-search]">
-        <input type="password" id="adminResetNewPw" class="admin-text" placeholder="새 비밀번호 (4자 이상)" autocomplete="off" data-pw-toggle>
-        <button type="button" class="admin-apply" data-admin-resetsub-search="1">초기화</button>
-      </div>
-      <div class="admin-info">※ 서브 관리자가 계정 비밀번호를 잊어버린 경우, 이름을 검색해 새 비밀번호로 초기화할 수 있습니다.</div>
-    </div>
-  ` : "";
-
-  /* 플레이어 통계 관리 — 최고/서브 모두 가능 (자기 비밀번호 필요) */
+  /* 플레이어 통계 관리 */
   const statsCard = `
     <div class="admin-card">
       <h4>플레이어 통계 관리</h4>
-      ${isSuper ? "" : `<input type="password" id="adminPw" placeholder="내 관리자 비밀번호 (검색/수정 시 필요)" autocomplete="off" data-pw-toggle>`}
       <div class="admin-row">
         <input type="text" id="adminFindNick" class="admin-text" placeholder="닉네임 검색" autocomplete="off" data-admin-enter="[data-admin-find]">
         <button type="button" class="admin-apply" data-admin-find="1">검색</button>
@@ -2569,20 +2491,7 @@ function renderAdminBody(data) {
     </div>
   `;
 
-  const pwCard = `
-    <div class="admin-card">
-      <h4>${role === "super" ? "비밀번호 변경 (현재 비밀번호를 알아야 합니다)" : "내 관리자 비밀번호 변경 (현재 비밀번호를 알아야 합니다)"}</h4>
-      <input type="password" id="adminPwCurrent" placeholder="현재 비밀번호" autocomplete="off" data-pw-toggle>
-      <input type="password" id="adminPwNext" placeholder="새 비밀번호 (4자 이상)" autocomplete="off" data-pw-toggle>
-      <button class="admin-pw-change" data-admin-pw="${role === "super" ? "change" : "subchange"}">비밀번호 변경</button>
-    </div>
-  `;
-
-  const statusLine = isSuper
-    ? (data.hasPassword
-        ? `<div class="admin-msg ok">관리자 계정 비밀번호가 설정되어 있습니다. 로그인 시 닉네임과 함께 입력하세요.</div>`
-        : `<div class="admin-msg warn">첫 실행입니다. 닉네임 저장 시 계정 비밀번호(4자 이상)를 입력하면 관리자 계정이 만들어집니다.</div>`)
-    : `<div class="admin-info">서브 관리자 — 개인 통계 관리만 가능하며 게임 전체 설정은 변경할 수 없습니다.</div>`;
+  const statusLine = `<div class="admin-msg ok">Google 관리자 계정으로 인증되었습니다.</div>`;
 
   /* 관리자: 돈 조절 (최고 관리자 전용) */
   const moneyCard = isSuper ? `
@@ -2620,9 +2529,6 @@ function renderAdminBody(data) {
     ${data.message ? `<div class="admin-msg ok">${escapeHtml(data.message)}</div>` : ""}
     ${statusLine}
     <div class="admin-info">시작 음절: <b>${(data.startSyllables || []).join(" ")}</b> &nbsp;·&nbsp; 현재 연결: <b>${escapeHtml(myNickname || "-")}</b></div>
-    ${pwCard}
-    ${subCard}
-    ${resetCard}
     ${configCard}
     ${dueumCard}
     ${watchCard}
@@ -2641,10 +2547,8 @@ function renderAdminBody(data) {
   if (moneyApply) moneyApply.addEventListener("click", () => {
     const nick = $("#adminMoneyNick")?.value.trim() || "";
     const amount = Number($("#adminMoneyAmount")?.value ?? 0);
-    const pw = $("#adminPw")?.value || "";
     if (!nick) { setAdminStatus("닉네임을 입력해주세요.", "error"); return; }
-    if (!pw) { setAdminStatus("관리자 비밀번호가 필요합니다.", "error"); return; }
-    socket.emit("admin:setMoney", { nickname: nick, amount, password: pw });
+    socket.emit("admin:setMoney", { nickname: nick, amount });
   });
 
   const bugLoad = $("#adminBugLoad");
@@ -2716,14 +2620,12 @@ function renderAdminFound(data) {
   wrap.querySelectorAll("[data-admin-stats]").forEach(btn => {
     btn.addEventListener("click", () => {
       const mode = btn.dataset.adminStats;
-      const pw = $("#adminPw")?.value ?? "";
-      if (!pw) { setAdminStatus("통계 수정에는 관리자 비밀번호가 필요합니다.", "error"); return; }
       const get = (f) => {
         const i = wrap.querySelector(`[data-admin-m="${mode}"][data-admin-f="${f}"]`);
         return Number(i?.value ?? 0);
       };
       socket.emit("admin:setPlayerStats", {
-        nickname: adminFoundNick, mode, password: pw,
+        nickname: adminFoundNick, mode,
         rating: get("rating"), wins: get("wins"), losses: get("losses")
       });
     });
@@ -2737,61 +2639,11 @@ function bindAdminBody() {
   const gotoNick = modal.querySelector("[data-admin-goto-nick]");
   if (gotoNick) gotoNick.addEventListener("click", () => { closeAdminPanel(); $("#nickInput")?.focus(); });
 
-  const pwBtn = modal.querySelector("[data-admin-pw]");
-  if (pwBtn) pwBtn.addEventListener("click", () => {
-    const current = modal.querySelector("#adminPwCurrent")?.value ?? "";
-    const next = modal.querySelector("#adminPwNext")?.value ?? "";
-    if (!next || next.length < 4) { setAdminStatus("비밀번호는 4자 이상이어야 합니다.", "error"); return; }
-    if (pwBtn.dataset.adminPw === "subchange") {
-      socket.emit("admin:setSubPassword", { current, next });
-    } else {
-      socket.emit("admin:setPassword", { current, next });
-    }
-  });
-
-  const addSub = modal.querySelector("[data-admin-addsub]");
-  if (addSub) addSub.addEventListener("click", () => {
-    const nickname = modal.querySelector("#adminSubNick")?.value.trim() ?? "";
-    if (!nickname || nickname.length < 2) { setAdminStatus("관리자로 추가할 닉네임을 입력해주세요.", "error"); return; }
-    socket.emit("admin:addSubAdmin", { nickname });
-  });
-
-  const removeSub = modal.querySelectorAll("[data-admin-remove]");
-  removeSub.forEach(btn => btn.addEventListener("click", () => {
-    const password = modal.querySelector("#adminPw")?.value ?? "";
-    if (!password) { setAdminStatus("진행하려면 관리자 비밀번호가 필요합니다.", "error"); return; }
-    socket.emit("admin:removeSubAdmin", { nickname: btn.dataset.adminRemove, password });
-  }));
-
-  const resetSub = modal.querySelectorAll("[data-admin-resetsub]");
-  resetSub.forEach(btn => btn.addEventListener("click", () => {
-    const password = modal.querySelector("#adminPw")?.value ?? "";
-    if (!password) { setAdminStatus("재설정하려면 관리자 비밀번호가 필요합니다.", "error"); return; }
-    const nickname = btn.dataset.adminResetsub;
-    const newPassword = prompt(`'${nickname}' 관리자 계정의 새 비밀번호를 입력하세요 (4자 이상)`);
-    if (!newPassword) return;
-    if (newPassword.length < 4) { setAdminStatus("비밀번호는 4자 이상이어야 합니다.", "error"); return; }
-    socket.emit("admin:resetSubPassword", { nickname, password, newPassword });
-  }));
-
   const foundBtn = modal.querySelector("[data-admin-find]");
   if (foundBtn) foundBtn.addEventListener("click", () => {
     const nick = modal.querySelector("#adminFindNick")?.value.trim() ?? "";
-    const pw = modal.querySelector("#adminPw")?.value ?? "";
     if (!nick) { setAdminStatus("검색할 닉네임을 입력해주세요.", "error"); return; }
-    if (!pw) { setAdminStatus("검색에는 관리자 비밀번호가 필요합니다.", "error"); return; }
-    socket.emit("admin:findPlayer", { nickname: nick, password: pw });
-  });
-
-  const resetSubSearch = modal.querySelector("[data-admin-resetsub-search]");
-  if (resetSubSearch) resetSubSearch.addEventListener("click", () => {
-    const nickname = modal.querySelector("#adminResetNick")?.value.trim() ?? "";
-    const newPassword = modal.querySelector("#adminResetNewPw")?.value ?? "";
-    const password = modal.querySelector("#adminPw")?.value ?? "";
-    if (!nickname) { setAdminStatus("초기화할 관리자 닉네임을 입력해주세요.", "error"); return; }
-    if (newPassword.length < 4) { setAdminStatus("새 비밀번호는 4자 이상이어야 합니다.", "error"); return; }
-    if (!password) { setAdminStatus("진행하려면 상단 관리자 비밀번호가 필요합니다.", "error"); return; }
-    socket.emit("admin:resetSubPassword", { nickname, password, newPassword });
+    socket.emit("admin:findPlayer", { nickname: nick });
   });
 
   /* 감시 목록 — 추가/제거 후 목록 전체를 서버에 저장 */
@@ -2826,17 +2678,12 @@ function bindAdminBody() {
     });
   });
 
-  /* 비밀번호 보기/숨기기 편의 토글 */
-  modal.querySelectorAll("[data-pw-toggle]").forEach(setupPwToggleInput);
-
   modal.querySelectorAll("[data-admin-apply]").forEach(btn => {
     btn.addEventListener("click", () => {
       const key = btn.dataset.adminApply;
       if (btn.hasAttribute("data-admin-find")) return;
       const input = modal.querySelector(`[data-admin-key="${key}"]`);
-      const pw = modal.querySelector("#adminPw")?.value ?? "";
-      if (!pw) { setAdminStatus("수치 변경에는 관리자 비밀번호가 필요합니다.", "error"); return; }
-      socket.emit("admin:updateConfig", { key, value: Number(input?.value), password: pw });
+      socket.emit("admin:updateConfig", { key, value: Number(input?.value) });
     });
   });
 }
@@ -2867,39 +2714,13 @@ function openAccountPanel(force) {
     renderAccountInfo($("#nickInput")?.value.trim() || myNickname || "");
     renderRecentGames();
     renderAccTitles();
-    setTimeout(() => $("#accPwInput")?.focus(), 60);
+    setTimeout(() => $("#accNickInput")?.focus(), 60);
   }
 }
 
 function renderAccountInfo(nick) {
   const input = $("#accNickInput");
   if (input && nick !== undefined) input.value = nick || "";
-  const pw = $("#accPwInput");
-  if (pw && myAdminRole !== "none" && !pw.value) {
-    pw.placeholder = myAdminRole === "super" ? "최고 관리자 로그인됨" : "서브 관리자 로그인됨";
-  }
-
-  /* 비밀번호 저장 — 일반 사용자는 항상 자동 저장(선택 화면 없음), 관리자만 체크박스 표시 */
-  const creWrap = $(".acc-save-creds");
-  if (creWrap) {
-    const isAdmin = myAdminRole !== "none";
-    creWrap.classList.toggle("hidden", !isAdmin);
-  }
-  const cre = $("#accSaveCreds");
-  if (cre) {
-    const stored = localStorage.getItem("kkSaveAdmin");
-    const isAdmin = myAdminRole !== "none";
-    const def = !isAdmin;
-    cre.checked = stored === null ? def : stored === "1";
-  }
-  const lbl = $("#accSaveCredsLabel");
-  if (lbl) {
-    if (myAdminRole !== "none") {
-      lbl.textContent = myNickname ? `'${myNickname}' 관리자 로그인 정보 저장 (체크 시 자동 로그인)` : "관리자 비밀번호 저장 (체크 시 자동 로그인)";
-    } else {
-      lbl.textContent = "일반 사용자는 비밀번호가 항상 자동 저장됩니다.";
-    }
-  }
 }
 
 function renderAccountScores() {
@@ -2908,7 +2729,6 @@ function renderAccountScores() {
 
 function saveAccount() {
   const nick = normalizeWord($("#accNickInput")?.value || "");
-  const pw = $("#accPwInput")?.value ?? "";
   if (!nick) {
     accountMsg("닉네임을 입력해주세요.", "error");
     return;
@@ -2918,32 +2738,10 @@ function saveAccount() {
     return;
   }
   if (socket && socketConnected && socket.id) {
-    socket.emit("player:setName", { nickname: nick, password: pw });
+    socket.emit("player:setName", { nickname: nick });
   } else {
     accountMsg("서버에 연결되지 않았습니다.", "error");
   }
-}
-
-/* 비밀번호 보기/숨기기 토글 — input을 감싸고 버튼을 붙인다 */
-function setupPwToggleInput(input) {
-  if (!input || input.dataset.pwToggled) return;
-  input.dataset.pwToggled = "1";
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "pw-toggle";
-  btn.textContent = "보기";
-  btn.setAttribute("aria-label", "비밀번호 보기/숨기기");
-  btn.addEventListener("click", () => {
-    const show = input.type === "password";
-    input.type = show ? "text" : "password";
-    btn.textContent = show ? "숨김" : "보기";
-    input.focus();
-  });
-  const wrap = document.createElement("span");
-  wrap.className = "pw-wrap";
-  input.parentNode.insertBefore(wrap, input);
-  wrap.appendChild(input);
-  wrap.appendChild(btn);
 }
 
 /* ---------------------------------------------------------
@@ -3103,16 +2901,14 @@ function sideRankMarkup(rows, mode) {
   return rows.map(r => {
     const me = String(r.nickname || "플레이어").replace(/\s+/g, "").toLowerCase() === String(myNickname || "").replace(/\s+/g, "").toLowerCase() && myNickname;
     let val = (r.ranking || 0) + "점";
-    let sub = `${r.wins || 0}승 ${r.losses || 0}패`;
-    if (mode === "money") { val = Number(r.money || 0).toLocaleString() + "원"; sub = ""; }
-    else if (mode === "streak") { val = (r.bestStreak || 0) + "연승"; sub = `현재 ${r.streak || 0}`; }
-    else if (mode === "tier") { val = formatRank(r.tier); sub = `${r.wins || 0}승 ${r.losses || 0}패`; }
+    if (mode === "money") val = Number(r.money || 0).toLocaleString() + "원";
+    else if (mode === "streak") val = (r.bestStreak || 0) + "연승";
+    else if (mode === "tier") val = formatRank(r.tier);
     const cls = (r.rank === 1 ? " top1" : r.rank <= 3 ? " top3" : "") + (me ? " lb-me" : "");
     return `<div class="side-rank-row${cls}">
       <span class="side-rank-num">${r.rank}</span>
       <span class="side-rank-name" title="${escapeHtml(r.nickname || "플레이어")}">${escapeHtml(r.nickname || "플레이어")}</span>
       <span class="side-rank-val">${escapeHtml(val)}</span>
-      ${sub ? `<span class="side-rank-sub">${escapeHtml(sub)}</span>` : ""}
     </div>`;
   }).join("");
 }
@@ -3166,6 +2962,7 @@ function initSideRanking() {
   }).catch(() => {});
   $("#sideRankClose")?.addEventListener("click", closeRanking);
   $("#sideRankOpen")?.addEventListener("click", openRanking);
+  $("#sideRankRefresh")?.addEventListener("click", () => loadSideRanking(sideRankMode));
   let closedInit = false;
   try { closedInit = localStorage.getItem("kkSideRankClosed") === "1"; } catch (e) { closedInit = false; }
   if (closedInit || window.innerWidth < 1080) {
@@ -3515,16 +3312,6 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#accNickInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); saveAccount(); }
   });
-  $("#accPwInput")?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); saveAccount(); }
-  });
-  
-  $("#accSaveCreds")?.addEventListener("change", (e) => {
-    localStorage.setItem("kkSaveAdmin", e.target.checked ? "1" : "0");
-    if (!e.target.checked && myAdminRole !== "none") localStorage.removeItem("kkPassword");
-    syncSavedCredentials();
-  });
-  $("#accountPanel").querySelectorAll("[data-pw-toggle]").forEach(setupPwToggleInput);
   renderAccountInfo(myNickname);
   renderAccountScores();
 

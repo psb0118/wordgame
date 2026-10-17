@@ -655,6 +655,10 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
 
   /* 난이도 — strong(어려움): 강제 승리를 더 넓게/깊게 탐색하고 최선에 가깝게 고름 */
   const strong = !!(opts && opts.strong);
+  /* 앞 N턴 공격/한방 금지(server playWord 규칙) — 이 금지를 어긴 단어를 고르면
+     playWord가 penalty로 거부하고 재시도도 같은 이유로 거부되어 AI가 수를 못 내고
+     타임아웃 하트를 잃는다(= 조기 탈락). freeTurns는 server의 ONESHOT_FREE_TURNS. */
+  const freeTurns = Number.isFinite(opts && opts.freeTurns) ? opts.freeTurns : 1;
 
   const newUsed = new Set([...usedWords]);
   const defenseSet = DEFENSE_WORDS || new Set();
@@ -692,9 +696,18 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 
   /* 0. 방어 단어 절대 배제 — 어떤 경우에도 방어 단어로 받아치지 않는다.
-     전부 방어 단어뿐이면 수를 내지 않는다(= 패배). */
+      전부 방어 단어뿐이면 수를 내지 않는다(= 패배). */
   list = list.filter(i => !i.isDefense);
   if (!list.length) return null;
+
+  /* 0-2. 앞 N턴 금지 규칙 준수 — 공격 단어(isAttack)와 한방(nextCount 0) 후보를
+         후보 단계에서 뺀다. 전부 금지 대상이면 금지되지 않은 일반 후보로 되돌려
+         반드시 수를 내게 한다(금지 위반 수 = 수 미제출 = 조기 탈락 방지).
+         isAttack/nextCount 판정은 playWord의 isAttackWord/isOneShot과 동일 기준이다. */
+  if (turnNumber < freeTurns) {
+    const legalNow = list.filter(i => !i.isAttack && i.nextCount !== 0);
+    if (legalNow.length) list = legalNow;
+  }
 
   const capSample = (arr) => {
     if (arr.length <= EVAL_CAP) return arr;

@@ -54,10 +54,16 @@ const HINTS_PER_GAME = 5;
    관리자 설정 — 수치로 조정 가능한 모든 값
 ========================================================= */
 
-let adminPassword = null;
-let subAdmins = [];
 let watchNicks = [];
-const ADMIN_NICKNAME = "blossomlng_0";
+/* 관리자 권한의 유일한 근거 — 서버가 검증한 Firebase 구글 계정 이메일 allowlist.
+   (기존 닉네임/비밀번호 방식은 제거됨. 환경변수 ADMIN_EMAILS로 쉼표 구분 추가 가능) */
+const ADMIN_EMAILS = Array.from(new Set(
+  String(process.env.ADMIN_EMAILS || "soundpsb1@gmail.com")
+    .split(",").map(s => s.trim().toLowerCase()).filter(Boolean)
+));
+function isAdminEmail(email) {
+  return ADMIN_EMAILS.includes(String(email || "").trim().toLowerCase());
+}
 /* 기다림 없이 연결이 끊겼을 때 패배 처리까지 유예하는 시간 (온라인·랭크 재접속용) */
 const RECONNECT_GRACE_MS = 30000;
 /* 연결이 끊긴 진행 중 게임 — socketId -> { roomId, nickname, timer } */
@@ -70,8 +76,12 @@ function notifySuperAdmins(payload) {
     }
   }
 }
-/* 접속 중인 소켓이 관리자 계정(닉네임+비밀번호) 인증을 통과했는지 — 닉네임만으로 관리자가 되지 못하게 함 */
+/* 접속 중인 소켓이 검증된 Firebase 관리자 이메일로 인증됐는지.
+   adminAuthed 값: { role: "super", email } — 클라이언트가 절대 쓸 수 없는 서버 측 상태 */
 const adminAuthed = new Map();
+/* 소켓ID -> 검증된 Firebase UID/이메일 (서버가 ID 토큰에서 직접 추출) */
+const socketFirebaseUid = new Map();
+const socketFirebaseEmail = new Map();
 const adminConfigPath = path.join(RUNTIME_DATA_DIR, "admin-config.json");
 
 function getConfig() {
@@ -116,19 +126,13 @@ function applyConfigValue(key, raw) {
 
 function saveAdminConfig() {
   try {
-    writeStoreFile(adminConfigPath, { adminPassword, subAdmins, watchlist: watchNicks, config: getConfig() }, "adminConfig");
+    writeStoreFile(adminConfigPath, { watchlist: watchNicks, config: getConfig() }, "adminConfig");
   } catch (e) { console.warn("관리자 설정 저장 실패:", e.message); }
 }
 
 function applyAdminConfig(data) {
   if (!data || typeof data !== "object") return;
-  if (typeof data.adminPassword === "string" && data.adminPassword) adminPassword = data.adminPassword;
-  if (Array.isArray(data.subAdmins)) {
-    /* 관리자는 닉네임 이름으로만 등록 — 계정 비밀번호는 본인이 계정 탭에서 설정/변경한다 */
-    subAdmins = data.subAdmins
-      .filter(s => s && String(s.nickname || "").trim())
-      .map(s => ({ nickname: String(s.nickname).trim(), password: String(s.password || "") }));
-  }
+  /* 구버전 adminPassword/subAdmins 필드는 무시 (Google 전용 인증으로 이전됨) */
   if (Array.isArray(data.watchlist)) watchNicks = data.watchlist.map(w => String(w || "").trim()).filter(Boolean);
   const c = data.config || {};
   for (const key of Object.keys(CONFIG_RANGES)) {
@@ -686,6 +690,7 @@ async function flushFirebaseScores() {
         },
         money: Math.max(0, Math.floor(Number(p.money) || 0)),
         firebaseUid: p.firebaseUid || "",
+        email: p.firebaseEmail || p.email || "",
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
     } catch (err) {
@@ -746,6 +751,52 @@ function migratePlayerData(p) {
 function resolvePlayerId(playerId) {
   const nm = socketNicks.get(playerId);
   return nm ? normKey(nm) : playerId;
+}
+
+/* 표시 이름 원자적 선점 — 같은 이름을 두 계정이 동시에 가져가지 못하게 한다.
+   PG: 조건부 UPDATE + rowCount로 원자적 판정. JSON: 단일 스레드에서 확인 후 기록.
+   반환: { ok:true, key } 또는 { ok:false, reason } */
+async function claimDisplayName(uid, nickname) {
+  const key = normKey(nickname);
+  if (!key) return { ok: false, reason: "이름을 입력해주세요." };
+  if (dbMode === "pg") {
+    try {
+      const cur = await dbPool.query("SELECT id, nickname, firebase_uid FROM players WHERE id = $1", [key]);
+      if (cur.rows.length === 0) return { ok: true, key, fresh: true };
+      const rowUid = String(cur.rows[0].firebase_uid || "");
+      if (rowUid && rowUid !== String(uid || "")) {
+        return { ok: false, reason: "이미 사용 중인 이름입니다." };
+      }
+      if (!rowUid && uid) {
+        const upd = await dbPool.query(
+          "UPDATE players SET firebase_uid = $2, updated_at = NOW() WHERE id = $1 AND (firebase_uid IS NULL OR firebase_uid = $2)",
+          [key, String(uid)]
+        );
+        if (upd.rowCount === 0) return { ok: false, reason: "이미 사용 중인 이름입니다." };
+        playerCache.delete(key);
+      }
+      return { ok: true, key };
+    } catch (err) {
+      if (String(err.code) === "23505") return { ok: false, reason: "이미 사용 중인 이름입니다." };
+      throw err;
+    }
+  }
+  const cached = playerCache.get(key);
+  if (cached) {
+    const rowUid = String(cached.firebaseUid || "");
+    const isReal = !!(cached.nickname && normKey(cached.nickname) === key);
+    if (isReal && rowUid && rowUid !== String(uid || "")) {
+      return { ok: false, reason: "이미 사용 중인 이름입니다." };
+    }
+  }
+  return { ok: true, key };
+}
+
+/* 관리자 여부 — 검증된 Firebase 이메일이 allowlist에 있을 때만 true.
+   닉네임·타이틀·localStorage 값은 절대 근거가 되지 않는다 */
+function isAdminSocket(socket) {
+  const authed = adminAuthed.get(socket.id);
+  return !!(authed && authed.role === "super" && isAdminEmail(authed.email));
 }
 
 async function getPlayerData(playerId) {
@@ -1062,6 +1113,7 @@ async function getRankingPayload(socketId) {
   const data = await getPlayerData(socketId);
   return {
     nickname: data.nickname,
+    isAdmin: isAdminPd(data),
     single: { ...data.single, rank: calculateRank(data.single.rating) },
     multi: { ...data.multi, rank: calculateRank(data.multi.rating) },
     ranked: { ...data.ranked, rank: calculateRank(data.ranked.rating) },
@@ -1582,7 +1634,17 @@ function getPlayerBySocket(room, socketId) {
 /* 플레이어가 장착 중인 칭호 — 저장된 계정 데이터에서 조회 (소켓 ID → 닉네임 키) */
 function playerTitle(player) {
   if (!player || player.isBot) return "";
-  return (playerCache.get(resolvePlayerId(player.id))?.currentTitle) || "";
+  const d = playerCache.get(resolvePlayerId(player.id));
+  if (!d) return "";
+  /* 관리자 칭호는 영구·자동·독점 — 장착 칭호와 무관하게 항상 표시
+     (클라이언트가 [~] 괄호를 붙여 그리므로 괄호 없이 반환) */
+  if (isAdminPd(d)) return "관리자";
+  return d.currentTitle || "";
+}
+
+/* 관리자 계정 여부 — 검증된 Firebase UID + allowlist 이메일이 모두 있어야 한다 */
+function isAdminPd(d) {
+  return !!(d && d.firebaseUid && isAdminEmail(d.firebaseEmail || d.email));
 }
 
 function getPlayerByIndex(room, index) {
@@ -1659,7 +1721,8 @@ function getPublicRoomState(room) {
       connected: p.connected, eliminated: p.eliminated,
       mistakes: p.mistakes || 0,
       waiting: p.waiting || false,
-      title: playerTitle(p)
+      title: playerTitle(p),
+      isAdmin: isAdminPd(playerCache.get(resolvePlayerId(p.id)))
     })),
     rankedRatings: (() => {
       const o = {};
@@ -2121,8 +2184,9 @@ function runAI(room, gameSessionId) {
           : candidates[Math.floor(Math.random() * candidates.length)];
       }
     } else {
-      /* 보통: 기존 최강 전략. 어려움: 강제 승리 탐색을 더 넓게/깊게 하고 최선의 수에 가깝게 결정 */
-      word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, difficulty === "hard" ? { strong: true } : undefined);
+      /* 보통: 기존 최강 전략. 어려움: 강제 승리 탐색을 더 넓게/깊게 하고 최선의 수에 가깝게 결정.
+         freeTurns: 앞 N턴 공격/한방 금지 규칙을 AI 선택기도 지키게 한다 */
+      word = chooseAIWord(room.currentWord, room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, room.turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, { strong: difficulty === "hard", freeTurns: ONESHOT_FREE_TURNS });
     }
   }
 
@@ -2145,8 +2209,15 @@ function runAI(room, gameSessionId) {
       const retry = chooseAIStartWord(room.startSyllable || "", blocked, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS);
       if (retry) playWord(room, player, retry, gameSessionId);
     } else {
-      const fallbackPool = getCandidates(room.currentWord || "", room.usedWords, WORD_INDEX)
+      let fallbackPool = getCandidates(room.currentWord || "", room.usedWords, WORD_INDEX)
         .filter(w => canConnect(room.currentWord || "", w));
+      /* 앞 N턴 금지 규칙이 걸린 재시도도 공격/한방/방어 단어는 다시 거부되므로
+         같은 규칙을 통과하는 후보만 남긴다(금지 대상만 걸러내고 전부 걸리면 원래 풀 유지) */
+      if (room.turnNumber < ONESHOT_FREE_TURNS) {
+        const legalNow = fallbackPool.filter(w =>
+          !isAttackWord(w, ATTACK_DEPTH) && !isOneShot(w, room.usedWords, WORD_INDEX) && !DEFENSE_WORDS.has(w));
+        if (legalNow.length) fallbackPool = legalNow;
+      }
       if (fallbackPool.length > 0) {
         const retry = fallbackPool[Math.floor(Math.random() * fallbackPool.length)];
         playWord(room, player, retry, gameSessionId);
@@ -2275,7 +2346,8 @@ app.get("/api/leaderboard", async (req, res) => {
             id: p.id, nickname: p.nickname || "플레이어",
             rating: Number(p.season.rating) || 1000,
             wins: p.season.wins || 0, losses: p.season.losses || 0,
-            games: p.season.games || 0, streak: p.season.bestStreak || 0
+            games: p.season.games || 0, streak: p.season.bestStreak || 0,
+            email: p.firebaseEmail || p.email || ""
           }));
       }
       const seenNicks = new Set();
@@ -2295,6 +2367,7 @@ app.get("/api/leaderboard", async (req, res) => {
           ranking: Number(r.rating) || 0, wins: Number(r.wins) || 0, losses: Number(r.losses) || 0,
           money: 0, streak: Number(r.streak) || 0, bestStreak: Number(r.streak) || 0,
           games: Number(r.games) || 0,
+          isAdmin: isAdminEmail(r.email),
           tier: calculateRank(Number(r.rating) || 0)
         })), r => `${r.ranking}|${r.wins}`);
       return res.json(rows);
@@ -2324,6 +2397,7 @@ app.get("/api/leaderboard", async (req, res) => {
             money: Number(v.money) || 0,
             streak: Number(v.ranked && v.ranked.streak) || 0,
             bestStreak: Number(v.ranked && v.ranked.bestStreak) || 0,
+            isAdmin: isAdminEmail(v.email),
             rank: fbRank, tier: calculateRank(rating)
           };
         });
@@ -2340,12 +2414,14 @@ app.get("/api/leaderboard", async (req, res) => {
       let params = [AI_PLAYER_ID, fetchN];
       if (mode === "money") {
         sql = `SELECT id, nickname, money AS stat_rating, 0 AS stat_wins, 0 AS stat_losses,
-                      money AS stat_money, 0 AS stat_streak, 0 AS stat_best_streak
+                      money AS stat_money, 0 AS stat_streak, 0 AS stat_best_streak,
+                      firebase_email AS stat_email
                FROM players WHERE id <> $1 ORDER BY money DESC, nickname ASC LIMIT $2`;
       } else if (mode === "streak") {
         sql = `SELECT id, nickname, ranked_rating AS stat_rating, ranked_wins AS stat_wins,
                       ranked_losses AS stat_losses, 0 AS stat_money,
-                      ranked_streak AS stat_streak, ranked_best_streak AS stat_best_streak
+                      ranked_streak AS stat_streak, ranked_best_streak AS stat_best_streak,
+                      firebase_email AS stat_email
                FROM players WHERE id <> $1
                ORDER BY ranked_best_streak DESC, ranked_rating DESC, nickname ASC LIMIT $2`;
       } else {
@@ -2358,7 +2434,7 @@ app.get("/api/leaderboard", async (req, res) => {
         const bstCol = mode === "multi" ? "best_streak" : (isRanked ? "ranked_best_streak" : "0");
         sql = `SELECT id, nickname, ${col} AS stat_rating, ${winCol} AS stat_wins, ${lossCol} AS stat_losses,
                       0 AS stat_money, ${stCol} AS stat_streak,
-                      ${bstCol} AS stat_best_streak
+                      ${bstCol} AS stat_best_streak, firebase_email AS stat_email
                FROM players WHERE id <> $1 ORDER BY ${col} DESC, ${winCol} DESC, nickname ASC LIMIT $2`;
       }
       rows = (await dbPool.query(sql, params)).rows;
@@ -2381,7 +2457,7 @@ app.get("/api/leaderboard", async (req, res) => {
               money: p.money
             };
           }
-          return { id: p.id, nickname: p.nickname, ...s };
+          return { id: p.id, nickname: p.nickname, ...s, stat_email: p.firebaseEmail || p.email || "" };
         })
         .sort((a, b) => {
           if (mode === "streak") return (b.bestStreak - a.bestStreak) || ((b.rating || 1000) - (a.rating || 1000)) || String(a.nickname || "").localeCompare(String(b.nickname || ""));
@@ -2393,7 +2469,8 @@ app.get("/api/leaderboard", async (req, res) => {
         .slice(0, fetchN)
         .map(r => ({
           id: r.id, nickname: r.nickname, stat_rating: r.rating, stat_wins: r.wins, stat_losses: r.losses,
-          stat_money: r.money, stat_streak: r.streak, stat_best_streak: r.bestStreak
+          stat_money: r.money, stat_streak: r.streak, stat_best_streak: r.bestStreak,
+          stat_email: r.stat_email || ""
         }));
     }
     /* 같은 닉네임(같은 계정)이 좀비 레코드 때문에 중복 집계되는 것을 방지.
@@ -2420,6 +2497,7 @@ app.get("/api/leaderboard", async (req, res) => {
       ranking: r.stat_rating, wins: r.stat_wins, losses: r.stat_losses,
       money: r.stat_money || 0,
       streak: r.stat_streak || 0, bestStreak: r.stat_best_streak || 0,
+      isAdmin: isAdminEmail(r.stat_email),
       tier: (mode === "money" || mode === "streak") ? null : calculateRank(r.stat_rating)
     })), r => mode === "money" ? `${r.money}`
       : mode === "streak" ? `${r.bestStreak}|${r.ranking}`
@@ -3286,6 +3364,18 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("칭호 변경 오류:", err); }
   });
 
+  socket.on("shop:unsetTitle", async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      if (!pd.currentTitle) { socket.emit("shop:result", { ok: true, message: "장착 중인 칭호가 없습니다.", currentTitle: "" }); return; }
+      pd.currentTitle = "";
+      await savePlayerData(socket.id, pd);
+      socket.emit("shop:result", { ok: true, message: "칭호를 해제했습니다.", currentTitle: "" });
+      socket.emit("player:ranking", await getRankingPayload(socket.id));
+      broadcastRoomState(getPlayerRoom(socket));
+    } catch (err) { console.error("칭호 해제 오류:", err); }
+  });
+
   socket.on("missions:status", async () => {
     try {
       const pd = await getPlayerData(socket.id);
@@ -3411,7 +3501,6 @@ io.on("connection", (socket) => {
       const reg = await requireNickname(socket);
       if (!reg.ok) { socket.emit("admin:moneyResult", { ok: false, reason: reg.reason }); return; }
       if (reg.role !== "super") { socket.emit("admin:moneyResult", { ok: false, reason: "돈 조절은 최고 관리자만 사용할 수 있습니다." }); return; }
-      if (!checkAdminPw(reg, data?.password)) { socket.emit("admin:moneyResult", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." }); return; }
       const nickname = String(data?.nickname ?? "").trim();
       const amount = clampNum(data?.amount, -999999999, 999999999, 0);
       if (!nickname) { socket.emit("admin:moneyResult", { ok: false, reason: "닉네임을 입력해주세요." }); return; }
@@ -3562,39 +3651,17 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("랭킹 조회 오류:", err); }
   });
 
-  /* -- 관리자 패널 ------------------------------------- */
-  /* name 정규화(공백 제거) 후 대소문자 무시 비교 */
-  const isAdminNick = (nick) => String(nick || "").replace(/\s+/g, "").toLowerCase() === ADMIN_NICKNAME.replace(/\s+/g, "").toLowerCase();
+  /* -- 관리자 패널 (Google 전용) ------------------------ */
   const normNick = (nick) => String(nick || "").replace(/\s+/g, "").toLowerCase();
-  const findSubAdmin = (nick) => subAdmins.find(s => normNick(s.nickname) === normNick(nick)) || null;
 
+  /* 관리자 권한 확인 — 서버가 검증한 Firebase 이메일 allowlist가 유일한 근거.
+     호출부 호환을 위해 기존 requireNickname 이름을 유지한다 */
   const requireNickname = async (socket) => {
+    if (!isAdminSocket(socket)) {
+      return { ok: false, reason: "관리자 권한이 없습니다. 관리자 구글 계정으로 로그인해주세요." };
+    }
     const pd = await getPlayerData(socket.id);
-    const nickname = String(pd.nickname || "").trim();
-    let role = null;
-    let subAdmin = null;
-    if (isAdminNick(nickname)) {
-      role = "super";
-    } else {
-      const sub = findSubAdmin(nickname);
-      if (sub) { role = "sub"; subAdmin = sub; }
-    }
-    if (!role) {
-      return { ok: false, reason: "관리자 권한이 없습니다." };
-    }
-    const authed = adminAuthed.get(socket.id);
-    if (!authed || authed.role !== role) {
-      return { ok: false, reason: "관리자 계정 비밀번호로 인증되지 않았습니다. 닉네임과 계정 비밀번호를 다시 입력해주세요." };
-    }
-    return { ok: true, nickname, role, subAdmin };
-  };
-
-  /* 역할별 비밀번호 검증 — 최고관리자는 관리자 비밀번호, 서브관리자는 본인 비밀번호 */
-  const checkAdminPw = (reg, pw) => {
-    if (!pw || typeof pw !== "string") return false;
-    if (reg.role === "super") return !!adminPassword && pw === adminPassword;
-    if (reg.role === "sub" && reg.subAdmin) return pw === reg.subAdmin.password;
-    return false;
+    return { ok: true, nickname: String(pd.nickname || "").trim(), role: "super", subAdmin: null };
   };
 
   /* 닉네임으로 플레이어 조회 (JSON DB / PostgreSQL 공통) */
@@ -3633,8 +3700,7 @@ io.on("connection", (socket) => {
         ok: true,
         role: reg.role,
         isSuper: reg.role === "super",
-        hasPassword: !!adminPassword,
-        subAdmins: subAdmins.map(s => s.nickname),
+        adminEmail: ADMIN_EMAILS[0] || "",
         config: getConfig(),
         startSyllables: STARTING_SYLLABLES,
         watchlist: watchNicks
@@ -3646,10 +3712,6 @@ io.on("connection", (socket) => {
     try {
       const reg = await requireNickname(socket);
       if (!reg.ok) { socket.emit("admin:findResult", { ok: false, reason: reg.reason }); return; }
-      if (!checkAdminPw(reg, data?.password)) {
-        socket.emit("admin:findResult", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
-        return;
-      }
       const nickname = String(data?.nickname ?? "").trim();
       if (!nickname) {
         socket.emit("admin:findResult", { ok: false, reason: "닉네임을 입력해주세요." });
@@ -3679,10 +3741,6 @@ io.on("connection", (socket) => {
     try {
       const reg = await requireNickname(socket);
       if (!reg.ok) { socket.emit("admin:statsUpdated", { ok: false, reason: reg.reason }); return; }
-      if (!checkAdminPw(reg, data?.password)) {
-        socket.emit("admin:statsUpdated", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
-        return;
-      }
       const nickname = String(data?.nickname ?? "").trim();
       const mode = data?.mode === "ranked" ? "ranked" : data?.mode === "single" ? "single" : "multi";
       if (!nickname) {
@@ -3714,45 +3772,12 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("관리자 통계 수정 오류:", err); }
   });
 
-  socket.on("admin:setPassword", async (data) => {
-    try {
-      const reg = await requireNickname(socket);
-      if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
-      if (reg.role !== "super") {
-        socket.emit("admin:panel", { ok: false, reason: "전체 설정은 최고 관리자만 변경할 수 있습니다." });
-        return;
-      }
-      const current = String(data?.current ?? "");
-      const next = String(data?.next ?? "");
-      if (next.length < 4) {
-        socket.emit("admin:panel", { ok: false, reason: "비밀번호는 4자 이상이어야 합니다." });
-        return;
-      }
-      if (adminPassword && current !== adminPassword) {
-        socket.emit("admin:panel", { ok: false, reason: "현재 비밀번호가 올바르지 않습니다." });
-        return;
-      }
-      adminPassword = next;
-      saveAdminConfig();
-      socket.emit("admin:panel", {
-        ok: true, role: reg.role, isSuper: true, hasPassword: true,
-        subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
-        startSyllables: STARTING_SYLLABLES, watchlist: watchNicks,
-        message: adminPassword ? "비밀번호가 변경되었습니다." : "비밀번호가 설정되었습니다."
-      });
-    } catch (err) { console.error("관리자 비밀번호 오류:", err); }
-  });
-
   socket.on("admin:updateConfig", async (data) => {
     try {
       const reg = await requireNickname(socket);
       if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
       if (reg.role !== "super") {
         socket.emit("admin:panel", { ok: false, reason: "수치 조정은 최고 관리자만 할 수 있습니다." });
-        return;
-      }
-      if (!checkAdminPw(reg, data?.password)) {
-        socket.emit("admin:panel", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
         return;
       }
       const key = String(data?.key ?? "");
@@ -3774,105 +3799,6 @@ io.on("connection", (socket) => {
       const reg = await requireNickname(socket);
       socket.emit("admin:role", { ok: true, role: reg.ok ? reg.role : "none" });
     } catch (err) { console.error("관리자 역할 조회 오류:", err); }
-  });
-
-  socket.on("admin:addSubAdmin", async (data) => {
-    try {
-      const reg = await requireNickname(socket);
-      if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
-      if (reg.role !== "super") {
-        socket.emit("admin:panel", { ok: false, reason: "최고 관리자만 관리자를 추가할 수 있습니다." });
-        return;
-      }
-      const nickname = String(data?.nickname ?? "").trim();
-      let password = String(data?.adminPassword ?? "").trim();
-      if (!nickname || nickname.length < 2 || nickname.length > 20) {
-        socket.emit("admin:panel", { ok: false, reason: "관리자 닉네임은 2~20자여야 합니다." });
-        return;
-      }
-      if (password && password.length < 4) {
-        socket.emit("admin:panel", { ok: false, reason: "관리자 비밀번호는 4자 이상이어야 합니다." });
-        return;
-      }
-      if (isAdminNick(nickname)) {
-        socket.emit("admin:panel", { ok: false, reason: "최고 관리자 닉네임은 추가할 수 없습니다." });
-        return;
-      }
-      if (findSubAdmin(nickname)) {
-        socket.emit("admin:panel", { ok: false, reason: "이미 등록된 서브 관리자입니다." });
-        return;
-      }
-      /* 닉네임으로만 등록 — 비밀번호는 해당 관리자가 계정 탭에서 직접 설정/변경 */
-      subAdmins.push({ nickname, password });
-      saveAdminConfig();
-      socket.emit("admin:panel", {
-        ok: true, role: reg.role, isSuper: true, hasPassword: !!adminPassword,
-        subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
-        startSyllables: STARTING_SYLLABLES, watchlist: watchNicks,
-        message: `'${nickname}' 님을 관리자로 추가했습니다. 계정 비밀번호는 '${nickname}'님이 계정 탭에서 직접 설정/변경할 수 있습니다.`
-      });
-      console.log(`[ADMIN] ${reg.nickname}님이 서브 관리자 '${nickname}' 추가`);
-    } catch (err) { console.error("관리자 추가 오류:", err); }
-  });
-
-  socket.on("admin:removeSubAdmin", async (data) => {
-    try {
-      const reg = await requireNickname(socket);
-      if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
-      if (reg.role !== "super") {
-        socket.emit("admin:panel", { ok: false, reason: "최고 관리자만 관리자를 제거할 수 있습니다." });
-        return;
-      }
-      if (!checkAdminPw(reg, data?.password)) {
-        socket.emit("admin:panel", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
-        return;
-      }
-      const nickname = String(data?.nickname ?? "").trim();
-      const idx = subAdmins.findIndex(s => normNick(s.nickname) === normNick(nickname));
-      if (idx === -1) {
-        socket.emit("admin:panel", { ok: false, reason: "등록된 서브 관리자를 찾을 수 없습니다." });
-        return;
-      }
-      subAdmins.splice(idx, 1);
-      saveAdminConfig();
-      socket.emit("admin:panel", {
-        ok: true, role: reg.role, isSuper: true, hasPassword: !!adminPassword,
-        subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
-        startSyllables: STARTING_SYLLABLES, watchlist: watchNicks,
-        message: `'${nickname}' 관리자가 제거되었습니다.`
-      });
-      console.log(`[ADMIN] ${reg.nickname}님이 서브 관리자 '${nickname}' 제거`);
-    } catch (err) { console.error("관리자 제거 오류:", err); }
-  });
-
-  socket.on("admin:setSubPassword", async (data) => {
-    try {
-      const reg = await requireNickname(socket);
-      if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
-      if (reg.role !== "sub" || !reg.subAdmin) {
-        socket.emit("admin:panel", { ok: false, reason: "서브 관리자만 자신의 비밀번호를 바꿀 수 있습니다." });
-        return;
-      }
-      const current = String(data?.current ?? "");
-      const next = String(data?.next ?? "");
-      if (next.length < 4) {
-        socket.emit("admin:panel", { ok: false, reason: "비밀번호는 4자 이상이어야 합니다." });
-        return;
-      }
-      if (current !== (reg.subAdmin.password || "")) {
-        socket.emit("admin:panel", { ok: false, reason: "현재 비밀번호가 올바르지 않습니다." });
-        return;
-      }
-      reg.subAdmin.password = next;
-      saveAdminConfig();
-      socket.emit("admin:panel", {
-        ok: true, role: "sub", isSuper: false, hasPassword: !!adminPassword,
-        subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
-        startSyllables: STARTING_SYLLABLES, watchlist: watchNicks,
-        message: "서브 관리자 비밀번호가 변경되었습니다."
-      });
-      console.log(`[ADMIN] 서브 관리자 '${reg.nickname}' 비밀번호 변경`);
-    } catch (err) { console.error("서브 관리자 비밀번호 오류:", err); }
   });
 
   /* -- 커스텀 사전 — 유저 단어 신청 → 관리자 승인 시 게임 반영 -- */
@@ -3984,41 +3910,6 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("사전 반려 오류:", err); }
   });
 
-  /* 최고 관리자가 서브 관리자 계정의 비밀번호를 재설정 — 계정별 비밀번호를 직접 관리 */
-  socket.on("admin:resetSubPassword", async (data) => {
-    try {
-      const reg = await requireNickname(socket);
-      if (!reg.ok) { socket.emit("admin:panel", { ok: false, reason: reg.reason }); return; }
-      if (reg.role !== "super") {
-        socket.emit("admin:panel", { ok: false, reason: "최고 관리자만 계정 비밀번호를 재설정할 수 있습니다." });
-        return;
-      }
-      if (!checkAdminPw(reg, data?.password)) {
-        socket.emit("admin:panel", { ok: false, reason: "관리자 비밀번호가 올바르지 않습니다." });
-        return;
-      }
-      const nickname = String(data?.nickname ?? "").trim();
-      const newPassword = String(data?.newPassword ?? "");
-      const sub = findSubAdmin(nickname);
-      if (!sub) {
-        socket.emit("admin:panel", { ok: false, reason: "등록된 서브 관리자를 찾을 수 없습니다." });
-        return;
-      }
-      if (newPassword.length < 4) {
-        socket.emit("admin:panel", { ok: false, reason: "비밀번호는 4자 이상이어야 합니다." });
-        return;
-      }
-      sub.password = newPassword;
-      saveAdminConfig();
-      socket.emit("admin:panel", {
-        ok: true, role: reg.role, isSuper: true, hasPassword: !!adminPassword,
-        subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
-        startSyllables: STARTING_SYLLABLES, watchlist: watchNicks,
-        message: `'${nickname}' 관리자 계정 비밀번호가 재설정되었습니다.`
-      });
-      console.log(`[ADMIN] ${reg.nickname}님이 서브 관리자 '${nickname}' 비밀번호 재설정`);
-    } catch (err) { console.error("관리자 계정 비밀번호 재설정 오류:", err); }
-  });
 
   /* 감시 목록 — 등록된 닉네임의 로그인 시 최고 관리자에게 알림 */
   socket.on("admin:setWatchlist", async (data) => {
@@ -4034,8 +3925,7 @@ io.on("connection", (socket) => {
         : [];
       saveAdminConfig();
       socket.emit("admin:panel", {
-        ok: true, role: reg.role, isSuper: true, hasPassword: !!adminPassword,
-        subAdmins: subAdmins.map(s => s.nickname), config: getConfig(),
+        ok: true, role: reg.role, isSuper: true, config: getConfig(),
         startSyllables: STARTING_SYLLABLES, watchlist: watchNicks,
         message: "감시 목록이 저장되었습니다."
       });
@@ -4043,6 +3933,9 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("감시 목록 오류:", err); }
   });
 
+  /* 표시 이름 설정 — Google 로그인 세션이 있는 소켓만 가능하다.
+     이름은 정규화(공백 제거·소문자) 후 대소문자 무시로 고유해야 하며,
+     서버/DB에서 원자적으로 선점한다. 기존 기록(돈/랭킹/연승)은 이름 키 계정에 그대로 보존된다 */
   socket.on("player:setName", async (data) => {
     try {
       const nickname = normalizeWord(data?.nickname);
@@ -4054,74 +3947,49 @@ io.on("connection", (socket) => {
         socket.emit("player:nameUpdated", { ok: false, reason: "이름은 12자 이내로 입력해주세요." });
         return;
       }
-
-      /* 관리자 계정(최고/서브)은 닉네임만으로 등록되지 않고, 계정 비밀번호 인증이 필요하다 —
-         그래야 닉네임 도용으로 관리자 권한을 뺏기지 않는다 */
-      const asSuper = isAdminNick(nickname);
-      const asSub = asSuper ? null : findSubAdmin(nickname);
-      if (asSuper || asSub) {
-        const pw = String(data?.password ?? "");
-        if (asSuper) {
-          if (!adminPassword) {
-            /* 최초 로그인 = 관리자 계정(비밀번호) 생성 */
-            if (pw.length < 4) {
-              socket.emit("player:nameUpdated", {
-                ok: false, adminRequired: true,
-                reason: "최초 관리자 계정입니다. 계정 비밀번호(4자 이상)를 설정해주세요."
-              });
-              return;
-            }
-            adminPassword = pw;
-            saveAdminConfig();
-          } else if (pw !== adminPassword) {
-            socket.emit("player:nameUpdated", {
-              ok: false, adminRequired: true,
-              reason: "관리자 계정 비밀번호가 올바르지 않습니다."
-            });
-            return;
-          }
-          adminAuthed.set(socket.id, { role: "super", nickname });
-        } else {
-          /* 서브 관리자 — 비밀번호가 없으면 최초 로그인 시 본인이 직접 설정한다 */
-          if (!asSub.password) {
-            if (pw.length < 4) {
-              socket.emit("player:nameUpdated", {
-                ok: false, adminRequired: true,
-                reason: "관리자 계정입니다. 계정 탭에서 계정 비밀번호(4자 이상)를 먼저 설정해주세요."
-              });
-              return;
-            }
-            asSub.password = pw;
-            saveAdminConfig();
-          } else if (pw !== asSub.password) {
-            socket.emit("player:nameUpdated", {
-              ok: false, adminRequired: true,
-              reason: "관리자 계정 비밀번호가 올바르지 않습니다."
-            });
-            return;
-          }
-          adminAuthed.set(socket.id, { role: "sub", nickname });
-        }
-      } else {
-        adminAuthed.delete(socket.id);
+      const uid = socketFirebaseUid.get(socket.id) || "";
+      if (!uid) {
+        socket.emit("player:nameUpdated", {
+          ok: false, needGoogleLogin: true,
+          reason: "먼저 Google 로그인을 해주세요. 이름은 로그인 후에 정할 수 있습니다."
+        });
+        return;
       }
-
+      const claim = await claimDisplayName(uid, nickname);
+      if (!claim.ok) {
+        socket.emit("player:nameUpdated", { ok: false, reason: claim.reason });
+        return;
+      }
       const room = getPlayerRoom(socket);
       if (room) {
-        const dup = room.players.find(p => !p.isBot && p.socketId !== socket.id && p.nickname === nickname);
+        const dup = room.players.find(p => !p.isBot && p.socketId !== socket.id && normKey(p.nickname) === claim.key);
         if (dup) {
-          socket.emit("player:nameUpdated", { ok: false, reason: "이미 사용 중인 닉네임입니다." });
+          socket.emit("player:nameUpdated", { ok: false, reason: "이미 사용 중인 이름입니다." });
           return;
         }
         const me = room.players.find(p => p.socketId === socket.id);
         if (me) me.nickname = nickname;
       }
-      /* 닉네임(정규화 키)이 곧 계정 저장 키 — 소켓 ID에 얽매이지 않아 재접속시에도
-         돈/랭킹/연승이 초기화되는 문제가 없다 */
-      const accountId = normKey(nickname);
-      const playerData = await getPlayerData(accountId);
+      /* 이름 변경 전 행에 묶여 있던 UID 연결을 새 행으로 이전 */
+      const prevKey = resolvePlayerId(socket.id);
+      const playerData = await getPlayerData(claim.key);
       playerData.nickname = nickname;
-      await savePlayerData(accountId, playerData);
+      playerData.firebaseUid = uid;
+      const email = socketFirebaseEmail.get(socket.id) || "";
+      if (email) {
+        playerData.firebaseEmail = email;
+        if (!playerData.email) playerData.email = email;
+      }
+      await savePlayerData(claim.key, playerData);
+      if (prevKey && prevKey !== claim.key) {
+        try {
+          const prev = await getPlayerData(prevKey);
+          if (String(prev.firebaseUid || "") === String(uid)) {
+            prev.firebaseUid = "";
+            await savePlayerData(prevKey, prev);
+          }
+        } catch (e) { /* 이전 행 정리 실패는 무시 (새 행이 정본) */ }
+      }
       registerOnline(socket.id, nickname);
       socket.emit("player:nameUpdated", { ok: true, nickname });
       if (room) broadcastRoomState(room);
@@ -4133,8 +4001,9 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("닉네임 설정 오류:", err); }
   });
 
-  /* Firebase(Google) 로그인 — 클라이언트가 받은 ID 토큰을 검증해 현재 닉네임
-     계정에 firebaseUid를 연결한다. (닉네임 유지 + Firebase 연동: 기존 돈/랭킹 보존) */
+  /* Firebase(Google) 로그인 — 검증된 UID/이메일을 소켓 세션에 기록한다.
+     이름이 아직 없으면 needNickname으로 알리고, 이름은 player:setName에서 정한다.
+     관리자 이메일이면 이 세션에 관리자 권한을 부여한다 (서버 측 상태, 클라이언트 조작 불가) */
   socket.on("player:firebaseAuth", async (data) => {
     try {
       if (!firebaseReady) {
@@ -4147,25 +4016,81 @@ io.on("connection", (socket) => {
         return;
       }
       const decoded = await verifyFirebaseIdToken(idToken);
+      const uid = String(decoded.uid || "");
+      const email = String(decoded.email || "");
+      if (!uid) {
+        socket.emit("player:firebaseAuthResult", { ok: false, reason: "토큰에서 사용자 ID를 확인하지 못했습니다." });
+        return;
+      }
+      socketFirebaseUid.set(socket.id, uid);
+      socketFirebaseEmail.set(socket.id, email);
+      if (isAdminEmail(email)) {
+        adminAuthed.set(socket.id, { role: "super", email });
+      } else {
+    adminAuthed.delete(socket.id);
+    socketFirebaseUid.delete(socket.id);
+    socketFirebaseEmail.delete(socket.id);
+      }
       const pd = await getPlayerData(socket.id);
       const nick = pd.nickname && normKey(pd.nickname) !== normKey("플레이어") ? pd.nickname : "";
       if (!nick) {
+        /* 같은 UID가 이미 가진 이름이 있으면 자동 복원 */
+        let restored = "";
+        if (dbMode === "pg") {
+          try {
+            const r = await dbPool.query("SELECT nickname FROM players WHERE firebase_uid = $1 LIMIT 1", [uid]);
+            if (r.rows.length && r.rows[0].nickname) restored = String(r.rows[0].nickname);
+          } catch (e) { /* 무시하고 이름 입력으로 진행 */ }
+        } else {
+          for (const p of playerCache.values()) {
+            if (p && String(p.firebaseUid || "") === uid && p.nickname && normKey(p.nickname) !== normKey("플레이어")) {
+              restored = p.nickname;
+              break;
+            }
+          }
+        }
+        if (restored) {
+          registerOnline(socket.id, restored);
+          socket.emit("player:firebaseAuthResult", {
+            ok: true, uid, email,
+            name: decoded.name || "", picture: decoded.picture || "", nickname: restored,
+            isAdmin: isAdminEmail(email)
+          });
+          socket.emit("player:nameUpdated", { ok: true, nickname: restored });
+          socket.emit("player:ranking", await getRankingPayload(socket.id));
+          console.log(`[FIREBASE] '${restored}' ← ${email || uid} (복원)`);
+          return;
+        }
         socket.emit("player:firebaseAuthResult", {
-          ok: false, needNickname: true,
-          name: decoded.name || "", email: decoded.email || "",
-          reason: "닉네임을 먼저 저장한 뒤 Google 로그인을 완료해주세요."
+          ok: true, needNickname: true, uid, email,
+          name: decoded.name || "", picture: decoded.picture || "",
+          isAdmin: isAdminEmail(email),
+          reason: "표시할 이름을 정해주세요. (다른 사람과 중복될 수 없습니다)"
         });
         return;
       }
-      pd.firebaseUid = decoded.uid;
-      pd.firebaseEmail = decoded.email || "";
+      /* 기존 이름 행에 UID 연결 (원자적 선점으로 도용 방지) */
+      const claim = await claimDisplayName(uid, nick);
+      if (!claim.ok) {
+        socket.emit("player:firebaseAuthResult", {
+          ok: true, needNickname: true, uid, email,
+          name: decoded.name || "", picture: decoded.picture || "",
+          isAdmin: isAdminEmail(email),
+          reason: "기존 이름이 다른 계정에 연결되어 있습니다. 새 이름을 정해주세요."
+        });
+        return;
+      }
+      pd.firebaseUid = uid;
+      pd.firebaseEmail = email;
       pd.firebaseName = decoded.name || "";
       await savePlayerData(socket.id, pd);
+      registerOnline(socket.id, pd.nickname);
       socket.emit("player:firebaseAuthResult", {
-        ok: true, uid: decoded.uid, email: decoded.email || "",
-        name: decoded.name || "", picture: decoded.picture || "", nickname: nick
+        ok: true, uid, email,
+        name: decoded.name || "", picture: decoded.picture || "", nickname: pd.nickname,
+        isAdmin: isAdminEmail(email)
       });
-      console.log(`[FIREBASE] '${nick}' ← ${decoded.email || decoded.uid}`);
+      console.log(`[FIREBASE] '${pd.nickname}' ← ${email || uid}`);
     } catch (err) {
       socket.emit("player:firebaseAuthResult", { ok: false, reason: "Firebase 인증 실패: " + err.message });
     }

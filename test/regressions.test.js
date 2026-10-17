@@ -40,6 +40,7 @@ function context(extra = {}) {
     console: { log() {}, warn() {}, error(...args) { errors.push(args.join(" ")); } },
     playerCache: new Map(), socketNicks: new Map(), onlineNicks: new Map(),
     adminAuthed: new Map(), disconnectedPlayers: new Map(), REMATCHES: new Map(),
+    socketFirebaseUid: new Map(), socketFirebaseEmail: new Map(),
     ROOMS: new Map(),
     dbMode: "json", dbPool: null,
     firebaseReady: false, firebaseAuth: null,
@@ -68,12 +69,12 @@ function context(extra = {}) {
   for (const name of [
     "initPeriodData", "initDailyData", "initWeeklyData", "initMonthlyData",
     "migratePlayerData", "resolvePlayerId", "getPlayerData", "savePlayerData",
-    "verifyFirebaseIdToken",
+    "claimDisplayName", "verifyFirebaseIdToken",
     "registerOnline", "unregisterOnline", "updateRating", "updateSingleResult",
     "recordMatchHistory", "finishGame", "migrateJsonPlayersToPg",
     "getPlayerBySocket", "getPlayerByIndex", "getAlivePlayers", "findNextAlivePlayer",
     "stopTurnTimer", "startTurnTimer", "removePlayer",
-    "bumpMission", "bumpDaily", "playWord",
+    "bumpMission", "bumpDaily", "playWord", "runAI", "startNewGame",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions };
 }
@@ -101,8 +102,9 @@ test("new socket logs into existing account without resetting balances or statis
   const { c, errors } = context();
   const s = socket("new-socket");
   const before = seed(c, "existing");
+  c.socketFirebaseUid.set(s.id, "uid-existing");
   installHandler(c, "player:setName", s);
-  await s.handlers.get("player:setName")({ nickname: "existing", password: "ignored" });
+  await s.handlers.get("player:setName")({ nickname: "existing" });
   const after = c.playerCache.get("existing");
   assert.equal(after.money, before.money);
   assert.equal(after.ranked.rating, 1900);
@@ -117,6 +119,7 @@ test("nickname switching loads target account instead of copying old account", a
   seed(c, "old", { money: 100 });
   seed(c, "target", { money: 500 });
   c.registerOnline(s.id, "old");
+  c.socketFirebaseUid.set(s.id, "uid-old");
   installHandler(c, "player:setName", s);
   await s.handlers.get("player:setName")({ nickname: "target" });
   assert.equal(c.playerCache.get("target").money, 500);
@@ -126,6 +129,7 @@ test("nickname switching loads target account instead of copying old account", a
 test("new nickname still creates a new account", async () => {
   const { c } = context();
   const s = socket("new");
+  c.socketFirebaseUid.set(s.id, "uid-new");
   installHandler(c, "player:setName", s);
   await s.handlers.get("player:setName")({ nickname: "new-account" });
   assert.equal(c.playerCache.get("new-account").money, 0);
@@ -144,6 +148,7 @@ test("PostgreSQL login queries normalized account key before saving", async () =
     }] : [] };
   } } });
   const s = socket("fresh");
+  c.socketFirebaseUid.set(s.id, "uid-fresh");
   installHandler(c, "player:setName", s);
   await s.handlers.get("player:setName")({ nickname: "Existing" });
   assert.equal(queries[0].values[0], "existing");
@@ -157,6 +162,7 @@ test("database read error does not become a default account write", async () => 
     queries.push(sql); throw new Error("read failure");
   } } });
   const s = socket("fresh");
+  c.socketFirebaseUid.set(s.id, "uid-fresh");
   installHandler(c, "player:setName", s);
   await s.handlers.get("player:setName")({ nickname: "existing" });
   assert.equal(queries.length, 1);
@@ -388,8 +394,33 @@ test("full room accepts a reconnect into its existing seat", () => {  const { c 
   assert.ok(r.timer);
 });
 
-test("firebase token verification throws when service account is missing", async () => {
+test("display name requires a verified Google session", async () => {
   const { c } = context();
+  const s = socket("anon");
+  installHandler(c, "player:setName", s);
+  await s.handlers.get("player:setName")({ nickname: "someone" });
+  const hit = s.emissions.find(([event]) => event === "player:nameUpdated");
+  assert.ok(hit);
+  assert.equal(hit[1].ok, false);
+  assert.equal(hit[1].needGoogleLogin, true);
+  assert.equal(c.socketNicks.has(s.id), false);
+});
+
+test("display name already linked to another Google account is rejected", async () => {
+  const { c } = context();
+  seed(c, "taken", { firebaseUid: "uid-other" });
+  const s = socket("mine");
+  c.socketFirebaseUid.set(s.id, "uid-mine");
+  installHandler(c, "player:setName", s);
+  await s.handlers.get("player:setName")({ nickname: "Taken" });
+  const hit = s.emissions.find(([event]) => event === "player:nameUpdated");
+  assert.ok(hit);
+  assert.equal(hit[1].ok, false);
+  assert.match(String(hit[1].reason || ""), /이미 사용 중/);
+  assert.equal(c.playerCache.get("taken").firebaseUid, "uid-other");
+});
+
+test("firebase token verification throws when service account is missing", async () => {  const { c } = context();
   await assert.rejects(c.verifyFirebaseIdToken("aaa.bbb.ccc"), /firebase_not_configured/);
 });
 
@@ -402,4 +433,145 @@ test("firebase login without service account explains setup instead of crashing"
   assert.ok(hit);
   assert.equal(hit[1].ok, false);
   assert.match(String(hit[1].reason || ""), /FIREBASE_SERVICE_ACCOUNT/);
+});
+
+/* =========================================================
+   AI — 앞 N턴 공격/한방 금지 규칙 (조기 탈락 회귀)
+   chooseAIWord가 turnNumber를 무시해 공격 단어를 고르면 playWord가 거부하고
+   재시도도 거부되어 AI가 수를 못 내 타임아웃 하트를 잃는 조기 탈락이 발생했다.
+========================================================= */
+let _dict = null;
+function dict() {
+  if (_dict) return _dict;
+  _dict = game.loadData(path.join(__dirname, "../data"), path.join(__dirname, ".."));
+  return _dict;
+}
+
+let _fixture = null;
+/* 공격 단어 후보와 안전(비공격·비한방) 후보를 함께 가진 위치 — 실제 사전에서 탐색 */
+function attackFixture() {
+  if (_fixture) return _fixture;
+  const d = dict();
+  let examined = 0;
+  scan:
+  for (const arr of d.WORD_INDEX.values()) {
+    for (const w of arr) {
+      if (++examined > 40000) break scan;
+      const used = new Set([w]);
+      const cands = game.getCandidates(w, used, d.WORD_INDEX);
+      if (cands.length < 6) continue;
+      let atk = 0, safe = 0;
+      for (const x of cands) {
+        if (Number.isFinite(d.ATTACK_DEPTH[x])) atk++;
+        else if (!game.isOneShot(x, used, d.WORD_INDEX)) safe++;
+      }
+      if (atk >= 1 && safe >= 3) { _fixture = { word: w }; break scan; }
+    }
+  }
+  assert.ok(_fixture, "사전에서 공격 단어 후보가 있는 지점을 찾지 못했습니다");
+  return _fixture;
+}
+
+function aiGlobals(extra = {}) {
+  const d = dict();
+  return {
+    WORD_SET: d.WORD_SET, WORD_INDEX: d.WORD_INDEX, ATTACK_DEPTH: d.ATTACK_DEPTH,
+    ROOT_WORDS: d.ROOT_WORDS, RARE_ROOT_WORDS: d.RARE_ROOT_WORDS,
+    DEFENSE_WORDS: d.DEFENSE_WORDS, DOLRIM_WORDS: d.DOLRIM_WORDS,
+    getCandidates: game.getCandidates, canConnect: game.canConnect,
+    hasWord: game.hasWord, isAttackWord: game.isAttackWord,
+    isOneShot: game.isOneShot, getAttackDepth: game.getAttackDepth,
+    allowedFirstChars: game.allowedFirstChars, normalizeWord: game.normalizeWord,
+    MAX_HEARTS: 2, MISTAKES_PER_LIFE: 5, HINTS_PER_GAME: 5,
+    STARTING_SYLLABLES: ["가", "기", "나", "다", "사", "마", "자", "시"],
+    ...extra,
+  };
+}
+
+test("chooseAIWord never returns attack or one-shot words before free turns end", () => {
+  const d = dict();
+  const fx = attackFixture();
+  const used = new Set([fx.word]);
+  for (let i = 0; i < 12; i++) {
+    const word = game.chooseAIWord(fx.word, used, d.WORD_SET, d.WORD_INDEX, d.ATTACK_DEPTH,
+      d.ROOT_WORDS, 1, d.DEFENSE_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, { freeTurns: 3 });
+    assert.ok(word, "free-turn 금지로 수를 아예 못 내면 안 됩니다");
+    assert.equal(game.isAttackWord(word, d.ATTACK_DEPTH), false,
+      `free-turn 중 공격 단어 '${word}'를 냈습니다`);
+    assert.equal(game.isOneShot(word, used, d.WORD_INDEX), false,
+      `free-turn 중 한방 단어 '${word}'를 냈습니다`);
+  }
+});
+
+test("runAI forwards the free-turn ban and never submits a banned word", () => {
+  const d = dict();
+  const fx = attackFixture();
+  const seen = { opts: null };
+  const { c } = context(aiGlobals({
+    ONESHOT_FREE_TURNS: 3,
+    chooseAIWord: (...args) => { seen.opts = args[10]; return game.chooseAIWord(...args); },
+    chooseAIStartWord: (...args) => game.chooseAIStartWord(...args),
+  }));
+  const room = {
+    id: "r-ai", mode: "ai", difficulty: "normal", hostSocketId: "h",
+    players: [
+      { id: "h", socketId: "h", playerIndex: 0, nickname: "사람", isBot: false,
+        hearts: 2, alive: true, eliminated: false, connected: true, waiting: false, mistakes: 0 },
+      { id: "bot", socketId: "bot", playerIndex: 1, nickname: "AI", isBot: true,
+        hearts: 2, alive: true, eliminated: false, connected: true, waiting: false, mistakes: 0 },
+    ],
+    turnPlayerIndex: 1, turnNumber: 1, gameSessionId: 1,
+    started: true, finished: false, winner: null, loser: null,
+    currentWord: fx.word, startSyllable: null, lastSyllable: null,
+    usedWords: new Set([fx.word]),
+    history: [{ word: fx.word, player: 0, nickname: "사람", depth: null, turn: 0 }],
+    hintsUsed: 0,
+  };
+  c.runAI(room, room.gameSessionId);
+  assert.ok(seen.opts, "chooseAIWord가 호출되지 않았습니다");
+  assert.equal(seen.opts.freeTurns, 3, "server가 ONESHOT_FREE_TURNS를 선택기에 전달해야 합니다");
+  assert.equal(room.history.length, 2, "AI가 실제로 단어를 제출해야 합니다(수 미제출 = 타임아웃 조기 탈락)");
+  const played = room.history[1].word;
+  assert.equal(game.isAttackWord(played, d.ATTACK_DEPTH), false,
+    `free-turn 중 공격 단어 '${played}'를 제출했습니다`);
+  assert.equal(game.isOneShot(played, room.usedWords, d.WORD_INDEX), false,
+    `free-turn 중 한방 단어 '${played}'를 제출했습니다`);
+  assert.equal(room.finished, false);
+});
+
+/* =========================================================
+   커스텀 사전 — 승인 단어가 곧바로 게임 사전에 반영되는가
+========================================================= */
+test("approved custom word becomes playable immediately", async () => {
+  const word = "코끼리사과";
+  const { c } = context(aiGlobals({
+    customWords: { pending: [], approved: [], rejected: [] },
+    saveCustomWords() {},
+    emitCustomWords() {},
+    requireNickname: async () => ({ ok: true, nickname: "admin", role: "super" }),
+  }));
+  assert.equal(c.hasWord(word, c.WORD_SET), false, "테스트 단어는 원래 사전에 없어야 합니다");
+
+  const user = socket("word-user");
+  c.socketNicks.set(user.id, "신청자");
+  /* 실제 applyCustomWord와 동일: 승인 즉시 WORD_SET/WORD_INDEX에 반영 */
+  c.applyCustomWord = (w) => {
+    c.WORD_SET.add(w);
+    const first = w[0];
+    if (!c.WORD_INDEX.has(first)) c.WORD_INDEX.set(first, []);
+    c.WORD_INDEX.get(first).push(w);
+  };
+  installHandler(c, "word:request", user);
+  await user.handlers.get("word:request")({ word });
+  const requested = user.emissions.find(([event]) => event === "word:requestResult");
+  assert.ok(requested && requested[1].ok, "단어 신청이 접수되어야 합니다");
+  assert.equal(c.customWords.pending.length, 1);
+
+  const admin = socket("word-admin");
+  installHandler(c, "admin:wordApprove", admin);
+  await admin.handlers.get("admin:wordApprove")({ word });
+  assert.equal(c.customWords.pending.length, 0, "승인되면 대기에서 빠져야 합니다");
+  assert.deepEqual(c.customWords.approved, [word]);
+  assert.equal(c.hasWord(word, c.WORD_SET), true,
+    "승인 직후 게임 사전(WORD_SET)에 반영되어 모든 유저가 쓸 수 있어야 합니다");
 });
