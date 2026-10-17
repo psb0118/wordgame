@@ -2384,46 +2384,6 @@ button:active:not(:disabled) {
 .admin-card .admin-bug-del { margin-top: 4px; }
 
 /* 계정 패널: 랭크/돈 */
-.acc-title-list {
-  max-height: 180px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--card-soft);
-}
-
-/* 칭호 장착 (상점 구매 후 변경 버튼) */
-.shop-buy.equip:hover { background: var(--accent); color: #fff; }
-.shop-buy.equipped {
-  background: #eef2ff;
-  border-color: #6366f1;
-  color: #4f46e5;
-  cursor: default;
-}
-
-/* 계정 패널: 칭호 장착 칩 */
-.acc-title-chip {
-  font-size: 0.78rem;
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--card);
-  color: var(--text);
-  cursor: pointer;
-  text-align: left;
-}
-.acc-title-chip:hover:not(.current) { border-color: var(--accent); color: var(--accent); }
-.acc-title-chip.current {
-  background: #eef2ff;
-  border-color: #6366f1;
-  color: #4f46e5;
-  font-weight: 700;
-  cursor: default;
-}
 
 /* 일일 미션 패널 */
 .acc-mission-list,
@@ -2890,9 +2850,3 @@ button:active:not(:disabled) {
 }
 .acc-fb-msg[data-type="ok"] { color: var(--green); }
 .acc-fb-msg[data-type="error"] { color: var(--red); }
-
-/* 파이어 랭킹 탭 — 서버에 Firebase 미설정 시 흐리게 */
-.side-rank-tabs button.side-rank-tab-off {
-  opacity: 0.45;
-  cursor: help;
-}

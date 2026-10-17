@@ -1631,14 +1631,13 @@ function getPlayerBySocket(room, socketId) {
   return room.players.find(p => p.socketId === socketId) || null;
 }
 
-/* 플레이어가 장착 중인 칭호 — 저장된 계정 데이터에서 조회 (소켓 ID → 닉네임 키) */
+/* 플레이어가 장착 중인 칭호 — 저장된 계정 데이터에서 조회 (소켓 ID → 닉네임 키).
+   관리자도 자신의 칭호를 자유롭게 장착/해제할 수 있으며, 관리자 표시는
+   방/리더보드 payload의 isAdmin 플래그로 UI가 [관리자] 배지를 그린다 */
 function playerTitle(player) {
   if (!player || player.isBot) return "";
   const d = playerCache.get(resolvePlayerId(player.id));
   if (!d) return "";
-  /* 관리자 칭호는 영구·자동·독점 — 장착 칭호와 무관하게 항상 표시
-     (클라이언트가 [~] 괄호를 붙여 그리므로 괄호 없이 반환) */
-  if (isAdminPd(d)) return "관리자";
   return d.currentTitle || "";
 }
 
