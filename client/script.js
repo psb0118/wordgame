@@ -12,6 +12,7 @@ let socketConnected = false;
 let currentMode = "single";
 let roomId = null;
 let playerIndex = null;
+let spectating = false;
 let gameState = null;
 let currentMaxHearts = 2;
 let submitting = false;
@@ -765,6 +766,25 @@ function initSocket() {
     socket.emit("player:getRanking");
   });
 
+  /* 복귀 환영 보상 — 3일 이상 접속하지 않았다 돌아온 유저에게 지급 */
+  socket.on("welcome:reward", (data) => {
+    if (!data || !data.amount) return;
+    moneyBalance += Number(data.amount) || 0;
+    renderMoneyBar();
+    playSound("win");
+    showMessage(data.message || `환영 보상 +${Number(data.amount).toLocaleString()}원을 받았습니다!`, "win");
+    applyFx($(".money-bar"), "fx-cash");
+    socket.emit("player:getRanking");
+  });
+
+  /* 랭크 보호 티켓 자동 사용 알림 */
+  socket.on("shield:used", (data) => {
+    showMessage(data?.message || "랭크 보호 티켓이 사용되었습니다!", "success");
+    playSound("win");
+    if (shopInfo) shopInfo.shieldTickets = Math.max(0, (shopInfo.shieldTickets || 1) - 1);
+    renderItems();
+  });
+
   /* -- 상점 ------------------------------------------- */
   socket.on("shop:info", (data) => {
     if (!data) return;
@@ -792,6 +812,7 @@ function initSocket() {
       }
       if (typeof data.ratingBoostGames === "number") ratingBoostGames = data.ratingBoostGames;
       if (typeof data.moneyMultiplier === "number") moneyMultiplier = data.moneyMultiplier;
+      if (typeof data.shieldTickets === "number" && shopInfo) shopInfo.shieldTickets = data.shieldTickets;
       renderMoneyBar();
       renderShop();
     }
@@ -1023,6 +1044,7 @@ function initSocket() {
     }
     roomId = data.roomId;
     playerIndex = data.playerIndex;
+    spectating = false;
     gameSessionId++;
     gameState = data.state;
     renderGameState(gameState);
@@ -1031,6 +1053,26 @@ function initSocket() {
     } else {
       showMessage(data.reconnect ? "방에 재접속했습니다." : "방에 입장했습니다.", "success");
     }
+  });
+
+  /* 관전 입장 — 플레이어가 아니라 채널만 참가하므로 입력 없이 상태만 받는다 */
+  socket.on("room:spectating", (data) => {
+    if (!data || !data.ok) return;
+    roomId = data.roomId;
+    playerIndex = null;
+    spectating = true;
+    gameSessionId++;
+    gameState = data.state;
+    const mode = data.state && data.state.mode ? data.state.mode : "online";
+    const tabMode = mode === "ai" ? "online" : (mode === "ranked" ? "ranked" : "online");
+    switchToModeTab(tabMode, tabMode === "ranked" && !!(data.state && data.state.started));
+    if (tabMode === "ranked") {
+      $("#rankedLobby")?.classList.toggle("hidden", !!(data.state && data.state.started));
+      $("#rankedGame")?.classList.toggle("hidden", !(data.state && data.state.started));
+    }
+    renderGameState(gameState);
+    showMessage("관전 중입니다 — 이 방의 게임을 구경하고 있습니다.", "info");
+    updateInputState();
   });
 
   socket.on("room:error", (data) => {
@@ -1351,6 +1393,7 @@ function initSocket() {
 
     gameState = data.state || gameState;
     renderGameState(gameState);
+    showReplay(data);
     socket.emit("player:getRanking");
     socket.emit("missions:status");
 
@@ -1593,12 +1636,15 @@ function renderHistory(state) {
     }
     const depth = item.depth != null ? ` [${item.depth}]` : "";
     if (isStartEntry) {
-      row.textContent = `시작: ${item.word}${depth}`;
+      row.innerHTML = `시작: <span class="history-word" data-def-word="${escapeHtml(item.word)}" title="클릭하면 뜻 보기">${escapeHtml(item.word)}</span>${depth}`;
     } else {
-      row.innerHTML = `${item.turn}. ${titleHtmlFor(item.player)}${escapeHtml(item.nickname || "플레이어")}: <span class="history-word">${escapeHtml(item.word)}</span>${depth}`;
+      row.innerHTML = `${item.turn}. ${titleHtmlFor(item.player)}${escapeHtml(item.nickname || "플레이어")}: <span class="history-word" data-def-word="${escapeHtml(item.word)}" title="클릭하면 뜻 보기">${escapeHtml(item.word)}</span>${depth}`;
     }
     container.appendChild(row);
   }
+  container.querySelectorAll("[data-def-word]").forEach(w => {
+    w.addEventListener("click", () => showWordDefinition(w.dataset.defWord));
+  });
   container.scrollTop = container.scrollHeight;
 }
 
@@ -1705,9 +1751,15 @@ function updateInputState() {
     inputArea.dataset.myTurn = myTurn ? "true" : "false";
   }
 
-  const specNotice = $("#spectatorNotice");
-  if (specNotice) {
-    specNotice.classList.toggle("hidden", !amEliminated || !gameState?.started || gameState?.finished);
+  const showSpec = (spectating && gameState?.started && !gameState?.finished)
+    || (amEliminated && gameState?.started && !gameState?.finished);
+  const specText = spectating ? "관전 모드 — 이 방의 게임을 구경 중입니다" : "관전 모드 — 탈락했습니다";
+  for (const sel of ["#spectatorNotice", "#spectatorNoticeRanked"]) {
+    const specNotice = $(sel);
+    if (specNotice) {
+      specNotice.classList.toggle("hidden", !showSpec);
+      specNotice.textContent = specText;
+    }
   }
 }
 
@@ -1844,11 +1896,23 @@ function renderRoomList() {
       <span class="rl-host">${escapeHtml(String(r.host || "플레이어"))}</span>
       <span class="rl-count">${Number(r.playerCount) || 0}/${Number(r.maxPlayers) || 0}</span>
       <span class="rl-status">${r.started ? "진행 중" : "대기 중"}</span>
+      <span class="rl-watch" data-watch="${escapeHtml(String(r.roomId))}" title="구경만 하기">관전</span>
       <span class="rl-join">입장 →</span>
     </button>`).join("");
   body.innerHTML = rows;
   body.querySelectorAll(".room-list-row").forEach(row => {
-    row.addEventListener("click", () => joinRoomFromList(row.dataset.id));
+    row.addEventListener("click", (e) => {
+      const watch = e.target.closest ? e.target.closest("[data-watch]") : null;
+      if (watch) {
+        e.stopPropagation();
+        if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+        closeRoomList();
+        socket.emit("room:spectate", { roomId: watch.dataset.watch });
+        showMessage("관전으로 입장하는 중...", "waiting");
+        return;
+      }
+      joinRoomFromList(row.dataset.id);
+    });
   });
 }
 
@@ -1956,6 +2020,7 @@ function leaveRoom() {
   socket.emit("room:leave");
   roomId = null;
   playerIndex = null;
+  spectating = false;
   gameState = null;
   rankedMatchInfo = null;
   localUsedWords.clear();
@@ -2196,6 +2261,10 @@ function renderShop() {
   html += `<div class="shop-sub">물약</div>`;
   html += mkRow("레이팅 2배 물약", "구매 시 다음 랭크 10판에 자동 적용", "buyPotion", "구매 · 1,000,000원", "", shopInfo.potionPrice);
 
+  html += `<div class="shop-sub">아이템</div>`;
+  const shieldCount = Number(shopInfo.shieldTickets) || 0;
+  html += mkRow("랭크 보호 티켓", `랭크 패배 1회 방어 (레이팅 감소 막음) · 보유 ${shieldCount}장`, "buyShield", `구매 · ${(shopInfo.shieldPrice || 2000000).toLocaleString()}원`, "", shopInfo.shieldPrice || 2000000);
+
   html += `<div class="shop-sub">영구 배율</div>`;
   for (const m of shopInfo.multiplierPrices) {
     const owned = moneyMultiplier >= m.multiplier;
@@ -2206,11 +2275,12 @@ function renderShop() {
   }
   body.innerHTML = html;
 
-  body.querySelectorAll("[id^='buyTitle:'],[id^='buyPotion'],[id^='buyMultiplier']").forEach(btn => {
+  body.querySelectorAll("[id^='buyTitle:'],[id^='buyPotion'],[id^='buyShield'],[id^='buyMultiplier']").forEach(btn => {
     btn.addEventListener("click", () => {
       const [kind, val] = btn.id.split(":");
       if (kind === "buyTitle") socket.emit("shop:buyTitle", { titleId: val });
       else if (kind === "buyPotion") socket.emit("shop:buyPotion");
+      else if (kind === "buyShield") socket.emit("shop:buyShield");
       else if (kind === "buyMultiplier") socket.emit("shop:buyMultiplier", { multiplier: Number(val) });
     });
   });
@@ -2255,6 +2325,14 @@ function renderItems() {
       ? `<b>사용 중</b> — 다음 <b>${ratingBoostGames}</b>판 적용`
       : `<span class="items-potion-off">미사용</span>`;
   }
+  const shieldEl = $("#itemsShieldStatus");
+  if (shieldEl) {
+    const sc = Number(shopInfo && shopInfo.shieldTickets) || 0;
+    shieldEl.innerHTML = sc > 0
+      ? `<b>${sc}장 보유</b> — 랭크 패배 시 자동 사용`
+      : `<span class="items-potion-off">보유 없음 (상점에서 구매)</span>`;
+  }
+  renderRatingChart();
   renderRecentGames();
 }
 
@@ -2795,13 +2873,20 @@ function renderFriends() {
       <div class="friend-row${f.online ? " online" : ""}">
         <span class="friend-dot"></span>
         <span class="friend-name">${escapeHtml(f.nickname)}</span>
-        ${f.online ? `<button class="friend-invite" data-friend-invite="${escapeHtml(f.nickname)}">대결 신청</button>` : `<span class="friend-offline">오프라인</span>`}
+        ${f.online ? `<button class="friend-invite" data-friend-invite="${escapeHtml(f.nickname)}">대결 신청</button><button class="friend-watch" data-friend-watch="${escapeHtml(f.nickname)}" title="친구가 진행 중인 게임 구경">관전</button>` : `<span class="friend-offline">오프라인</span>`}
         <button class="friend-del" data-friend-del="${escapeHtml(f.nickname)}">삭제</button>
       </div>`).join("");
   }
   list.innerHTML = reqHtml + listHtml;
   list.querySelectorAll("[data-friend-invite]").forEach(btn => {
     btn.addEventListener("click", () => inviteByNickname(btn.dataset.friendInvite));
+  });
+  list.querySelectorAll("[data-friend-watch]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+      socket.emit("friends:spectate", { nickname: btn.dataset.friendWatch });
+      toggleFriendsPanel(false);
+    });
   });
   list.querySelectorAll("[data-friend-del]").forEach(btn => {
     btn.addEventListener("click", () => socket?.emit("friends:remove", { nickname: btn.dataset.friendDel }));
@@ -3018,6 +3103,170 @@ async function toggleLeaderboardRanked() {
 /* ---------------------------------------------------------
    초기화
 --------------------------------------------------------- */
+/* ---------------------------------------------------------
+   다크 모드 토글 — CSS 변수만 갈아끼운다 (kkTheme: light/dark)
+--------------------------------------------------------- */
+function renderThemeToggle() {
+  const btn = $("#themeToggle");
+  if (!btn) return;
+  const dark = document.documentElement.classList.contains("dark");
+  btn.textContent = dark ? "☀️" : "🌙";
+  btn.title = dark ? "라이트 모드로 전환" : "다크 모드로 전환";
+}
+
+function applyTheme(dark) {
+  document.documentElement.classList.toggle("dark", dark);
+  try { localStorage.setItem("kkTheme", dark ? "dark" : "light"); } catch (e) { /* 무시 */ }
+  renderThemeToggle();
+}
+
+/* ---------------------------------------------------------
+   게임 종료 리플레이 — 이번 판 단어 흐름 한눈에 보기
+--------------------------------------------------------- */
+function showReplay(data) {
+  const modal = $("#replayModal");
+  const list = $("#replayList");
+  const head = $("#replayHead");
+  if (!modal || !list) return;
+  const st = (data && data.state) || gameState;
+  const hist = (st && Array.isArray(st.history)) ? st.history : [];
+  if (hist.length < 2) return;   /* 시작 단어뿐이면 굳이 띄우지 않는다 */
+
+  const winnerIdx = data ? data.winner : (st ? st.winner : null);
+  const winnerName = data && data.winnerName ? data.winnerName : "";
+  if (head) {
+    head.textContent = winnerIdx == null
+      ? `무승부 · 총 ${hist.length}단어`
+      : `${winnerName || "승자"} 승리 · 총 ${hist.length}단어`;
+  }
+  list.innerHTML = hist.map(item => {
+    const isStart = item.player === -1 || item.nickname === "시작";
+    const isWinner = winnerIdx != null && item.player === winnerIdx;
+    const depthBadge = item.depth != null ? `<span class="replay-depth">공격 ${item.depth}</span>` : "";
+    const who = isStart ? "시작" : escapeHtml(item.nickname || "플레이어");
+    return `<div class="replay-row${isWinner ? " win" : ""}${isStart ? " start" : ""}">
+      <span class="replay-turn">${isStart ? "●" : (item.turn != null ? item.turn : "")}</span>
+      <span class="replay-who">${who}</span>
+      <span class="replay-word" data-def-word="${escapeHtml(item.word)}" title="클릭하면 뜻 보기">${escapeHtml(item.word)}</span>
+      ${depthBadge}
+    </div>`;
+  }).join("");
+  list.querySelectorAll("[data-def-word]").forEach(w => {
+    w.addEventListener("click", () => showWordDefinition(w.dataset.defWord));
+  });
+  modal.classList.remove("hidden");
+}
+
+/* ---------------------------------------------------------
+   단어 뜻 표시 — 위키백과 요약 API(키 불필요, CORS 허용)
+--------------------------------------------------------- */
+async function showWordDefinition(word) {
+  const modal = $("#wordDefModal");
+  const title = $("#wordDefTitle");
+  const body = $("#wordDefBody");
+  if (!modal || !title || !body) return;
+  const w = String(word || "").trim();
+  if (!w) return;
+  title.textContent = w;
+  body.innerHTML = `<div class="word-def-loading">뜻을 찾는 중...</div>`;
+  modal.classList.remove("hidden");
+  try {
+    const res = await fetch(`https://ko.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(w)}?origin=*`);
+    if (!res.ok) throw new Error("not found");
+    const j = await res.json();
+    const extract = String(j.extract || "").trim();
+    const desc = String(j.description || "").trim();
+    if (extract || desc) {
+      body.innerHTML = `${desc ? `<div class="word-def-desc">${escapeHtml(desc)}</div>` : ""}<div class="word-def-text">${escapeHtml(extract || desc)}</div>
+        <div class="word-def-src">출처: 한국어 위키백과</div>`;
+      return;
+    }
+    throw new Error("empty");
+  } catch (e) {
+    body.innerHTML = `<div class="word-def-none">뜻 정보를 찾지 못했습니다.<br><span class="word-def-hint">단어가 사전/위키백과에 아직 없을 수 있어요.</span></div>`;
+  }
+}
+
+/* ---------------------------------------------------------
+   레이팅 추이 그래프 (아이템 탭, 최근 30일·점당 1일)
+--------------------------------------------------------- */
+function renderRatingChart() {
+  const box = $("#ratingChartBox");
+  if (!box) return;
+  const hist = (shopInfo && Array.isArray(shopInfo.ratingHistory)) ? shopInfo.ratingHistory : [];
+  const pts = hist.slice(-30);
+  if (pts.length < 2) {
+    box.innerHTML = `<div class="items-empty">아직 데이터가 부족합니다.<br>랭크/온라인 게임을 한 판 더 플레이하면 추이가 기록됩니다.</div>`;
+    return;
+  }
+  const W = 320, H = 130, PADX = 8, PADY = 14;
+  const series = [
+    { key: "r", color: "#818cf8", label: "랭크", width: 2.5 },
+    { key: "m", color: "#c084fc", label: "멀티", width: 1.5 }
+  ];
+  const all = pts.flatMap(p => [Number(p.r), Number(p.m)]).filter(Number.isFinite);
+  let min = Math.min(...all), max = Math.max(...all);
+  if (min === max) { min -= 10; max += 10; }
+  const x = i => PADX + (i / (pts.length - 1)) * (W - PADX * 2);
+  const y = v => H - PADY - ((v - min) / (max - min)) * (H - PADY * 2);
+  const paths = series.map(s => {
+    const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(Number(p[s.key]) || 0).toFixed(1)}`).join(" ");
+    const last = pts[pts.length - 1];
+    return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.width}" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${x(pts.length - 1).toFixed(1)}" cy="${y(Number(last[s.key]) || 0).toFixed(1)}" r="3.5" fill="${s.color}"/>`;
+  }).join("");
+  const legend = series.map(s => `<span class="chart-leg"><i style="background:${s.color}"></i>${s.label} <b>${Number(pts[pts.length - 1][s.key]) || "-"}</b></span>`).join("");
+  const dateFirst = String(pts[0].d || "").slice(5).replace("-", "/");
+  const dateLast = String(pts[pts.length - 1].d || "").slice(5).replace("-", "/");
+  box.innerHTML = `
+    <div class="chart-legend">${legend}<span class="chart-range">${dateFirst} ~ ${dateLast}</span></div>
+    <svg class="rating-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="레이팅 추이 그래프">
+      <line class="chart-grid" x1="${PADX}" y1="${H - PADY}" x2="${W - PADX}" y2="${H - PADY}"/>
+      <line class="chart-grid" x1="${PADX}" y1="${PADY}" x2="${W - PADX}" y2="${PADY}" stroke-dasharray="3 4"/>
+      <text x="${PADX + 2}" y="${PADY - 4}" class="chart-max">${Math.round(max)}</text>
+      <text x="${PADX + 2}" y="${H - PADY - 4}" class="chart-min">${Math.round(min)}</text>
+      ${paths}
+    </svg>`;
+}
+
+/* ---------------------------------------------------------
+   튜토리얼 — 첫 이용자를 위한 3분 플레이 안내 (kkTutorialDone)
+--------------------------------------------------------- */
+const TUTORIAL_STEPS = [
+  { title: "① 기본 규칙", body: "끝말잇기! <b>끝 글자</b>로 시작하는 단어를 입력창에 쓰고 [입력]을 누르세요. 예) 사과 → 과일 → 일몰... 국어사전에 있는 한글 단어만 인정됩니다." },
+  { title: "② 공격과 방어", body: "<b>공격 단어</b>(상대가 막기 어려운 단어)는 라운드 첫 턴에만 사용할 수 없고, 대응이 불가능하면 <b>한방</b>이 되어 상대 하트가 차감됩니다. 위기엔 <b>방어 단어</b>로 버티세요." },
+  { title: "③ 하트 · 시간 · 보상", body: "실수 5회 = 하트 1개 차감(게임당 2개). 제한 시간 안에 입력해야 합니다. 랭크 매칭에서 이기면 <b>돈</b>과 레이팅을 얻고, 상점에서 <b>칭호·물약·보호 티켓</b>을 구매할 수 있어요. 기록은 오른쪽 상단 랭킹, 자세한 규칙은 ❓ 게임 방법을 확인하세요!" }
+];
+let tutorialStep = 0;
+
+function renderTutorialStep() {
+  const step = TUTORIAL_STEPS[tutorialStep];
+  if (!step) return;
+  setText(["#tutorTitle"], step.title);
+  const body = $("#tutorBody");
+  if (body) body.innerHTML = step.body;
+  const idx = $("#tutorIndex");
+  if (idx) idx.textContent = `${tutorialStep + 1} / ${TUTORIAL_STEPS.length}`;
+  const prev = $("#tutorPrev");
+  const next = $("#tutorNext");
+  if (prev) prev.disabled = tutorialStep === 0;
+  if (next) next.textContent = tutorialStep === TUTORIAL_STEPS.length - 1 ? "시작하기" : "다음";
+}
+
+function showTutorial(fromStart = true) {
+  const modal = $("#tutorialModal");
+  if (!modal) return;
+  if (fromStart) tutorialStep = 0;
+  renderTutorialStep();
+  modal.classList.remove("hidden");
+}
+
+function finishTutorial() {
+  const modal = $("#tutorialModal");
+  if (modal) modal.classList.add("hidden");
+  try { localStorage.setItem("kkTutorialDone", "1"); } catch (e) { /* 무시 */ }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   initSocket();
   initNicknameBar();
@@ -3033,6 +3282,32 @@ document.addEventListener("DOMContentLoaded", () => {
     renderSoundToggle();
     playSound("word");
   });
+
+  /* 다크 모드 토글 */
+  renderThemeToggle();
+  /* 소리/테마 토글은 서버 데이터가 오기 전에도 바로 쓸 수 있게 바를 먼저 연다 */
+  $(".money-bar")?.classList.remove("hidden");
+  $("#themeToggle")?.addEventListener("click", () => {
+    applyTheme(!document.documentElement.classList.contains("dark"));
+    playSound("word");
+  });
+
+  /* 튜토리얼 — 첫 방문자에게만 자동으로 띄운다 (게임 방법에서 다시 볼 수 있음) */
+  let tutorSeen = false;
+  try { tutorSeen = localStorage.getItem("kkTutorialDone") === "1"; } catch (e) { /* 무시 */ }
+  if (!tutorSeen) setTimeout(() => showTutorial(true), 1200);
+  $("#tutorPrev")?.addEventListener("click", () => {
+    if (tutorialStep > 0) { tutorialStep--; renderTutorialStep(); }
+  });
+  $("#tutorNext")?.addEventListener("click", () => {
+    if (tutorialStep < TUTORIAL_STEPS.length - 1) { tutorialStep++; renderTutorialStep(); }
+    else finishTutorial();
+  });
+  $("#tutorSkip")?.addEventListener("click", () => finishTutorial());
+  $("#tutorClose")?.addEventListener("click", () => finishTutorial());
+  $("#tutorialReplayBtn")?.addEventListener("click", () => showTutorial(true));
+  $("#replayClose")?.addEventListener("click", () => $("#replayModal")?.classList.add("hidden"));
+  $("#wordDefClose")?.addEventListener("click", () => $("#wordDefModal")?.classList.add("hidden"));
   document.addEventListener("pointerdown", () => ensureAudio(), { once: false });
   document.addEventListener("keydown", () => ensureAudio(), { once: false });
 

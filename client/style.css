@@ -3259,3 +3259,337 @@ input:focus {
 }
 
 .fx-title-pop { animation: fx-title-pop-enhanced 0.6s ease; }
+
+/* =========================================================
+   다크 모드 — :root 변수만 갈아끼워 350+ var() 사용처에 반영
+========================================================= */
+html.dark {
+  --text: #e2e8f0;
+  --text-dim: #9aa9bd;
+  --text-faint: #6b7a92;
+  --card: #161d30;
+  --card-soft: #1c2439;
+  --border: #2b3650;
+  --border-strong: #3c4a6b;
+  --accent-soft: #262c56;
+  --gold-soft: #3a2f14;
+  --green-soft: #10352a;
+  --blue-soft: #132748;
+  --red-soft: #3c1b21;
+  --orange-soft: #392415;
+  --purple-soft: #2b1a44;
+  --shadow: 0 14px 34px -12px rgba(0, 0, 0, 0.6);
+  --shadow-sm: 0 4px 14px -6px rgba(0, 0, 0, 0.5);
+  color-scheme: dark;
+}
+
+html.dark body {
+  background:
+    radial-gradient(1200px 500px at 12% -8%, #1e1b4b 0%, transparent 55%),
+    radial-gradient(1000px 460px at 95% 4%, #450a1a 0%, transparent 50%),
+    radial-gradient(900px 700px at 50% 110%, #082f49 0%, transparent 60%),
+    linear-gradient(180deg, #0a0f1e 0%, #0f172a 100%);
+  color: var(--text);
+}
+
+html.dark input,
+html.dark select,
+html.dark textarea {
+  color: var(--text);
+  background: var(--card-soft);
+}
+
+html.dark .money-bar {
+  background: linear-gradient(135deg, rgba(22, 29, 48, 0.92), rgba(30, 41, 59, 0.92));
+  border-color: var(--border);
+  backdrop-filter: blur(10px);
+}
+
+html.dark .shop-money,
+html.dark .attendance-card,
+html.dark .ranked-prize {
+  background: var(--card-soft);
+  color: var(--text);
+}
+
+html.dark .room-list-panel,
+html.dark .mission-bar-fill {
+  filter: brightness(0.92);
+}
+
+html.dark .modal-box,
+html.dark .how-box,
+html.dark .friends-panel,
+html.dark .account-panel,
+html.dark .side-rank {
+  background: rgba(22, 29, 48, 0.96);
+}
+
+html.dark .history-item,
+html.dark .rec-row,
+html.dark .mission-row {
+  background: var(--card-soft);
+}
+
+html.dark #spectatorNotice,
+html.dark #spectatorNoticeRanked {
+  color: #fca5a5;
+}
+
+html.dark ::placeholder { color: var(--text-faint); }
+
+/* 후반 레이어의 흰색 하드코딩(유리 질감) 덮어쓰기 */
+html.dark .panel,
+html.dark .account-panel,
+html.dark .friends-panel,
+html.dark .modal-box,
+html.dark .how-box {
+  border-color: var(--border);
+  box-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.7), 0 6px 20px -10px rgba(0, 0, 0, 0.5);
+}
+
+html.dark .item-card,
+html.dark .mission-group,
+html.dark .room-list-panel,
+html.dark .achievement-card,
+html.dark .shop-item {
+  background: linear-gradient(180deg, rgba(28, 36, 57, 0.96) 0%, rgba(22, 29, 48, 0.9) 100%);
+}
+
+html.dark .tabs {
+  background: rgba(28, 36, 57, 0.85);
+  border-color: var(--border);
+}
+
+html.dark .side-rank {
+  background: rgba(22, 29, 48, 0.96);
+  border-color: var(--border);
+  box-shadow: 0 30px 60px -30px rgba(0, 0, 0, 0.8);
+}
+
+html.dark .item-card,
+html.dark .shop-item,
+html.dark .room-list-row {
+  border-color: var(--border);
+}
+
+html.dark .acc-fb-google,
+html.dark .acc-fb-logout {
+  background: var(--card-soft);
+  color: var(--text);
+}
+
+html.dark .friends-count {
+  background: var(--card-soft);
+}
+
+html.dark .panel {
+  background: var(--card);
+}
+
+/* =========================================================
+   신규 컴포넌트 — 리플레이 / 단어 뜻 / 튜토리얼 / 차트 / 관전
+========================================================= */
+.history-word {
+  cursor: pointer;
+  border-bottom: 1px dashed var(--border-strong);
+  font-weight: 700;
+}
+
+.history-word:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.replay-box { max-width: 520px; width: 94vw; }
+
+.replay-head {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-left: 6px;
+}
+
+.replay-list {
+  max-height: 55vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 4px 2px;
+}
+
+.replay-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--card-soft);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 0.88rem;
+  animation: fade-in-up 0.25s ease both;
+}
+
+.replay-row.start { background: transparent; border-style: dashed; color: var(--text-dim); }
+
+.replay-row.win {
+  border-color: var(--gold);
+  background: var(--gold-soft);
+}
+
+.replay-turn {
+  min-width: 26px;
+  text-align: right;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-who {
+  color: var(--text-dim);
+  min-width: 70px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replay-row.win .replay-who { color: var(--gold); font-weight: 700; }
+
+.replay-word {
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.replay-word:hover { color: var(--accent); }
+
+.replay-depth {
+  font-size: 0.72rem;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--red-soft);
+  color: var(--red);
+  font-weight: 700;
+}
+
+.replay-hint {
+  margin-top: 8px;
+  font-size: 0.76rem;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.word-def-box { max-width: 460px; width: 92vw; }
+
+.word-def-body { padding: 6px 2px 4px; line-height: 1.65; }
+
+.word-def-desc {
+  display: inline-block;
+  font-size: 0.78rem;
+  color: var(--purple);
+  background: var(--purple-soft);
+  border-radius: 999px;
+  padding: 3px 10px;
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+.word-def-text { font-size: 0.95rem; color: var(--text); }
+
+.word-def-src { margin-top: 10px; font-size: 0.72rem; color: var(--text-faint); }
+
+.word-def-loading { color: var(--text-dim); padding: 10px 0; }
+
+.word-def-none { color: var(--text-dim); padding: 6px 0; text-align: center; }
+
+.word-def-hint { font-size: 0.8rem; color: var(--text-faint); }
+
+.tutorial-box { max-width: 480px; width: 94vw; }
+
+.tutor-body {
+  padding: 12px 4px;
+  min-height: 130px;
+  line-height: 1.75;
+  font-size: 0.95rem;
+}
+
+.tutor-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.tutor-index { font-size: 0.8rem; color: var(--text-faint); font-weight: 700; }
+
+.tutor-actions { display: flex; gap: 8px; }
+
+.rating-chart-box { padding: 6px 0; }
+
+.rating-chart {
+  width: 100%;
+  height: 130px;
+  display: block;
+}
+
+.chart-max, .chart-min {
+  font-size: 9px;
+  fill: var(--text-faint);
+}
+
+.chart-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.chart-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.chart-leg { display: inline-flex; align-items: center; gap: 5px; }
+
+.chart-leg i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+.chart-leg b { color: var(--text); }
+
+.chart-range { margin-left: auto; color: var(--text-faint); font-size: 0.74rem; }
+
+.room-list-row .rl-watch {
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+  font-size: 0.76rem;
+  font-weight: 700;
+  background: var(--card-soft);
+  transition: all 0.15s;
+}
+
+.room-list-row .rl-watch:hover {
+  border-color: var(--purple);
+  color: var(--purple);
+}
+
+.friend-watch {
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  border-radius: 8px;
+  box-shadow: none;
+  background: var(--card);
+  border: 1px solid var(--purple-soft);
+  color: var(--purple);
+  font-weight: 700;
+}
+
+.friend-watch:hover { border-color: var(--purple); }

@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=17">
+  <link rel="stylesheet" href="style.css?v=18">
+  <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
   <main class="wrap">
@@ -34,6 +35,7 @@
       <span class="title-chip hidden" id="titleChip"></span>
       <button id="missionBtn" class="mission-mini hidden" title="일일/주간/월간 미션 보기 (시즌 탭)">📋 미션 <b id="missionMiniCount">0/0</b></button>
       <button id="soundToggle" class="sound-chip" title="소리/진동 켜기·끄기">🔊</button>
+      <button id="themeToggle" class="sound-chip" title="다크 모드 전환">🌙</button>
     </div>
 
     <!-- 싱글플레이 -->
@@ -249,6 +251,10 @@
         <div id="rankedPlayers" class="players"></div>
         <div id="rankedHistory" class="history"></div>
 
+        <div id="spectatorNoticeRanked" class="hidden" style="text-align:center;padding:10px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);border-radius:8px;margin:8px 0;color:#fca5a5;font-weight:600;">
+          관전 모드 — 이 방의 게임을 구경 중입니다
+        </div>
+
         <div class="entry">
           <input id="rankedInput" placeholder="내 차례에 단어 입력" autocomplete="off">
           <button id="rankedSend">입력</button>
@@ -318,6 +324,15 @@
           <div id="itemsPotionStatus" class="items-potion-status"></div>
           <div class="items-potion-desc">물약은 구매 즉시 다음 랭크 <b>10판</b>에 자동 적용됩니다 (레이팅·돈 보상 2배, 멀티 미적용).</div>
         </div>
+        <div class="item-card">
+          <div class="item-card-head">🛡️ 랭크 보호 티켓</div>
+          <div id="itemsShieldStatus" class="items-potion-status"></div>
+          <div class="items-potion-desc">랭크 경기에서 패배하면 1장이 자동 사용되어 <b>레이팅 감소를 막아줍니다</b> (전적은 기록). 상점에서 구매하세요.</div>
+        </div>
+      </div>
+      <div class="item-card item-card-wide">
+        <div class="item-card-head">📈 레이팅 추이 (최근 30일)</div>
+        <div id="ratingChartBox" class="rating-chart-box"></div>
       </div>
       <div class="item-card item-card-wide">
         <div class="item-card-head">📊 최근 10판 전적</div>
@@ -491,7 +506,54 @@
             <h4>점수와 칭호</h4>
             <p>대결 결과에 따라 레이팅 점수가 변하고, 순위에 따라 <b>칭호</b>가 부여됩니다. 상점 탭에서 칭호 장착·해제와 물약(레이팅 2배) 구매를 관리할 수 있습니다.</p>
           </section>
+          <section>
+            <h4>한눈에 보기</h4>
+            <p>게임이 끝나면 <b>이번 판 흐름</b>이 자동으로 표시되고, 기록된 단어를 <b>클릭하면 뜻</b>을 볼 수 있어요. 다크 모드는 상단 🌙 버튼으로 전환합니다.</p>
+            <button id="tutorialReplayBtn" class="wide secondary" type="button">🎓 튜토리얼 다시 보기</button>
+          </section>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 게임 종료 리플레이 -->
+  <div id="replayModal" class="modal hidden">
+    <div class="modal-box replay-box">
+      <div class="admin-head">
+        <h3>📈 이번 판 흐름 <span id="replayHead" class="replay-head"></span></h3>
+        <button class="modal-close" id="replayClose">✕</button>
+      </div>
+      <div id="replayList" class="replay-list"></div>
+      <div class="replay-hint">단어를 클릭하면 뜻을 볼 수 있어요.</div>
+    </div>
+  </div>
+
+  <!-- 단어 뜻 -->
+  <div id="wordDefModal" class="modal hidden">
+    <div class="modal-box word-def-box">
+      <div class="admin-head">
+        <h3>📖 <span id="wordDefTitle"></span></h3>
+        <button class="modal-close" id="wordDefClose">✕</button>
+      </div>
+      <div id="wordDefBody" class="word-def-body"></div>
+    </div>
+  </div>
+
+  <!-- 튜토리얼 -->
+  <div id="tutorialModal" class="modal hidden">
+    <div class="modal-box tutorial-box">
+      <div class="admin-head">
+        <h3 id="tutorTitle">튜토리얼</h3>
+        <button class="modal-close" id="tutorClose">✕</button>
+      </div>
+      <div id="tutorBody" class="tutor-body"></div>
+      <div class="tutor-foot">
+        <span id="tutorIndex" class="tutor-index">1 / 3</span>
+        <span class="tutor-actions">
+          <button id="tutorSkip" class="secondary">건너뛰기</button>
+          <button id="tutorPrev" class="secondary">이전</button>
+          <button id="tutorNext">다음</button>
+        </span>
       </div>
     </div>
   </div>
@@ -500,7 +562,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="script.js?v=18"></script>
+  <script src="script.js?v=19"></script>
   <script src="firebase-auth.js?v=1"></script>
 </body>
 </html>

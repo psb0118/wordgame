@@ -399,6 +399,9 @@ function mergePlayerRecords(a, b) {
   merged.recentGames = rb2.length >= ra2.length ? rb2 : ra2;
   merged.daily = b.daily || a.daily || {};
   merged.season = b.season || a.season || null;
+  merged.shieldTickets = Math.max(Number(a.shieldTickets) || 0, Number(b.shieldTickets) || 0);
+  merged.ratingHistory = (Array.isArray(b.ratingHistory) && b.ratingHistory.length >= (Array.isArray(a.ratingHistory) ? a.ratingHistory.length : 0)) ? b.ratingHistory : (a.ratingHistory || []);
+  merged.lastSeen = b.lastSeen || a.lastSeen || "";
   return migratePlayerData(merged);
 }
 
@@ -564,7 +567,10 @@ async function initDatabase() {
           season TEXT DEFAULT '{}',
           firebase_uid TEXT DEFAULT NULL,
           firebase_email TEXT DEFAULT '',
-          firebase_name TEXT DEFAULT ''
+          firebase_name TEXT DEFAULT '',
+          shield_tickets INTEGER DEFAULT 0,
+          rating_history TEXT DEFAULT '[]',
+          last_seen TEXT DEFAULT ''
         )
       `);
       await dbPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_players_firebase_uid ON players(firebase_uid)`);
@@ -594,7 +600,10 @@ async function initDatabase() {
           ADD COLUMN IF NOT EXISTS season TEXT DEFAULT '{}',
           ADD COLUMN IF NOT EXISTS firebase_uid TEXT DEFAULT NULL,
           ADD COLUMN IF NOT EXISTS firebase_email TEXT DEFAULT '',
-          ADD COLUMN IF NOT EXISTS firebase_name TEXT DEFAULT ''
+          ADD COLUMN IF NOT EXISTS firebase_name TEXT DEFAULT '',
+          ADD COLUMN IF NOT EXISTS shield_tickets INTEGER DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS rating_history TEXT DEFAULT '[]',
+          ADD COLUMN IF NOT EXISTS last_seen TEXT DEFAULT ''
       `);
       await dbPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_players_firebase_uid ON players(firebase_uid)`);
       /* 보조 저장소(친구/시즌/관리자 설정/커스텀 사전/버그 제보) — 재배포에도 유지 */
@@ -731,6 +740,10 @@ function migratePlayerData(p) {
   p.attendanceStreak = Number.isFinite(p.attendanceStreak) ? Math.max(0, Math.floor(p.attendanceStreak)) : 0;
   if (!Array.isArray(p.recentGames)) p.recentGames = [];
   else p.recentGames = p.recentGames.slice(-10).filter(g => g && typeof g === "object");
+  p.shieldTickets = Number.isFinite(p.shieldTickets) ? Math.max(0, Math.floor(p.shieldTickets)) : 0;
+  if (!Array.isArray(p.ratingHistory)) p.ratingHistory = [];
+  else p.ratingHistory = p.ratingHistory.slice(-60).filter(e => e && typeof e === "object" && Number.isFinite(Number(e.r)));
+  p.lastSeen = typeof p.lastSeen === "string" ? p.lastSeen : "";
   p.daily = initDailyData(p.daily, getKstDate());
   p.weekly = initWeeklyData(p.weekly, getKstWeek());
   p.monthly = initMonthlyData(p.monthly, getKstMonth());
@@ -827,7 +840,10 @@ async function getPlayerData(playerId) {
           season: (() => { try { const v = JSON.parse(row.season || "null"); return v && typeof v === "object" ? v : null; } catch { return null; } })(),
           firebaseUid: row.firebase_uid || "",
           firebaseEmail: row.firebase_email || "",
-          firebaseName: row.firebase_name || ""
+          firebaseName: row.firebase_name || "",
+          shieldTickets: row.shield_tickets || 0,
+          ratingHistory: (() => { try { return JSON.parse(row.rating_history || "[]"); } catch { return []; } })(),
+          lastSeen: row.last_seen || ""
         };
         const migrated = migratePlayerData(data);
         playerCache.set(key, migrated);
@@ -874,6 +890,9 @@ async function savePlayerData(playerId, data) {
   safe.lastCheckDate = typeof safe.lastCheckDate === "string" ? safe.lastCheckDate : "";
   safe.attendanceStreak = Math.max(0, Math.floor(num(safe.attendanceStreak, 0)));
   safe.recentGames = Array.isArray(safe.recentGames) ? safe.recentGames.slice(-10).filter(g => g && typeof g === "object") : [];
+  safe.shieldTickets = Math.max(0, Math.floor(num(safe.shieldTickets, 0)));
+  safe.ratingHistory = Array.isArray(safe.ratingHistory) ? safe.ratingHistory.slice(-60).filter(e => e && typeof e === "object") : [];
+  safe.lastSeen = typeof safe.lastSeen === "string" ? safe.lastSeen : "";
   safe.daily = initDailyData(safe.daily, getKstDate());
   safe.weekly = initWeeklyData(safe.weekly, getKstWeek());
   safe.monthly = initMonthlyData(safe.monthly, getKstMonth());
@@ -887,8 +906,8 @@ async function savePlayerData(playerId, data) {
            money, money_multiplier, rating_boost_games,
            titles, current_title, last_check_date, attendance_streak,
            recent_games, daily, weekly, monthly, season,
-           firebase_uid, firebase_email, firebase_name, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,NOW())
+           firebase_uid, firebase_email, firebase_name, shield_tickets, rating_history, last_seen, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,NOW())
         ON CONFLICT (id) DO UPDATE SET
           nickname=$2, rating=$3, wins=$4, losses=$5,
           streak=$6, best_streak=$7,
@@ -898,7 +917,8 @@ async function savePlayerData(playerId, data) {
           money=$16, money_multiplier=$17, rating_boost_games=$18,
           titles=$19, current_title=$20, last_check_date=$21, attendance_streak=$22,
           recent_games=$23, daily=$24, weekly=$25, monthly=$26, season=$27,
-          firebase_uid=$28, firebase_email=$29, firebase_name=$30, updated_at=NOW()
+          firebase_uid=$28, firebase_email=$29, firebase_name=$30,
+          shield_tickets=$31, rating_history=$32, last_seen=$33, updated_at=NOW()
       `, [
         key, safe.nickname || "플레이어",
         safe.multi.rating, safe.multi.wins, safe.multi.losses,
@@ -912,7 +932,8 @@ async function savePlayerData(playerId, data) {
         JSON.stringify(safe.recentGames), JSON.stringify(safe.daily),
         JSON.stringify(safe.weekly), JSON.stringify(safe.monthly),
         JSON.stringify(safe.season || {}),
-        safe.firebaseUid || null, safe.firebaseEmail || "", safe.firebaseName || ""
+        safe.firebaseUid || null, safe.firebaseEmail || "", safe.firebaseName || "",
+        safe.shieldTickets, JSON.stringify(safe.ratingHistory), safe.lastSeen
       ]);
     } catch (err) {
       console.error("DB 쓰기 오류:", err.message);
@@ -965,6 +986,13 @@ async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mo
   const { newWinnerRating, newLoserRating } = calculateElo(winner[key].rating, loser[key].rating);
   let wGain = newWinnerRating - winner[key].rating;
   let lChange = newLoserRating - loser[key].rating;
+  /* 랭크 보호 티켓 — 보유 시 자동 소모되어 패배자의 레이팅 감소를 막는다(전적/연승은 그대로 기록) */
+  let loserProtected = false;
+  if (mode === "ranked" && lChange < 0 && Number(loser.shieldTickets || 0) > 0 && opts.noShield !== true) {
+    loser.shieldTickets = Math.max(0, Number(loser.shieldTickets) - 1);
+    lChange = 0;
+    loserProtected = true;
+  }
   const wBoost = opts.winnerBoost || 1;
   const lBoost = opts.loserBoost || 1;
   winner[key].rating = Math.round(winner[key].rating + wGain * wBoost);
@@ -980,13 +1008,47 @@ async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mo
   if (!Number.isFinite(loser[key].rating)) loser[key].rating = 1000;
   if (opts.decBoostWinner) winner.ratingBoostGames = Math.max(0, (winner.ratingBoostGames || 0) - 1);
   if (opts.decBoostLoser) loser.ratingBoostGames = Math.max(0, (loser.ratingBoostGames || 0) - 1);
+  /* 레이팅 추이 스냅샷(랭크+멀티 동시 기록, 날짜당 1점) — 아이템 탭 그래프용 */
+  pushRatingHistory(winner);
+  pushRatingHistory(loser);
 
   await savePlayerData(winnerId, winner);
   await savePlayerData(loserId, loser);
   return {
     winner: { ...winner, rank: calculateRank(winner[key].rating) },
-    loser: { ...loser, rank: calculateRank(loser[key].rating) }
+    loser: { ...loser, rank: calculateRank(loser[key].rating) },
+    loserProtected
   };
+}
+
+/* 오늘 날짜의 레이팅 스냅샷을 기록 — 같은 날은 마지막 값으로 갱신해 하루 1점 */
+function pushRatingHistory(pd) {
+  try {
+    const d = getKstDate();
+    const hist = Array.isArray(pd.ratingHistory) ? pd.ratingHistory : [];
+    const last = hist[hist.length - 1];
+    if (last && last.d === d) { last.r = Math.round(pd.ranked?.rating || 1000); last.m = Math.round(pd.multi?.rating || 1000); }
+    else hist.push({ d, r: Math.round(pd.ranked?.rating || 1000), m: Math.round(pd.multi?.rating || 1000) });
+    pd.ratingHistory = hist.slice(-60);
+  } catch { /* 기록 실패는 결과에 영향주지 않는다 */ }
+}
+
+/* 복귀 환영 보상 — 3일 이상 접속하지 않았으면 (최대 14일 × 2000원)을 돌려준다.
+   lastSeen을 오늘로 갱신하므로 같은 세션에서 중복 지급되지 않는다. 반환: 보상액(없으면 null) */
+function applyWelcomeReward(pd, socket) {
+  try {
+    const today = getKstDate();
+    const last = String(pd.lastSeen || "");
+    if (last === today) return null;
+    pd.lastSeen = today;
+    if (!last) return null; /* 최초 기록일 때는 보상 없이 날짜만 남긴다 */
+    const gap = Math.round((Date.parse(today) - Date.parse(last)) / 86400000);
+    if (!Number.isFinite(gap) || gap < 3 || gap <= 0) return null;
+    const amount = Math.min(gap, 14) * 2000;
+    pd.money = (Number(pd.money) || 0) + amount;
+    if (socket) socket.emit("welcome:reward", { amount, gapDays: gap, message: `${gap}일 만에 다시 오셨네요! ${amount.toLocaleString("ko-KR")}원을 돌려받았습니다.` });
+    return amount;
+  } catch (err) { console.error("복귀 보상 오류:", err.message); return null; }
 }
 
 /* =========================================================
@@ -1023,6 +1085,7 @@ const SHOP_TITLES = [
   { id: "t_legend", name: "전설의 챔피언", price: 30000000 }
 ];
 const SHOP_POTION_PRICE = 1000000;
+const SHOP_SHIELD_PRICE = 2000000;
 const SHOP_MULTIPLIER_PRICES = [
   { multiplier: 2, price: 5000000 },
   { multiplier: 3, price: 15000000 },
@@ -1882,7 +1945,10 @@ async function finishGame(room, winnerIndex, loserIndex) {
             if (s) s.emit("player:ranking", { ...data, rank: data.rank });
           }
         }
-
+        if (result.loserProtected && l && !l.isBot && l.socketId) {
+          const ls = io.sockets.sockets.get(l.socketId);
+          if (ls) ls.emit("shield:used", { message: "랭크 보호 티켓이 사용되어 레이팅이 감소하지 않았습니다!" });
+        }
         if (room.mode === "ranked") {
           /* 일일 미션 — 랭크 승리 누적, 연승 2회 달성 */
           await bumpDaily(winnerAccountId, "rankedWins");
@@ -2959,8 +3025,46 @@ io.on("connection", (socket) => {
       if (realConnected.length === 0) { stopTurnTimer(room); ROOMS.delete(room.id); }
       socket.data.roomId = null;
       socket.data.playerIndex = null;
+      socket.data.spectating = false;
       socket.emit("room:left", { ok: true });
     } catch (error) { console.error("room:leave 오류:", error); }
+  });
+
+  /* 관전 — 방 채널에만 참가해 상태/단어/종료 이벤트를 받는다(입력 불가, 플레이어로는 안 들어감) */
+  function spectateRoom(socket, room) {
+    if (!room) { socket.emit("room:error", { ok: false, reason: "방이 존재하지 않습니다." }); return; }
+    if (room.mode === "ai") { socket.emit("room:error", { ok: false, reason: "싱글(AI) 게임은 관전할 수 없습니다." }); return; }
+    if (room.players.some(p => p.socketId === socket.id)) {   /* 이미 플레이어면 그대로 유지 */
+      socket.emit("room:spectating", { ok: true, roomId: room.id, alreadyPlaying: true, state: getPublicRoomState(room) });
+      return;
+    }
+    leaveRoomForSocket(socket, "leave");   /* 이전 방(플레이어/관전)에서 분리 */
+    socket.join(room.id);
+    socket.data.roomId = room.id;
+    socket.data.playerIndex = null;
+    socket.data.spectating = true;
+    socket.emit("room:spectating", { ok: true, roomId: room.id, state: getPublicRoomState(room) });
+  }
+
+  socket.on("room:spectate", (data) => {
+    try {
+      spectateRoom(socket, ROOMS.get(String(data?.roomId || "")));
+    } catch (error) { console.error("room:spectate 오류:", error); }
+  });
+
+  /* 친구 관전 — 온라인 친구의 현재 방을 찾아 관전 채널에 합류 */
+  socket.on("friends:spectate", (data) => {
+    try {
+      const key = normKey(String(data?.nickname || ""));
+      const friendSocketId = key ? onlineNicks.get(key) : null;
+      const fsocket = friendSocketId ? io.sockets.sockets.get(friendSocketId) : null;
+      const roomId = fsocket && fsocket.data.roomId;
+      if (!roomId || !ROOMS.has(roomId)) {
+        socket.emit("room:error", { ok: false, reason: "친구가 지금 방에 있지 않습니다." });
+        return;
+      }
+      spectateRoom(socket, ROOMS.get(roomId));
+    } catch (error) { console.error("friends:spectate 오류:", error); }
   });
 
   /* 커스텀 사전 — 사용자가 새 단어를 신청한다. 신청 검증 후 pending에 추가하고,
@@ -3328,6 +3432,9 @@ io.on("connection", (socket) => {
         titleCatalog: SHOP_TITLES,
         potionPrice: SHOP_POTION_PRICE,
         multiplierPrices: SHOP_MULTIPLIER_PRICES,
+        shieldTickets: pd.shieldTickets || 0,
+        shieldPrice: SHOP_SHIELD_PRICE,
+        ratingHistory: pd.ratingHistory || [],
         isAdmin: isAdminPd(pd)
       });
     } catch (err) { console.error("상점 조회 오류:", err); }
@@ -3452,9 +3559,23 @@ io.on("connection", (socket) => {
         ratingBoostGames: pd.ratingBoostGames, titles: pd.titles,
         currentTitle: pd.currentTitle, titleCatalog: SHOP_TITLES,
         potionPrice: SHOP_POTION_PRICE, multiplierPrices: SHOP_MULTIPLIER_PRICES,
+        shieldTickets: pd.shieldTickets || 0, shieldPrice: SHOP_SHIELD_PRICE,
+        ratingHistory: pd.ratingHistory || [],
         isAdmin: isAdminPd(pd)
       });
     } catch (err) { console.error("미션 보상 수령 오류:", err); }
+  });
+
+  socket.on("shop:buyShield", async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      if (pd.money < SHOP_SHIELD_PRICE) { socket.emit("shop:result", { ok: false, reason: "돈이 부족합니다." }); return; }
+      pd.money -= SHOP_SHIELD_PRICE;
+      pd.shieldTickets = (pd.shieldTickets || 0) + 1;
+      await savePlayerData(socket.id, pd);
+      socket.emit("shop:result", { ok: true, message: "랭크 보호 티켓 1장을 구매했습니다. (랭크 패배 1회 방어)", money: pd.money, shieldTickets: pd.shieldTickets });
+      socket.emit("player:ranking", await getRankingPayload(socket.id));
+    } catch (err) { console.error("보호 티켓 구매 오류:", err); }
   });
 
   socket.on("shop:buyPotion", async () => {
@@ -3988,6 +4109,7 @@ io.on("connection", (socket) => {
         playerData.firebaseEmail = email;
         if (!playerData.email) playerData.email = email;
       }
+      applyWelcomeReward(playerData, socket);
       await savePlayerData(claim.key, playerData);
       if (prevKey && prevKey !== claim.key) {
         try {
@@ -4066,6 +4188,12 @@ io.on("connection", (socket) => {
           });
           socket.emit("player:nameUpdated", { ok: true, nickname: restored });
           socket.emit("player:ranking", await getRankingPayload(socket.id));
+          try {
+            const rpd = await getPlayerData(restored);
+            const prevSeen = String(rpd.lastSeen || "");
+            const reward = applyWelcomeReward(rpd, socket);
+            if (reward !== null || prevSeen !== rpd.lastSeen) await savePlayerData(restored, rpd);
+          } catch (e) { console.error("복귀 보상 저장 오류:", e.message); }
           console.log(`[FIREBASE] '${restored}' ← ${email || uid} (복원)`);
           return;
         }
@@ -4091,6 +4219,7 @@ io.on("connection", (socket) => {
       pd.firebaseUid = uid;
       pd.firebaseEmail = email;
       pd.firebaseName = decoded.name || "";
+      applyWelcomeReward(pd, socket);
       await savePlayerData(socket.id, pd);
       registerOnline(socket.id, pd.nickname);
       socket.emit("player:firebaseAuthResult", {

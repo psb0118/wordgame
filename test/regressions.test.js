@@ -75,6 +75,7 @@ function context(extra = {}) {
     "getPlayerBySocket", "getPlayerByIndex", "getAlivePlayers", "findNextAlivePlayer",
     "stopTurnTimer", "startTurnTimer", "removePlayer",
     "bumpMission", "bumpDaily", "playWord", "runAI", "startNewGame",
+    "pushRatingHistory", "applyWelcomeReward",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions };
 }
@@ -574,4 +575,59 @@ test("approved custom word becomes playable immediately", async () => {
   assert.deepEqual(c.customWords.approved, [word]);
   assert.equal(c.hasWord(word, c.WORD_SET), true,
     "승인 직후 게임 사전(WORD_SET)에 반영되어 모든 유저가 쓸 수 있어야 합니다");
+});
+
+/* =========================================================
+   랭크 보호 티켓 / 복귀 환영 보상 / 레이팅 추이 기록
+========================================================= */
+test("ranked loss consumes shield ticket and keeps loser rating", async () => {
+  const { c } = context();
+  seed(c, "winner", { ranked: { rating: 1800, wins: 5, losses: 0 } });
+  seed(c, "loser", { shieldTickets: 2 });
+  const before = c.playerCache.get("loser").ranked.rating;
+  const res = await c.updateRating("winner", "loser", "winner", "loser", "ranked");
+  const after = c.playerCache.get("loser");
+  assert.equal(after.shieldTickets, 1, "티켓 1장이 소모되어야 합니다");
+  assert.equal(after.ranked.rating, before, "보호 중이므로 레이팅이 그대로여야 합니다");
+  assert.equal(res.loserProtected, true, "보호 적용 사실이 반환되어야 합니다");
+  assert.equal(after.ranked.losses, 11, "패배 전적은 그대로 기록됩니다");
+  assert.equal(after.ranked.streak, 0, "연승은 초기화됩니다");
+});
+
+test("shield ticket is not consumed in multi mode", async () => {
+  const { c } = context();
+  seed(c, "winner");
+  seed(c, "loser", { shieldTickets: 3 });
+  await c.updateRating("winner", "loser", "winner", "loser", "multi");
+  const after = c.playerCache.get("loser");
+  assert.equal(after.shieldTickets, 3, "멀티 모드에서는 소모되지 않습니다");
+});
+
+test("welcome reward pays after a 3-day gap and never twice a day", () => {
+  const { c } = context();   /* getKstDate = "2026-10-04" 고정 */
+  const pd = c.migratePlayerData({ nickname: "a", money: 0, lastSeen: "2026-10-01" });
+  const emissions = [];
+  const socket = { emit: (...args) => emissions.push(args) };
+  const amount = c.applyWelcomeReward(pd, socket);
+  assert.equal(amount, 3 * 2000, "3일 공백 × 2000원");
+  assert.equal(pd.money, 6000);
+  assert.equal(pd.lastSeen, "2026-10-04");
+  assert.ok(emissions.some(([e]) => e === "welcome:reward"), "보상 이벤트가 전송되어야 합니다");
+  const again = c.applyWelcomeReward(pd, socket);
+  assert.equal(again, null, "같은 날 재접속 시 중복 지급되지 않습니다");
+  const fresh = c.migratePlayerData({ nickname: "b", money: 0 });
+  assert.equal(c.applyWelcomeReward(fresh, socket), null, "최초 접속은 날짜만 기록");
+  assert.equal(fresh.lastSeen, "2026-10-04");
+});
+
+test("rating history keeps one snapshot per day for ranked and multi", async () => {
+  const { c } = context();
+  seed(c, "winner");
+  seed(c, "loser");
+  await c.updateRating("winner", "loser", "winner", "loser", "ranked");
+  await c.updateRating("winner", "loser", "winner", "loser", "multi");
+  const w = c.playerCache.get("winner");
+  assert.equal(w.ratingHistory.length, 1, "같은 날은 하루 1점으로 갱신됩니다");
+  assert.equal(w.ratingHistory[0].d, "2026-10-04");
+  assert.ok(Number.isFinite(w.ratingHistory[0].r) && Number.isFinite(w.ratingHistory[0].m));
 });
