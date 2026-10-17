@@ -614,6 +614,7 @@ function initSocket() {
     currentTitle = data.currentTitle || "";
     renderMoneyBar();
     renderAccountScoresStatic();
+    renderItems();
     if (data.attendance) {
       attendanceCheckedToday = !!data.attendance.checkedToday;
       attendanceStreak = data.attendance.streak || 0;
@@ -1217,7 +1218,7 @@ function initSocket() {
       applyFx($(".last-char-box"), "fx-flash-ok");
       const pl = gameState?.players?.find(p => p.playerIndex === data.player);
       const plName = pl
-        ? `${pl.title ? `[${escapeHtml(String(pl.title))}]` : ""}${pl.isAdmin ? "[관리자]" : ""}${data.nickname}`
+        ? `${pl.title ? `[${escapeHtml(String(pl.title))}]` : ""}${(pl.isAdmin && pl.title !== "관리자") ? "[관리자]" : ""}${data.nickname}`
         : data.nickname;
       showMessage(`${data.nickname ? plName : "플레이어"}: ${data.word}${data.depth != null ? " [깊이 " + data.depth + "]" : ""}`, "success");
       const isMyWord = data.player === playerIndex;
@@ -1512,7 +1513,7 @@ function renderPlayers(state) {
           ratingTag = ` <span class="rated-chip">${formatRank(rr)} · ${r}점</span>`;
         }
       }
-      const titleHtml = `${p.title ? `<span class="player-title">[${escapeHtml(String(p.title))}]</span> ` : ""}${p.isAdmin ? `<span class="player-title">[관리자]</span> ` : ""}`;
+      const titleHtml = `${p.title ? `<span class="player-title">[${escapeHtml(String(p.title))}]</span> ` : ""}${(p.isAdmin && p.title !== "관리자") ? `<span class="player-title">[관리자]</span> ` : ""}`;
       row.innerHTML = `${titleHtml}${escapeHtml(String(p.nickname || "플레이어"))} — ${p.waiting ? "-" : hearts}${mistakesText} — ${status}${ratingTag}`;
 
       if (canKick && showKick && !p.isBot && p.playerIndex !== playerIndex) {
@@ -1581,7 +1582,7 @@ function renderHistory(state) {
   container.innerHTML = "";
   const titleHtmlFor = (idx) => {
     const pl = state?.players?.find(p => p.playerIndex === idx);
-    return pl ? `${pl.title ? `<span class="player-title">[${escapeHtml(String(pl.title))}]</span> ` : ""}${pl.isAdmin ? `<span class="player-title">[관리자]</span> ` : ""}` : "";
+    return pl ? `${pl.title ? `<span class="player-title">[${escapeHtml(String(pl.title))}]</span> ` : ""}${(pl.isAdmin && pl.title !== "관리자") ? `<span class="player-title">[관리자]</span> ` : ""}` : "";
   };
   for (const item of history) {
     const row = document.createElement("div");
@@ -2186,29 +2187,14 @@ function renderShop() {
     </div>`;
   };
 
-  let html = `<div class="shop-sub">칭호 장착</div>`;
-  html += ownedTitles.length === 0
-    ? `<div class="shop-item-desc">보유한 칭호가 없습니다. 아래에서 구매하면 장착할 수 있습니다.</div>`
-    : "";
-  if (ownedTitles.length > 0) {
-    html += ownedTitles.map(t => {
-      const equipped = currentTitle === t.name;
-      return equipped
-        ? mkRow(t.name, "장착 중", "", "장착해제", "unsetTitle", Infinity)
-        : mkRow(t.name, "보유 중", "equipTitle:" + t.id, "장착", "equip", t.price);
-    }).join("");
-  }
-  html += `<div class="shop-sub">칭호 구매</div>`;
+  let html = `<div class="shop-sub">칭호 구매</div>`;
   html += shopInfo.titleCatalog.map(t => {
     const owned = ownedTitles.some(o => o.id === t.id);
     if (owned) return mkRow(t.name, `보유 중 · ${t.price.toLocaleString()}원`, "", "보유 중", "owned", t.price);
     return mkRow(t.name, `${t.price.toLocaleString()}원`, "buyTitle:" + t.id, "구매", "", t.price);
   }).join("");
   html += `<div class="shop-sub">물약</div>`;
-  const potionDesc = ratingBoostGames > 0
-    ? `사용 중 — 다음 ${ratingBoostGames}판 동안 레이팅 + 보상 2배`
-    : "다음 10판 동안 레이팅 + 보상 2배";
-  html += mkRow("레이팅 2배 물약", potionDesc, "buyPotion", "구매 · 1,000,000원", "", shopInfo.potionPrice);
+  html += mkRow("레이팅 2배 물약", "구매 시 다음 랭크 10판에 자동 적용", "buyPotion", "구매 · 1,000,000원", "", shopInfo.potionPrice);
 
   html += `<div class="shop-sub">영구 배율</div>`;
   for (const m of shopInfo.multiplierPrices) {
@@ -2220,17 +2206,56 @@ function renderShop() {
   }
   body.innerHTML = html;
 
-  body.querySelectorAll("[id^='buyTitle:'],[id^='buyPotion'],[id^='buyMultiplier'],[id^='equipTitle:'],.unsetTitle").forEach(btn => {
+  body.querySelectorAll("[id^='buyTitle:'],[id^='buyPotion'],[id^='buyMultiplier']").forEach(btn => {
     btn.addEventListener("click", () => {
-      const id = btn.id || "";
-      const [kind, val] = id.split(":");
+      const [kind, val] = btn.id.split(":");
       if (kind === "buyTitle") socket.emit("shop:buyTitle", { titleId: val });
       else if (kind === "buyPotion") socket.emit("shop:buyPotion");
       else if (kind === "buyMultiplier") socket.emit("shop:buyMultiplier", { multiplier: Number(val) });
-      else if (kind === "equipTitle") socket.emit("shop:setTitle", { titleId: val });
-      else if (btn.classList.contains("unsetTitle")) socket.emit("shop:unsetTitle");
     });
   });
+  renderItems();
+}
+
+/* ---------------------------------------------------------
+   칭호·아이템 패널 — 칭호 장착/해제, 물약 현황, 최근 전적
+--------------------------------------------------------- */
+function renderItems() {
+  const titleEl = $("#itemsCurrentTitle");
+  const listEl = $("#itemsTitleList");
+  if (titleEl) titleEl.textContent = currentTitle || "없음";
+  if (listEl) {
+    const isAdmin = !!(shopInfo && shopInfo.isAdmin);
+    const entries = [];
+    if (isAdmin) entries.push({ id: "t_admin", name: "관리자" });
+    for (const t of ownedTitles) entries.push(t);
+    if (entries.length === 0) {
+      listEl.innerHTML = `<div class="items-empty">보유한 칭호가 없습니다. 상점에서 구매하세요.</div>`;
+    } else {
+      let html = entries.map(t => {
+        const isCur = currentTitle === t.name;
+        return `<button type="button" class="items-title-chip${isCur ? " current" : ""}" data-item-title="${escapeHtml(t.id)}">${isCur ? "장착 중 · " : ""}${escapeHtml(t.name)}</button>`;
+      }).join("");
+      if (currentTitle) html += `<button type="button" class="items-title-chip items-unset" data-item-unset="1">칭호 해제</button>`;
+      listEl.innerHTML = html;
+      listEl.querySelectorAll("[data-item-title]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          if (btn.classList.contains("current")) return;
+          if (socket && socketConnected) socket.emit("shop:setTitle", { titleId: btn.dataset.itemTitle });
+        });
+      });
+      listEl.querySelector("[data-item-unset]")?.addEventListener("click", () => {
+        if (socket && socketConnected) socket.emit("shop:unsetTitle");
+      });
+    }
+  }
+  const potionEl = $("#itemsPotionStatus");
+  if (potionEl) {
+    potionEl.innerHTML = ratingBoostGames > 0
+      ? `<b>사용 중</b> — 다음 <b>${ratingBoostGames}</b>판 적용`
+      : `<span class="items-potion-off">미사용</span>`;
+  }
+  renderRecentGames();
 }
 
 /* ---------------------------------------------------------
@@ -2332,10 +2357,8 @@ function renderMissions() {
 --------------------------------------------------------- */
 function renderRecentGames() {
   const list = $("#recentGamesList");
-  const box = $("#recentGamesBox");
-  if (!list || !box) return;
-  if (!Array.isArray(recentGamesState) || recentGamesState.length === 0) { box.classList.add("hidden"); list.innerHTML = ""; return; }
-  box.classList.remove("hidden");
+  if (!list) return;
+  if (!Array.isArray(recentGamesState) || recentGamesState.length === 0) { list.innerHTML = `<div class="items-empty">아직 기록이 없습니다.</div>`; return; }
   const modeLabel = { ranked: "랭크", online: "온라인", single: "싱글", ai: "싱글" };
   list.innerHTML = recentGamesState.map(g => {
     const res = g.result === "win" ? "<span class='rec-win'>승</span>" : (g.result === "lose" ? "<span class='rec-lose'>패</span>" : "<span class='rec-draw'>무</span>");
@@ -2695,7 +2718,6 @@ function openAccountPanel(force) {
   panel.classList.toggle("hidden", !open);
   if (open) {
     renderAccountInfo($("#nickInput")?.value.trim() || myNickname || "");
-    renderRecentGames();
     setTimeout(() => $("#accNickInput")?.focus(), 60);
   }
 }
@@ -2857,10 +2879,9 @@ function lbMarkup(rows, mode, showToggle = true) {
       const tier = r.tier ? (r.tier.sub ? `${r.tier.tier} ${r.tier.sub}` : r.tier.tier) : "-";
       const cls = r.rank === 1 ? " top1" : r.rank <= 3 ? " top3" : "";
       const me = String(r.nickname || "플레이어").replace(/\s+/g, "").toLowerCase() === String(myNickname || "").replace(/\s+/g, "").toLowerCase() && myNickname ? " lb-me" : "";
-      const name = `${r.isAdmin ? "[관리자]" : ""}${r.nickname || "플레이어"}`;
       return `<div class="lb-row${cls}${me}">
             <span class="lb-rank">${r.rank}</span>
-            <span class="lb-name">${escapeHtml(name)}</span>
+            <span class="lb-name">${escapeHtml(r.nickname || "플레이어")}</span>
             <span class="lb-tier">${escapeHtml(tier)}</span>
             <span class="lb-rating"><strong>${r.ranking}점</strong> · ${r.wins}승 ${r.losses}패 · ${r.streak || 0}연승</span>
           </div>`;
@@ -2888,10 +2909,9 @@ function sideRankMarkup(rows, mode) {
     else if (mode === "streak") val = (r.bestStreak || 0) + "연승";
     else if (mode === "tier") val = formatRank(r.tier);
     const cls = (r.rank === 1 ? " top1" : r.rank <= 3 ? " top3" : "") + (me ? " lb-me" : "");
-    const name = `${r.isAdmin ? "[관리자]" : ""}${r.nickname || "플레이어"}`;
     return `<div class="side-rank-row${cls}">
       <span class="side-rank-num">${r.rank}</span>
-      <span class="side-rank-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+      <span class="side-rank-name" title="${escapeHtml(r.nickname || "플레이어")}">${escapeHtml(r.nickname || "플레이어")}</span>
       <span class="side-rank-val">${escapeHtml(val)}</span>
     </div>`;
   }).join("");
@@ -3045,6 +3065,9 @@ document.addEventListener("DOMContentLoaded", () => {
           socket.emit("attendance:status");
           socket.emit("word:list", { nickname: myNickname || undefined });
         }
+      } else if (currentMode === "items") {
+        if (socket && socketConnected) socket.emit("shop:list");
+        renderItems();
       } else if (currentMode === "season") {
         refreshSeasonBar();
         if (socket && socketConnected) socket.emit("missions:status");

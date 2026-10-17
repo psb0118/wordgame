@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=15">
+  <link rel="stylesheet" href="style.css?v=16">
 </head>
 <body>
   <main class="wrap">
@@ -24,6 +24,7 @@
       <button data-mode="online">온라인 멀티</button>
       <button data-mode="ranked">랭크 매칭</button>
       <button data-mode="season">시즌</button>
+      <button data-mode="items">칭호·아이템</button>
       <button data-mode="shop">상점</button>
     </nav>
 
@@ -275,7 +276,7 @@
 
     <!-- 상점 -->
     <section id="shop" class="panel hidden">
-      <div class="rule-notice">랭크 매칭 승리로 번 <b>돈(코인)</b>으로 칭호·물약·배율을 구매할 수 있습니다. 보유한 칭호는 <b>칭호 장착</b>에서 장착/해제하고, 레이팅 2배 물약은 구매하면 다음 10판에 자동 적용됩니다.</div>
+      <div class="rule-notice">랭크 매칭 승리로 번 <b>돈(코인)</b>으로 칭호·물약·배율을 구매할 수 있습니다. 구매한 칭호는 <b>칭호·아이템</b> 탭에서 장착/해제하세요.</div>
       <div class="attendance-card">
         <div class="attendance-text">
           <div class="attendance-title">📅 출석체크</div>
@@ -300,6 +301,27 @@
       </div>
       <div class="shop-bug">
         <button id="bugBtn" class="wide secondary">🐞 버그 제보</button>
+      </div>
+    </section>
+
+    <!-- 칭호·아이템 -->
+    <section id="items" class="panel hidden">
+      <div class="rule-notice">보유한 칭호를 장착/해제하고, 레이팅 2배 물약의 사용 현황을 확인할 수 있습니다. 칭호는 상점에서 구매합니다.</div>
+      <div class="items-grid">
+        <div class="item-card">
+          <div class="item-card-head">🏷️ 칭호 장착</div>
+          <div class="item-current">현재 장착: <b id="itemsCurrentTitle">없음</b></div>
+          <div id="itemsTitleList" class="items-title-list"></div>
+        </div>
+        <div class="item-card">
+          <div class="item-card-head">🧪 레이팅 2배 물약</div>
+          <div id="itemsPotionStatus" class="items-potion-status"></div>
+          <div class="items-potion-desc">물약은 구매 즉시 다음 랭크 <b>10판</b>에 자동 적용됩니다 (레이팅·돈 보상 2배, 멀티 미적용).</div>
+        </div>
+      </div>
+      <div class="item-card item-card-wide">
+        <div class="item-card-head">📊 최근 10판 전적</div>
+        <div id="recentGamesList" class="acc-recent-list"></div>
       </div>
     </section>
 
@@ -429,10 +451,6 @@
         <div class="acc-row"><span>소지금</span><strong id="accMoney">0</strong></div>
         <div class="acc-row"><span>칭호</span><strong id="accTitle">없음</strong></div>
       </div>
-      <div id="recentGamesBox" class="acc-change hidden">
-        <div class="acc-change-title">최근 10판 전적</div>
-        <div id="recentGamesList" class="acc-recent-list"></div>
-      </div>
     </div>
   </div>
 
@@ -482,7 +500,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="script.js?v=17"></script>
+  <script src="script.js?v=18"></script>
   <script src="firebase-auth.js?v=1"></script>
 </body>
 </html>

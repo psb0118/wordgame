@@ -1455,7 +1455,7 @@ button:disabled {
 .friends-wrap {
   position: fixed;
   top: 12px;
-  right: 12px;
+  right: 16px;
   z-index: 90;
 }
 
@@ -1525,10 +1525,10 @@ button:disabled {
   position: absolute;
   top: 46px;
   right: 0;
-  width: 260px;
+  width: 264px;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 16px;
   box-shadow: var(--shadow);
   padding: 12px;
 }
@@ -2850,3 +2850,409 @@ button:active:not(:disabled) {
 }
 .acc-fb-msg[data-type="ok"] { color: var(--green); }
 .acc-fb-msg[data-type="error"] { color: var(--red); }
+
+/* =========================================================
+   UI 뷰티피케이션 레이어 — 상단 덮어쓰기로 현대화
+   (기존 레이아웃 유지, 시각적 품질만 강화)
+   ========================================================= */
+
+/* --- 화면 배경: 더 깊고 부드러운 그라데이션 + 노이즈 감성 --- */
+body {
+  background:
+    radial-gradient(1100px 520px at 8% -10%, rgba(99, 102, 241, 0.28) 0%, transparent 55%),
+    radial-gradient(950px 480px at 96% 2%, rgba(236, 72, 153, 0.22) 0%, transparent 52%),
+    radial-gradient(900px 760px at 50% 112%, rgba(34, 211, 238, 0.22) 0%, transparent 60%),
+    linear-gradient(180deg, #eef1ff 0%, #f7f3ec 55%, #eef6ff 100%);
+  background-attachment: fixed;
+}
+
+/* --- 카드/패널: 유리 질감 + 미세 그라데이션 테두리 --- */
+.panel,
+.account-panel,
+.friends-panel,
+.side-rank,
+.modal-box,
+.room-list-panel,
+.achievement-card,
+.shop-item,
+.item-card,
+.mission-group {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(255, 255, 255, 0.88) 100%);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.panel,
+.account-panel,
+.friends-panel,
+.modal-box {
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 22px;
+  box-shadow:
+    0 24px 60px -24px rgba(79, 70, 229, 0.28),
+    0 6px 20px -10px rgba(15, 23, 42, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+/* --- 탭: 세그먼트 필 스타일 + 액티브 그라데이션 --- */
+.tabs {
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 999px;
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(8px);
+}
+
+.tabs button {
+  position: relative;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-weight: 700;
+  padding: 10px 16px;
+  border-radius: 999px;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.tabs button:hover {
+  color: var(--accent);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.tabs button.active {
+  color: #fff;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 60%, #a855f7 100%);
+  box-shadow: 0 8px 20px -8px rgba(99, 102, 241, 0.7);
+  transform: translateY(-1px);
+}
+
+/* --- 헤더 타이틀: 더 강한 글로우 --- */
+h1 {
+  filter: drop-shadow(0 6px 16px rgba(124, 58, 237, 0.35));
+}
+
+/* --- 돈 바: 유리 + 칩 그라데이션 --- */
+.money-bar {
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  border-radius: 16px;
+  box-shadow: 0 12px 30px -14px rgba(15, 23, 42, 0.2);
+}
+
+.money-chip {
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  color: #7c2d12;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-weight: 800;
+  box-shadow: 0 6px 16px -6px rgba(245, 158, 11, 0.7);
+}
+
+.boost-chip {
+  background: linear-gradient(135deg, #34d399, #10b981);
+  color: #064e3b;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-weight: 800;
+  box-shadow: 0 6px 16px -6px rgba(16, 185, 129, 0.7);
+}
+
+.title-chip {
+  background: linear-gradient(135deg, #818cf8, #a855f7);
+  color: #fff;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-weight: 800;
+  box-shadow: 0 6px 16px -6px rgba(168, 85, 247, 0.7);
+}
+
+/* --- 버튼: 그라데이션 + 호버 리프트 + 포커스 링 --- */
+button {
+  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.4);
+}
+
+.wide,
+.primary,
+.nick-save,
+#nickSave,
+#accApply,
+.shop-buy:not([disabled]),
+.mission-claim {
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  color: #fff;
+  border: none;
+  font-weight: 800;
+}
+
+.wide:hover,
+.primary:hover,
+#nickSave:hover,
+#accApply:hover,
+.shop-buy:not([disabled]):hover,
+.mission-claim:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 24px -10px rgba(99, 102, 241, 0.75);
+}
+
+.secondary,
+.shop-buy.owned,
+.shop-buy[disabled] {
+  background: var(--card-soft) !important;
+  color: var(--text-dim) !important;
+  border: 1px solid var(--border) !important;
+}
+
+/* --- 실시간 랭킹 패널: 프리미엄 헤더 + 행 호버 --- */
+.side-rank {
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  box-shadow:
+    0 30px 60px -30px rgba(79, 70, 229, 0.5),
+    0 10px 24px -12px rgba(15, 23, 42, 0.2);
+}
+
+.side-rank-head {
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 55%, #a855f7 100%);
+  letter-spacing: 0.2px;
+}
+
+.side-rank-tabs button {
+  border-radius: 999px;
+  font-weight: 700;
+  transition: all 0.2s ease;
+}
+
+.side-rank-tabs button:hover { background: rgba(99, 102, 241, 0.1); }
+
+.side-rank-tabs button.active {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #fff;
+  box-shadow: 0 6px 14px -6px rgba(99, 102, 241, 0.7);
+}
+
+.side-rank-row {
+  transition: background 0.18s ease, transform 0.18s ease;
+  border-radius: 10px;
+}
+
+.side-rank-row:hover {
+  background: rgba(99, 102, 241, 0.08);
+  transform: translateX(2px);
+}
+
+.side-rank-row.top1 { background: linear-gradient(90deg, rgba(245, 158, 11, 0.16), transparent); }
+.side-rank-row.top3 { background: linear-gradient(90deg, rgba(148, 163, 184, 0.12), transparent); }
+
+.side-rank-row.lb-me {
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.16), transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.side-rank-refresh {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  font-weight: 700;
+  padding: 7px 14px;
+}
+
+.side-rank-refresh:hover { transform: translateY(-1px); box-shadow: 0 8px 18px -8px rgba(99, 102, 241, 0.8); }
+
+/* --- 친구 패널: 랭킹과 동일 프리미엄 톤 --- */
+.friends-btn {
+  background: linear-gradient(135deg, #f472b6, #a855f7);
+  box-shadow: 0 12px 26px -12px rgba(168, 85, 247, 0.8);
+}
+
+.friends-panel { border-radius: 20px; }
+
+.friends-head {
+  background: linear-gradient(135deg, #ec4899, #a855f7);
+  color: #fff;
+  margin: -12px -12px 8px;
+  padding: 10px 12px;
+  border-radius: 20px 20px 0 0;
+}
+
+/* --- 칭호·아이템 패널 --- */
+.items-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+@media (max-width: 640px) {
+  .items-grid { grid-template-columns: 1fr; }
+}
+
+.item-card {
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 18px;
+  padding: 14px;
+  box-shadow: 0 16px 36px -20px rgba(79, 70, 229, 0.35);
+}
+
+.item-card-wide { margin-top: 14px; }
+
+.item-card-head {
+  font-weight: 800;
+  font-size: 1rem;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--border);
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.item-current {
+  font-size: 0.92rem;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+.item-current b { color: var(--accent); }
+
+.items-title-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.items-title-chip {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.items-title-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 18px -8px rgba(99, 102, 241, 0.6);
+}
+
+.items-title-chip.current {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 8px 18px -8px rgba(99, 102, 241, 0.7);
+  cursor: default;
+}
+
+.items-title-chip.items-unset {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #b91c1c;
+}
+
+.items-title-chip.items-unset:hover { background: #ef4444; color: #fff; border-color: #ef4444; }
+
+.items-empty { color: var(--text-faint); font-size: 0.88rem; }
+
+.items-potion-status { font-size: 1.1rem; margin-bottom: 8px; }
+.items-potion-status b { color: var(--green); }
+.items-potion-off { color: var(--text-faint); font-weight: 700; }
+.items-potion-desc { font-size: 0.82rem; color: var(--text-dim); line-height: 1.5; }
+
+/* --- 계정 패널/모달 헤더 그라데이션 --- */
+.account-head,
+.modal-box .admin-head,
+.how-head {
+  background: linear-gradient(135deg, #4f46e5, #7c3aed);
+  color: #fff;
+}
+
+.account-panel { border-radius: 20px; overflow: hidden; }
+.account-panel .account-head { margin: -14px -14px 12px; padding: 12px 14px; }
+
+/* --- 상점 아이템 행 그라데이션 + 호버 --- */
+.shop-item {
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 14px;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.shop-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 30px -16px rgba(79, 70, 229, 0.4);
+}
+
+.shop-sub {
+  font-weight: 800;
+  color: var(--accent);
+  margin-top: 14px;
+  padding-bottom: 4px;
+  border-bottom: 2px solid rgba(99, 102, 241, 0.25);
+}
+
+/* --- 출석 카드 --- */
+.attendance-card {
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.14), rgba(245, 158, 11, 0.06));
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 16px;
+}
+
+/* --- 입력 필드: 포커스 시 액센트 글로우 --- */
+input[type="text"],
+input[type="number"],
+input:not([type]),
+input[type="password"] {
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.16);
+  outline: none;
+}
+
+/* --- 전적 레코드 행 --- */
+.rec-row {
+  border-radius: 10px;
+  transition: background 0.18s ease;
+}
+.rec-row:hover { background: rgba(99, 102, 241, 0.06); }
+
+.rec-win { color: var(--green); font-weight: 800; }
+.rec-lose { color: var(--red); font-weight: 800; }
+.rec-draw { color: var(--text-faint); font-weight: 800; }
+
+/* --- 부드러운 등장 애니메이션 --- */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.panel:not(.hidden),
+.account-panel:not(.hidden),
+.friends-panel:not(.hidden),
+.side-rank:not(.closed) {
+  animation: fade-in-up 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes fx-title-pop-enhanced {
+  0% { transform: scale(0.7); opacity: 0; }
+  60% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); }
+}
+
+.fx-title-pop { animation: fx-title-pop-enhanced 0.6s ease; }

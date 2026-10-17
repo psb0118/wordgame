@@ -3327,7 +3327,8 @@ io.on("connection", (socket) => {
         currentTitle: pd.currentTitle,
         titleCatalog: SHOP_TITLES,
         potionPrice: SHOP_POTION_PRICE,
-        multiplierPrices: SHOP_MULTIPLIER_PRICES
+        multiplierPrices: SHOP_MULTIPLIER_PRICES,
+        isAdmin: isAdminPd(pd)
       });
     } catch (err) { console.error("상점 조회 오류:", err); }
   });
@@ -3353,11 +3354,18 @@ io.on("connection", (socket) => {
     try {
       const titleId = String(data?.titleId || "");
       const pd = await getPlayerData(socket.id);
-      const title = pd.titles.find(t => t.id === titleId);
-      if (!title) { socket.emit("shop:result", { ok: false, reason: "보유하지 않은 칭호입니다." }); return; }
-      pd.currentTitle = title.name;
+      let titleName = "";
+      if (titleId === "t_admin") {
+        if (!isAdminPd(pd)) { socket.emit("shop:result", { ok: false, reason: "관리자 전용 칭호입니다." }); return; }
+        titleName = "관리자";
+      } else {
+        const title = pd.titles.find(t => t.id === titleId);
+        if (!title) { socket.emit("shop:result", { ok: false, reason: "보유하지 않은 칭호입니다." }); return; }
+        titleName = title.name;
+      }
+      pd.currentTitle = titleName;
       await savePlayerData(socket.id, pd);
-      socket.emit("shop:result", { ok: true, message: `칭호 '${title.name}'(으)로 변경했습니다.`, currentTitle: pd.currentTitle });
+      socket.emit("shop:result", { ok: true, message: `칭호 '${titleName}'(으)로 변경했습니다.`, currentTitle: pd.currentTitle, titles: pd.titles });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
       broadcastRoomState(getPlayerRoom(socket));
     } catch (err) { console.error("칭호 변경 오류:", err); }
@@ -3443,7 +3451,8 @@ io.on("connection", (socket) => {
         ok: true, money: pd.money, moneyMultiplier: pd.moneyMultiplier,
         ratingBoostGames: pd.ratingBoostGames, titles: pd.titles,
         currentTitle: pd.currentTitle, titleCatalog: SHOP_TITLES,
-        potionPrice: SHOP_POTION_PRICE, multiplierPrices: SHOP_MULTIPLIER_PRICES
+        potionPrice: SHOP_POTION_PRICE, multiplierPrices: SHOP_MULTIPLIER_PRICES,
+        isAdmin: isAdminPd(pd)
       });
     } catch (err) { console.error("미션 보상 수령 오류:", err); }
   });
