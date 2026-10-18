@@ -22,6 +22,21 @@ function functionSource(name) {
   return source.slice(match.index, end + 2);
 }
 
+/* 한 줄 const는 그대로, 여러 줄 배열/식은 닫는 줄(');' 또는 '];')까지 포함 (CRLF 포함) */
+function constSource(name) {
+  const single = new RegExp(`^const ${name} = [^\\n]*;\\r?$`, "m").exec(source);
+  if (single) return single[0];
+  const start = new RegExp(`^const ${name} = `, "m").exec(source);
+  assert.ok(start, `missing constant: ${name}`);
+  let idx = start.index;
+  for (;;) {
+    const nl = source.indexOf("\n", idx);
+    assert.ok(nl > 0, `missing constant end: ${name}`);
+    if (/[)\]]\s*;\s*$/.test(source.slice(idx, nl))) return source.slice(start.index, nl + 1);
+    idx = nl + 1;
+  }
+}
+
 function installHandler(c, event, socket) {
   const start = source.indexOf(`  socket.on("${event}",`);
   assert.ok(start >= 0, `missing handler: ${event}`);
@@ -44,8 +59,10 @@ function context(extra = {}) {
     ROOMS: new Map(),
     bannedMap: new Map(), mutedMap: new Map(),
     guildCache: null, guildsPath: "guilds.json",
-    seasonStore: null,
+    seasonStore: null, seasonJsonPath: "season.json",
     process: { env: {} },
+    customWords: { nextId: 1, pending: [], approved: [], rejected: [] },
+    customWordsPath: "custom-words.json", customDictPath: "legacy-custom-words.json",
     writeStoreFile() {}, loadStoreJSON: async () => null,
     dbMode: "json", dbPool: null,
     firebaseReady: false, firebaseAuth: null,
@@ -71,10 +88,11 @@ function context(extra = {}) {
   });
   for (const name of ["normKey", "MODE_DEFAULT", "SEASON_DEFAULT", "REACT_EMOJIS", "REACT_COOLDOWN_MS",
     "REFERRAL_JOIN_COIN", "REFERRAL_INVITE_COIN", "MAIL_MAX", "MAIL_COIN_MAX", "PLAYER_COLUMN_KEYS",
-    "GUILD_MAX_MEMBERS", "GUILD_CREATE_COIN", "SEA_TITLE"]) {
-    const declaration = new RegExp(`^const ${name} = .*;$`, "m").exec(source);
-    assert.ok(declaration, `missing constant: ${name}`);
-    vm.runInContext(declaration[0], c);
+    "GUILD_MAX_MEMBERS", "GUILD_CREATE_COIN", "SEA_TITLE",
+    "ATTENDANCE_REWARD", "SHOP_POTION_PRICE", "SHOP_SHIELD_PRICE",
+    "DAILY_MISSIONS", "WEEKLY_MISSIONS", "MONTHLY_MISSIONS",
+    "SHOP_TITLES", "SHOP_MULTIPLIER_PRICES", "missionCurrent", "ADMIN_EMAILS", "AI_PLAYER_ID"]) {
+    vm.runInContext(constSource(name), c);
   }
   for (const name of [
     "initPeriodData", "initDailyData", "initWeeklyData", "initMonthlyData",
@@ -98,6 +116,11 @@ function context(extra = {}) {
     "buildGuildState", "notifyGuildMembers",
     "seasonRewardFor", "buildSeasonInfo", "nowForSeason", "seasonKeyOf",
     "seasonEndMs", "currentSeasonKey", "getSeasonStore",
+    "applyCustomWord", "saveCustomWords", "loadCustomDict", "applyCustomDict",
+    "rebuildWordViews", "emitCustomWords", "notifyRequester",
+    "missionKeyOf", "missionListOf", "buildMissionProgress",
+    "getRankingPayload", "isAdminEmail", "isAdminPd",
+    "listAllPlayers", "saveSeasonStore", "closeSeason", "ensureSeasonRollover",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions };
 }
@@ -1334,4 +1357,288 @@ test("season reward guide matches actual payouts", () => {
     assert.ok(!/원/.test(r.value), "게임 화폐는 '원'이 아니라 '코인'으로 표기한다");
   }
   assert.match(info.key, /^\d{4}-\d{2}$/, "시즌 키는 YYYY-MM 형식");
+});
+
+/* =========================================================
+   커스텀 단어 — 단일 저장소 통합(구 customDict 병합 포함)
+========================================================= */
+test("legacy custom dictionary data merges into the unified word store", async () => {
+  const { c } = context({
+    loadStoreJSON: async (key) => key === "customDict" ? {
+      nextId: 9,
+      pending: [{ id: "1", word: "바다래", requester: "old", at: 1 }],
+      approved: ["옛말", "사과"],
+      rejected: [{ word: "가짜", by: "old", at: 1 }]
+    } : null
+  });
+  c.customWords.pending.push({ word: "새단어", by: "new", at: 2 });
+  c.customWords.approved.push("사과");
+
+  await c.loadCustomDict();
+
+  assert.ok(c.customWords.approved.includes("옛말"), "구 승인 단어가 이관된다");
+  assert.equal(c.customWords.approved.length, 2, "이미 있던 단어는 중복 이관되지 않는다");
+  assert.ok(c.customWords.pending.some(p => p.word === "바다래"));
+  assert.ok(c.customWords.pending.some(p => p.word === "새단어"));
+  assert.equal(c.customWords.pending.length, 2, "대기 목록도 병합된다");
+  assert.equal(c.customWords.rejected.length, 1);
+  assert.equal(c.customWords.nextId, 9, "구 nextId를 이어받는다");
+});
+
+test("word request and approval flow through the unified store", async () => {
+  const { c, errors } = context({
+    WORD_SET: new Set(["사과"]), WORD_INDEX: new Map([["사", ["사과"]]]),
+    hasWord: (w, set) => set.has(w),
+  });
+  const s = socket("s-w1");
+  c.socketNicks.set(s.id, "kate");
+  installHandler(c, "word:request", s);
+  installHandler(c, "admin:wordApprove", s);
+
+  await s.handlers.get("word:request")({ word: "바다래" });
+  let msg = s.emissions.at(-1);
+  assert.equal(msg[0], "word:requestResult");
+  assert.equal(msg[1].ok, true);
+  assert.equal(c.customWords.pending.length, 1);
+  assert.equal(c.customWords.pending[0].by, "kate", "신청은 단일 저장소 쪽지 대기 목록에 쌓인다");
+
+  await s.handlers.get("word:request")({ word: "바다래" });
+  msg = s.emissions.at(-1);
+  assert.equal(msg[1].ok, false, "같은 단어는 중복 신청 불가");
+
+  await s.handlers.get("admin:wordApprove")({ word: "바다래" });
+  assert.equal(errors.length, 0, "승인 처리 중 오류가 없어야 합니다: " + errors.join(" | "));
+  msg = s.emissions.at(-1);
+  assert.equal(msg[0], "admin:words");
+  assert.equal(msg[1].ok, true);
+  assert.equal(c.customWords.pending.length, 0, "승인되면 대기에서 빠진다");
+  assert.ok(c.customWords.approved.includes("바다래"), "승인 목록에 오른다");
+  assert.ok(c.WORD_SET.has("바다래"), "승인 즉시 게임 사전에 반영된다");
+});
+
+test("dictionary submit shares the store and admin approve rebuilds views", async () => {
+  const { c } = context({
+    WORD_SET: new Set(["사과"]), WORD_INDEX: new Map([["사", ["사과"]]]),
+    BASE_WORD_SET: new Set(["사과"]),
+    baseWordData: { WORD_SET: new Set(["사과"]), WORD_INDEX: new Map([["사", ["사과"]]]) },
+    mergeCustomWords: game.mergeCustomWords,
+    hasWord: (w, set) => set.has(w),
+  });
+  seed(c, "kate");
+  const s = socket("s-d1");
+  c.socketNicks.set(s.id, "kate");
+  installHandler(c, "dictionary:submit", s);
+  installHandler(c, "word:request", s);
+  installHandler(c, "admin:dictionaryApprove", s);
+
+  await s.handlers.get("dictionary:submit")({ word: "코코아" });
+  let msg = s.emissions.at(-1);
+  assert.equal(msg[0], "dictionary:status");
+  assert.equal(msg[1].ok, true);
+  assert.equal(c.customWords.pending.length, 1, "dictionary 신청도 단일 저장소에 쌓인다");
+  assert.equal(c.customWords.pending[0].by, "kate", "shop 흐름에서 읽는 by 필드도 채워진다");
+
+  await s.handlers.get("word:request")({ word: "코코아" });
+  msg = s.emissions.at(-1);
+  assert.equal(msg[0], "word:requestResult");
+  assert.equal(msg[1].ok, false, "다른 흐름의 동일 단어 신청은 중복으로 거부된다");
+
+  const id = c.customWords.pending[0].id;
+  await s.handlers.get("admin:dictionaryApprove")({ id });
+  msg = s.emissions.at(-1);
+  assert.equal(msg[0], "admin:dictionary");
+  assert.equal(msg[1].ok, true);
+  assert.equal(c.customWords.pending.length, 0);
+  assert.ok(c.customWords.approved.includes("코코아"));
+  assert.ok(c.WORD_SET.has("코코아"), "승인 후 재구성된 게임 사전에 반영된다");
+  assert.ok(c.WORD_INDEX.get("코") && c.WORD_INDEX.get("코").includes("코코아"));
+});
+
+test("rebuildWordViews merges the unified approved list into game views", () => {
+  const { c } = context({
+    WORD_SET: new Set(["사과"]), WORD_INDEX: new Map([["사", ["사과"]]]),
+    BASE_WORD_SET: new Set(["사과"]),
+    baseWordData: { WORD_SET: new Set(["사과"]), WORD_INDEX: new Map([["사", ["사과"]]]) },
+    mergeCustomWords: game.mergeCustomWords,
+  });
+  c.customWords.approved.push("코코아");
+  c.rebuildWordViews();
+  assert.ok(c.WORD_SET.has("사과"), "기본 단어는 유지된다");
+  assert.ok(c.WORD_SET.has("코코아"), "단일 저장소의 승인 단어가 합쳐진다");
+  assert.deepEqual(c.WORD_INDEX.get("코"), ["코코아"]);
+});
+
+/* =========================================================
+   출석 / 상점 / 미션 수령 / 시즌 롤오버 — 기존 회귀 공백 보강
+========================================================= */
+test("attendance check pays streak rewards once per day and resets after a gap", async () => {
+  const { c, errors } = context({
+    getKstDate: (ts) => (ts == null ? "2026-10-04" : "2026-10-03"),
+  });
+  const s = socket("s-att");
+  c.socketNicks.set(s.id, "fresh");
+  seed(c, "fresh");
+  installHandler(c, "attendance:status", s);
+  installHandler(c, "attendance:check", s);
+
+  await s.handlers.get("attendance:check")();
+  let msg = s.emissions.at(-1);
+  assert.equal(msg[0], "attendance:result");
+  assert.deepEqual(
+    { ok: msg[1].ok, reward: msg[1].reward, streak: msg[1].streak, money: msg[1].money },
+    { ok: true, reward: 2000, streak: 1, money: 92000 },
+    "첫 출석은 2000원 지급");
+
+  await s.handlers.get("attendance:check")();
+  msg = s.emissions.at(-1);
+  assert.equal(msg[1].ok, false, "같은 날 두 번 출석은 거부된다");
+  assert.match(String(msg[1].reason), /이미 오늘/);
+
+  await s.handlers.get("attendance:status")();
+  msg = s.emissions.at(-1);
+  assert.equal(msg[1].checkedToday, true, "출석 상태는 오늘 완료를 알린다");
+
+  c.socketNicks.set(s.id, "streaker");
+  seed(c, "streaker", { lastCheckDate: "2026-10-03", attendanceStreak: 3 });
+  await s.handlers.get("attendance:check")();
+  msg = s.emissions.at(-1);
+  assert.equal(msg[1].ok, true);
+  assert.equal(msg[1].streak, 4, "어제 출석 이력이 있으면 연속이 이어진다");
+  assert.equal(msg[1].reward, 5000, "4일차 보상은 5000원");
+  assert.equal(c.playerCache.get("streaker").attendanceStreak, 4);
+  assert.equal(c.playerCache.get("streaker").money, 95000);
+
+  c.socketNicks.set(s.id, "skipper");
+  seed(c, "skipper", { lastCheckDate: "2026-10-01", attendanceStreak: 7 });
+  await s.handlers.get("attendance:check")();
+  msg = s.emissions.at(-1);
+  assert.equal(msg[1].streak, 1, "하루를 건너뛰면 연속이 초기화된다");
+  assert.equal(msg[1].reward, 2000);
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("shop purchases deduct money and stack tickets, boosts, and multipliers", async () => {
+  const { c, errors } = context();
+  const s = socket("s-shop");
+  c.socketNicks.set(s.id, "buyer");
+  seed(c, "buyer", { money: 5000000 });
+  installHandler(c, "shop:buyShield", s);
+  installHandler(c, "shop:buyPotion", s);
+  installHandler(c, "shop:buyMultiplier", s);
+  const lastShop = () => {
+    for (let i = s.emissions.length - 1; i >= 0; i--) {
+      if (s.emissions[i][0] === "shop:result") return s.emissions[i][1];
+    }
+    return null;
+  };
+
+  await s.handlers.get("shop:buyShield")();
+  let res = lastShop();
+  assert.equal(res.ok, true, "보호 티켓 구매 성공");
+  let pd = c.playerCache.get("buyer");
+  assert.equal(pd.money, 3000000, "보호 티켓 200만 차감");
+  assert.equal(pd.shieldTickets, 1, "티켓 1장 적립");
+
+  await s.handlers.get("shop:buyPotion")();
+  res = lastShop();
+  assert.equal(res.ok, true, "물약 구매 성공");
+  pd = c.playerCache.get("buyer");
+  assert.equal(pd.money, 2000000, "물약 100만 차감");
+  assert.equal(pd.ratingBoostGames, 10, "레이팅 2배 10판 적립");
+
+  await s.handlers.get("shop:buyMultiplier")({ multiplier: 9 });
+  res = lastShop();
+  assert.equal(res.ok, false, "존재하지 않는 배율은 거부된다");
+
+  await s.handlers.get("shop:buyMultiplier")({ multiplier: 2 });
+  res = lastShop();
+  assert.equal(res.ok, false, "돈이 부족하면 거부된다");
+  assert.equal(c.playerCache.get("buyer").moneyMultiplier, 1, "실패 시 배율은 불변이다");
+
+  c.socketNicks.set(s.id, "rich");
+  seed(c, "rich", { money: 6000000 });
+  await s.handlers.get("shop:buyMultiplier")({ multiplier: 2 });
+  res = lastShop();
+  assert.equal(res.ok, true, "영구 2배 구매 성공");
+  pd = c.playerCache.get("rich");
+  assert.equal(pd.moneyMultiplier, 2);
+  assert.equal(pd.money, 1000000, "영구 2배 500만 차감");
+
+  await s.handlers.get("shop:buyMultiplier")({ multiplier: 2 });
+  res = lastShop();
+  assert.equal(res.ok, false, "이미 보유한 배율은 중복 구매가 거부된다");
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("missions claim pays coins and titles once, rejecting unmet and duplicate claims", async () => {
+  const { c, errors } = context();
+  const s = socket("s-mis");
+  c.socketNicks.set(s.id, "mser");
+  seed(c, "mser", {
+    daily: { date: "2026-10-04", rankedWins: 3, oneShots: 0, streakDone: 1, claimed: [] }
+  });
+  installHandler(c, "missions:claim", s);
+  const lastResult = () => {
+    for (let i = s.emissions.length - 1; i >= 0; i--) {
+      if (s.emissions[i][0] === "missions:result") return s.emissions[i][1];
+    }
+    return null;
+  };
+
+  await s.handlers.get("missions:claim")({ group: "daily", id: "streakDone" });
+  let res = lastResult();
+  assert.equal(res.ok, true, "달성한 미션 수령 성공");
+  assert.equal(res.money, 91000, "미션 코인 1000원 지급");
+  assert.equal(res.currentTitle, "데일리 마스터", "미션 칭호를 현재 칭호로 장착");
+  const pd = c.playerCache.get("mser");
+  assert.ok(pd.daily.claimed.includes("streakDone"), "수령 기록이 남는다");
+  assert.ok(pd.titles.some(t => t.id === "t_daily"), "칭호가 보관된다");
+
+  await s.handlers.get("missions:claim")({ group: "daily", id: "streakDone" });
+  res = lastResult();
+  assert.equal(res.ok, false, "이미 수령한 미션은再次 수령이 거부된다");
+
+  await s.handlers.get("missions:claim")({ group: "daily", id: "oneShots" });
+  res = lastResult();
+  assert.equal(res.ok, false, "미달성 미션은 수령이 거부된다");
+  assert.match(String(res.reason), /달성하지 못했습니다/);
+
+  await s.handlers.get("missions:claim")({ group: "daily", id: "nope" });
+  res = lastResult();
+  assert.equal(res.ok, false, "알 수 없는 미션은 거부된다");
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("season rollover closes the previous season, pays rewards, and archives standings", async () => {
+  const { c, errors } = context({ seasonStore: { lastClosed: "2026-09", history: [] } });
+  const champ = seed(c, "champ", {
+    season: { season: "2026-09", games: 5, wins: 4, losses: 1 },
+    ranked: { rating: 1900, wins: 50, losses: 10 }
+  });
+  champ.id = "champ";
+  const runner = seed(c, "runner", {
+    season: { season: "2026-09", games: 3, wins: 1, losses: 2 },
+    ranked: { rating: 1500, wins: 20, losses: 15 }
+  });
+  runner.id = "runner";
+  const bystander = seed(c, "bystander");
+  bystander.id = "bystander";
+
+  const key = await c.ensureSeasonRollover();
+  assert.equal(errors.length, 0, "롤오버 중 오류가 없어야 합니다: " + errors.join(" | "));
+  assert.equal(key, c.currentSeasonKey());
+  const store = c.getSeasonStore();
+  assert.equal(store.lastClosed, key, "마감 키가 갱신된다");
+  const hist = store.history[store.history.length - 1];
+  assert.equal(hist.season, "2026-09", "이전 시즌이 기록된다");
+  assert.equal(hist.champion, "champ", "1위가 챔피언으로 기록된다");
+  assert.equal(hist.participants, 2, "시즌 참가 2명만 집계된다");
+  assert.equal(hist.top.length, 2, "상위 기록이 보관된다");
+
+  const champAfter = c.playerCache.get("champ");
+  assert.equal(champAfter.money, 1090000, "1위 보상 100만 코인 지급");
+  assert.ok(champAfter.titles.some(t => t.id === "t_season"), "챔피언 칭호 지급");
+  assert.equal(champAfter.season.games, 0, "시즌 기록이 초기화된다");
+  assert.equal(c.playerCache.get("runner").money, 590000, "2위 보상 50만 코인 지급");
+  assert.equal(c.playerCache.get("bystander").money, 90000, "미참가자에게는 보상이 없다");
 });

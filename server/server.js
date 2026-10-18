@@ -379,41 +379,47 @@ const BASE_WORD_SET = baseWordData.WORD_SET;
 const { ATTACK_DEPTH, ROOT_WORDS, RARE_ROOT_WORDS, DEFENSE_WORDS, DOLRIM_WORDS } = baseWordData;
 
 function rebuildWordViews() {
-  const merged = mergeCustomWords(BASE_WORD_SET, baseWordData.WORD_INDEX, customDict.approved);
+  const merged = mergeCustomWords(BASE_WORD_SET, baseWordData.WORD_INDEX, customWords.approved);
   WORD_SET = merged.WORD_SET;
   WORD_INDEX = merged.WORD_INDEX;
 }
 
 /* =========================================================
-   커스텀 사전 — 유저 단어 신청 → 관리자 승인 시 게임 사전에 포함
+   커스텀 사전 — 단일 저장소 customWords(kv 'customWords' + RUNTIME 파일)
+   구 시스템 customDict(kv 'customDict' + 저장소 루트 파일)는 부팅 시
+   읽어 병합하는 것만 한다 — 더 이상 따로 쓰지 않는다(2중화 제거).
 ========================================================= */
-const customDictPath = path.join(ROOT_DIR, "custom-words.json");
-let customDict = { nextId: 1, pending: [], approved: [], rejected: [] };
+const customDictPath = path.join(ROOT_DIR, "custom-words.json");   /* 구 데이터 읽기 전용 */
 
+/* 구 customDict 저장소 데이터를 단일 저장소에 중복 없이 병합 */
 function applyCustomDict(data) {
   if (!data || typeof data !== "object") return;
-  customDict = {
-    nextId: Number(data.nextId) || 1,
-    pending: Array.isArray(data.pending) ? data.pending : [],
-    approved: Array.isArray(data.approved) ? data.approved : [],
-    rejected: Array.isArray(data.rejected) ? data.rejected : []
+  const nextId = Number(data.nextId);
+  if (Number.isFinite(nextId) && nextId > customWords.nextId) customWords.nextId = nextId;
+  const mergeBy = (cur, legacy, keyOf) => {
+    for (const item of Array.isArray(legacy) ? legacy : []) {
+      if (item == null) continue;
+      const k = keyOf(item);
+      if (!k) continue;
+      if (!cur.some(x => keyOf(x) === k)) cur.push(item);
+    }
   };
+  mergeBy(customWords.pending, data.pending, p => String(p.word || ""));
+  mergeBy(customWords.approved, data.approved, w => normalizeWord(String(w || "")));
+  mergeBy(customWords.rejected, data.rejected, r => String(r.word || ""));
 }
 
 async function loadCustomDict() {
   try {
     const data = await loadStoreJSON("customDict", customDictPath, null);
     if (data) {
+      const before = customWords.pending.length + customWords.approved.length + customWords.rejected.length;
       applyCustomDict(data);
-      console.log(`커스텀 사전 로드(${dbMode === "pg" ? "DB" : "파일"}): 승인 ${customDict.approved.length}개 / 대기 ${customDict.pending.length}개`);
+      const after = customWords.pending.length + customWords.approved.length + customWords.rejected.length;
+      console.log(`구 커스텀 사전 병합(${dbMode === "pg" ? "DB" : "파일"}): 신규 ${after - before}건 / 대기 ${customWords.pending.length} / 승인 ${customWords.approved.length}`);
+      if (after !== before) saveCustomWords();
     }
-  } catch (e) { console.warn("커스텀 사전 로드 실패:", e.message); }
-}
-
-function saveCustomDict() {
-  try {
-    writeStoreFile(customDictPath, customDict, "customDict");
-  } catch (e) { console.warn("커스텀 사전 저장 실패:", e.message); }
+  } catch (e) { console.warn("구 커스텀 사전 병합 실패:", e.message); }
 }
 
 /* =========================================================
@@ -423,13 +429,15 @@ function saveCustomDict() {
 ========================================================= */
 
 const customWordsPath = path.join(RUNTIME_DATA_DIR, "custom-words.json");
-let customWords = { pending: [], approved: [], rejected: [] };
+let customWords = { nextId: 1, pending: [], approved: [], rejected: [] };
 
 function applyCustomWordsData(data) {
   if (!data || typeof data !== "object") return;
   customWords.pending = Array.isArray(data.pending) ? data.pending : [];
   customWords.approved = Array.isArray(data.approved) ? data.approved : [];
   customWords.rejected = Array.isArray(data.rejected) ? data.rejected : [];
+  const nextId = Number(data.nextId);
+  if (Number.isFinite(nextId) && nextId > 0) customWords.nextId = nextId;
 }
 
 function loadCustomWords() {
@@ -469,6 +477,24 @@ function applyCustomWord(word) {
   if (!WORD_INDEX.has(first)) WORD_INDEX.set(first, []);
   WORD_INDEX.get(first).push(w);
   return true;
+}
+
+/* 관리자 화면에 단어 승인 현황 전체 브로드캐스트 */
+function emitCustomWords(socket) {
+  socket.emit("admin:words", {
+    ok: true,
+    pending: customWords.pending.map(p => ({ word: p.word, by: p.by, at: p.at })),
+    approved: customWords.approved,
+    rejected: customWords.rejected.map(r => ({ word: r.word, by: r.by, at: r.at, reason: r.reason }))
+  });
+}
+
+/* 단어 신청자에게 승인/반려 알림 (온라인일 때만) */
+function notifyRequester(requester, msg) {
+  const targetSocketId = onlineNicks.get(normKey(requester));
+  if (!targetSocketId) return;
+  const ts = io.sockets.sockets.get(targetSocketId);
+  if (ts) ts.emit("dictionary:status", { ok: true, message: msg, refreshed: true });
 }
 
 loadCustomWords();
@@ -2885,8 +2911,8 @@ app.get("/", (req, res) => {
 app.get("/api/health", (req, res) => {
   res.json({
     ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length,
-    rooms: ROOMS.size, customApproved: customDict.approved.length,
-    customPending: customDict.pending.length, seasonId: currentSeasonKey(),
+    rooms: ROOMS.size, customApproved: customWords.approved.length,
+    customPending: customWords.pending.length, seasonId: currentSeasonKey(),
     db: dbMode === "pg" ? "postgres" : "json",
     firebase: firebaseReady,
     dataDir: RUNTIME_DATA_DIR || null,
@@ -3150,7 +3176,7 @@ io.on("connection", (socket) => {
   socket.emit("server:ready", {
     ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length,
     maxPlayers: MAX_PLAYERS, turnTime: TURN_TIME, maxHearts: MAX_HEARTS,
-    customApproved: customDict.approved.length, customPending: customDict.pending.length
+    customApproved: customWords.approved.length, customPending: customWords.pending.length
   });
 
   socket.on("room:create", async (data) => {
@@ -4246,13 +4272,6 @@ io.on("connection", (socket) => {
   });
 
   /* 커스텀 사전 관리 — 승인 대기 목록 조회 + 승인/거절 (관리자 전용) */
-  const emitCustomWords = (socket) => socket.emit("admin:words", {
-    ok: true,
-    pending: customWords.pending.map(p => ({ word: p.word, by: p.by, at: p.at })),
-    approved: customWords.approved,
-    rejected: customWords.rejected.map(r => ({ word: r.word, by: r.by, at: r.at, reason: r.reason }))
-  });
-
   socket.on("admin:wordList", async () => {
     try {
       const reg = await requireNickname(socket);
@@ -4476,18 +4495,18 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("관리자 역할 조회 오류:", err); }
   });
 
-  /* -- 커스텀 사전 — 유저 단어 신청 → 관리자 승인 시 게임 반영 -- */
+  /* -- 커스텀 사전 — 유저 단어 신청 → 관리자 승인 시 게임 반영 (단일 저장소) -- */
   socket.on("dictionary:status", async () => {
     try {
       const pd = await getPlayerData(socket.id);
       const nickname = String(pd.nickname || "").trim();
-      const mine = customDict.pending
-        .filter(p => String(p.requester || "") === nickname)
+      const mine = customWords.pending
+        .filter(p => String(p.requester || p.by || "") === nickname)
         .map(p => ({ id: p.id, word: p.word, at: p.at }));
       socket.emit("dictionary:status", {
         ok: true, mine, nickname,
-        approvedTotal: customDict.approved.length,
-        pendingTotal: customDict.pending.length,
+        approvedTotal: customWords.approved.length,
+        pendingTotal: customWords.pending.length,
         canSubmit: mine.length < 3
       });
     } catch (err) { console.error("사전 상태 오류:", err); }
@@ -4502,21 +4521,21 @@ io.on("connection", (socket) => {
       if (!word || word.length < 2 || word.length > 15) {
         socket.emit("dictionary:status", { ok: false, reason: "단어는 한글 2~15자여야 합니다." }); return;
       }
-      if (WORD_SET.has(word) || customDict.approved.includes(word)) {
+      if (WORD_SET.has(word) || customWords.approved.includes(word)) {
         socket.emit("dictionary:status", { ok: false, reason: `'${word}'는 이미 등록된 단어입니다.` }); return;
       }
-      const mineCount = customDict.pending.filter(p => String(p.requester || "") === nickname).length;
+      const mineCount = customWords.pending.filter(p => String(p.requester || p.by || "") === nickname).length;
       if (mineCount >= 3) {
         socket.emit("dictionary:status", { ok: false, reason: "진행 중인 신청이 3개 이상입니다. 처리 후 다시 시도해주세요." }); return;
       }
-      if (customDict.pending.some(p => p.word === word)) {
+      if (customWords.pending.some(p => p.word === word)) {
         socket.emit("dictionary:status", { ok: false, reason: `'${word}'는 이미 신청 대기 중인 단어입니다.` }); return;
       }
-      if (customDict.pending.length >= 200) {
+      if (customWords.pending.length >= 200) {
         socket.emit("dictionary:status", { ok: false, reason: "승인 대기 목록이 꽉 찼습니다. 잠시 후 다시 시도해주세요." }); return;
       }
-      customDict.pending.push({ id: String(customDict.nextId++), word, requester: nickname, at: Date.now() });
-      saveCustomDict();
+      customWords.pending.push({ id: String(customWords.nextId++), word, requester: nickname, by: nickname, at: Date.now() });
+      saveCustomWords();
       socket.emit("dictionary:status", { ok: true, message: `'${word}' 등록을 신청했습니다. 관리자 승인 후 게임에 반영됩니다.` });
       console.log(`[DICT] ${nickname} 단어 신청: ${word}`);
     } catch (err) { console.error("사전 신청 오류:", err); }
@@ -4527,26 +4546,19 @@ io.on("connection", (socket) => {
       const pd = await getPlayerData(socket.id);
       const nickname = String(pd.nickname || "").trim();
       const id = String(data?.id || "");
-      const idx = customDict.pending.findIndex(p => String(p.id) === id && String(p.requester || "") === nickname);
+      const idx = customWords.pending.findIndex(p => String(p.id) === id && String(p.requester || p.by || "") === nickname);
       if (idx === -1) { socket.emit("dictionary:status", { ok: false, reason: "본인의 신청만 취소할 수 있습니다." }); return; }
-      customDict.pending.splice(idx, 1);
-      saveCustomDict();
+      customWords.pending.splice(idx, 1);
+      saveCustomWords();
       socket.emit("dictionary:status", { ok: true, message: "단어 신청을 취소했습니다." });
     } catch (err) { console.error("사전 신청 취소 오류:", err); }
   });
-
-  const notifyRequester = (requester, msg) => {
-    const targetSocketId = onlineNicks.get(normKey(requester));
-    if (!targetSocketId) return;
-    const ts = io.sockets.sockets.get(targetSocketId);
-    if (ts) ts.emit("dictionary:status", { ok: true, message: msg, refreshed: true });
-  };
 
   socket.on("admin:dictionaryList", async () => {
     try {
       const reg = await requireNickname(socket);
       if (!reg.ok) { socket.emit("admin:dictionary", { ok: false, reason: reg.reason }); return; }
-      socket.emit("admin:dictionary", { ok: true, pending: customDict.pending, approved: customDict.approved });
+      socket.emit("admin:dictionary", { ok: true, pending: customWords.pending, approved: customWords.approved });
     } catch (err) { console.error("관리자 사전 목록 오류:", err); }
   });
 
@@ -4555,16 +4567,16 @@ io.on("connection", (socket) => {
       const reg = await requireNickname(socket);
       if (!reg.ok) { socket.emit("admin:dictionary", { ok: false, reason: reg.reason }); return; }
       const id = String(data?.id || "");
-      const idx = customDict.pending.findIndex(p => String(p.id) === id);
+      const idx = customWords.pending.findIndex(p => String(p.id) === id);
       if (idx === -1) { socket.emit("admin:dictionary", { ok: false, reason: "승인 대기 신청을 찾을 수 없습니다." }); return; }
-      const [item] = customDict.pending.splice(idx, 1);
-      customDict.approved.push(item.word);
-      customDict.rejected = customDict.rejected.filter(r => r.word !== item.word);
-      saveCustomDict();
+      const [item] = customWords.pending.splice(idx, 1);
+      customWords.approved.push(item.word);
+      customWords.rejected = customWords.rejected.filter(r => r.word !== item.word);
+      saveCustomWords();
       rebuildWordViews();
-      notifyRequester(item.requester, `'${item.word}' 단어가 승인되어 게임에 반영되었습니다!`);
-      socket.emit("admin:dictionary", { ok: true, pending: customDict.pending, approved: customDict.approved, message: `'${item.word}' 승인 완료` });
-      console.log(`[DICT] ${reg.nickname} 승인: ${item.word} (by ${item.requester})`);
+      notifyRequester(item.requester || item.by, `'${item.word}' 단어가 승인되어 게임에 반영되었습니다!`);
+      socket.emit("admin:dictionary", { ok: true, pending: customWords.pending, approved: customWords.approved, message: `'${item.word}' 승인 완료` });
+      console.log(`[DICT] ${reg.nickname} 승인: ${item.word} (by ${item.requester || item.by})`);
     } catch (err) { console.error("사전 승인 오류:", err); }
   });
 
@@ -4573,15 +4585,15 @@ io.on("connection", (socket) => {
       const reg = await requireNickname(socket);
       if (!reg.ok) { socket.emit("admin:dictionary", { ok: false, reason: reg.reason }); return; }
       const id = String(data?.id || "");
-      const idx = customDict.pending.findIndex(p => String(p.id) === id);
+      const idx = customWords.pending.findIndex(p => String(p.id) === id);
       if (idx === -1) { socket.emit("admin:dictionary", { ok: false, reason: "승인 대기 신청을 찾을 수 없습니다." }); return; }
-      const [item] = customDict.pending.splice(idx, 1);
-      customDict.rejected.push({ word: item.word, by: item.requester, at: Date.now() });
-      if (customDict.rejected.length > 200) customDict.rejected.splice(0, customDict.rejected.length - 200);
-      saveCustomDict();
-      notifyRequester(item.requester, `'${item.word}' 단어 신청이 반려되었습니다.`);
-      socket.emit("admin:dictionary", { ok: true, pending: customDict.pending, approved: customDict.approved, message: `'${item.word}' 반려 완료` });
-      console.log(`[DICT] ${reg.nickname} 반려: ${item.word} (by ${item.requester})`);
+      const [item] = customWords.pending.splice(idx, 1);
+      customWords.rejected.push({ word: item.word, by: item.requester || item.by, at: Date.now() });
+      if (customWords.rejected.length > 200) customWords.rejected.splice(0, customWords.rejected.length - 200);
+      saveCustomWords();
+      notifyRequester(item.requester || item.by, `'${item.word}' 단어 신청이 반려되었습니다.`);
+      socket.emit("admin:dictionary", { ok: true, pending: customWords.pending, approved: customWords.approved, message: `'${item.word}' 반려 완료` });
+      console.log(`[DICT] ${reg.nickname} 반려: ${item.word} (by ${item.requester || item.by})`);
     } catch (err) { console.error("사전 반려 오류:", err); }
   });
 
@@ -5532,13 +5544,15 @@ initDatabase().then(async () => {
   /* PG 모드에서는 파일이 남아있지 않아도 DB(kv_store)에서 보조 저장소를 복구한다 */
   await Promise.all([
     loadAdminConfig(),
-  loadModeration(),
-  loadFriends(),
-  loadGuilds(),
+    loadModeration(),
+    loadFriends(),
+    loadGuilds(),
     loadBugReports(),
-    loadCustomDict(),
     hydrateCustomWordsFromPG()
   ]);
+  /* 구 커스텀 사전(customDict) 병합은 hydrate 완료 후 순차 실행 — 병렬 실행하면
+     hydrate가 병합 결과를 덮어써 구 데이터가 유실될 수 있다 */
+  await loadCustomDict();
   rebuildWordViews();
   if (!seasonStore) await loadSeasonStore();
   ensureSeasonRollover().catch(err => console.error("시작 시 시즌 전환 오류:", err.message));
