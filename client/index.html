@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=24">
+  <link rel="stylesheet" href="style.css?v=25">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -492,6 +492,10 @@
         </div>
         <div id="refMsg" class="acc-referral-msg"></div>
       </div>
+      <div class="acc-mail">
+        <div class="acc-mail-head">📬 쪽지함 <span id="mailUnread" class="mail-badge hidden">0</span></div>
+        <div id="mailList" class="acc-mail-list"></div>
+      </div>
     </div>
   </div>
 
@@ -612,7 +616,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="script.js?v=25"></script>
+  <script src="script.js?v=26"></script>
   <script src="firebase-auth.js?v=1"></script>
 </body>
 </html>

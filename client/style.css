@@ -1956,6 +1956,76 @@ button:disabled {
 }
 .acc-referral-msg.ok { color: #059669; }
 
+/* 우편(쪽지함) */
+.acc-mail {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.acc-mail-head {
+  font-size: 0.85rem;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.mail-badge {
+  background: var(--red);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  padding: 1px 6px;
+  min-width: 18px;
+  text-align: center;
+}
+.acc-mail-list {
+  max-height: 210px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mail-item {
+  background: var(--card-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 9px;
+  font-size: 0.78rem;
+}
+.mail-item.read { opacity: 0.62; }
+.mail-item-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  align-items: baseline;
+}
+.mail-coin { color: var(--gold); font-weight: 800; white-space: nowrap; }
+.mail-item-body {
+  color: var(--text-dim);
+  margin-top: 3px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+.mail-item-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 5px;
+}
+.mail-item-at { color: var(--text-dim); font-size: 0.72rem; }
+.mail-done { color: var(--text-dim); font-size: 0.72rem; font-weight: 700; }
+.mail-claim-btn {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  font-size: 0.74rem;
+  font-weight: 800;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
 /* =========================================================
    초대 토스트 (가운데 위)
 ========================================================= */

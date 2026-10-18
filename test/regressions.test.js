@@ -61,11 +61,13 @@ function context(extra = {}) {
     setTimeout(fn, ms) { const t = { fn, ms, active: true }; timers.push(t); return t; },
     clearTimeout(t) { if (t && typeof t === "object") t.active = false; },
     io: { to: () => ({ emit: (...args) => emissions.push(args) }),
+      emit: (...args) => emissions.push(args),
       sockets: { sockets: new Map() } },
+    requireNickname: async () => ({ ok: true, role: "super", nickname: "admin" }),
     ...extra,
   });
   for (const name of ["normKey", "MODE_DEFAULT", "SEASON_DEFAULT", "REACT_EMOJIS", "REACT_COOLDOWN_MS",
-    "REFERRAL_JOIN_COIN", "REFERRAL_INVITE_COIN"]) {
+    "REFERRAL_JOIN_COIN", "REFERRAL_INVITE_COIN", "MAIL_MAX", "MAIL_COIN_MAX", "PLAYER_COLUMN_KEYS"]) {
     const declaration = new RegExp(`^const ${name} = .*;$`, "m").exec(source);
     assert.ok(declaration, `missing constant: ${name}`);
     vm.runInContext(declaration[0], c);
@@ -87,6 +89,7 @@ function context(extra = {}) {
     "partyReadyError", "partyResultPairs", "addPlayer",
     "achievementStats", "evaluateAchievements", "achievementDefs",
     "findPlayerIdByNickname", "findAllPlayerIdsByNickname",
+    "playerExtras",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions };
 }
@@ -975,4 +978,142 @@ test("referral status reports current registration state", async () => {
   assert.equal(msg[1].referredBy, "kate");
   assert.equal(msg[1].count, 3);
   assert.ok(msg[1].joinCoin > 0 && msg[1].inviteCoin > 0);
+});
+
+/* =========================================================
+   PG extras — 컬럼 외 필드(업적/추천인/쪽지) 영속화
+========================================================= */
+test("PG save persists non-column fields through extras JSON", async () => {
+  const calls = [];
+  const { c } = context({
+    dbMode: "pg",
+    dbPool: { async query(sql, values) { calls.push({ sql, values }); return { rows: [], rowCount: 1 }; } }
+  });
+  seed(c, "kate", {
+    achievements: { first_win: "2026-10-01T00:00:00.000Z" },
+    referredBy: "lee", referralCount: 2,
+    mail: [{ id: "m1", title: "보상", coin: 500, read: false }]
+  });
+  await c.savePlayerData("kate", c.playerCache.get("kate"));
+
+  const call = calls.find(x => /INSERT INTO players/.test(x.sql));
+  assert.ok(call, "upsert 쿼리가 실행되어야 합니다");
+  assert.match(call.sql, /extras=\$34/);
+  const extras = JSON.parse(call.values[33]);
+  assert.equal(extras.referredBy, "lee");
+  assert.equal(extras.referralCount, 2);
+  assert.ok(extras.achievements && extras.achievements.first_win);
+  assert.ok(Array.isArray(extras.mail) && extras.mail[0].id === "m1");
+  assert.equal(extras.money, undefined, "컬럼 필드는 extras에 포함되지 않는다");
+  assert.equal(extras.nickname, undefined, "닉네임은 extras에 포함되지 않는다");
+});
+
+/* =========================================================
+   공지 · 우편(쪽지) — 전체 공지 / 쪽지 발송·목록·수령
+========================================================= */
+test("admin notice broadcasts to every connected client", async () => {
+  const { c, emissions } = context();
+  const s = socket("s-notice");
+  installHandler(c, "admin:notice", s);
+  await s.handlers.get("admin:notice")({ text: "  점검 공지입니다  " });
+
+  const global = emissions.find(e => e[0] === "notice:global");
+  assert.ok(global, "전체 공지가 broadcast되어야 합니다");
+  assert.equal(global[1].text, "점검 공지입니다");
+  const res = s.emissions.at(-1);
+  assert.equal(res[0], "admin:noticeResult");
+  assert.equal(res[1].ok, true);
+});
+
+test("admin notice rejects empty text", async () => {
+  const { c, emissions } = context();
+  const s = socket("s-notice2");
+  installHandler(c, "admin:notice", s);
+  await s.handlers.get("admin:notice")({ text: "   " });
+  assert.equal(emissions.length, 0, "빈 공지는 broadcast되지 않는다");
+  const res = s.emissions.at(-1);
+  assert.equal(res[1].ok, false);
+  assert.match(String(res[1].reason), /공지 내용/);
+});
+
+test("admin mail send stores entry with coin in target inbox", async () => {
+  const { c } = context();
+  seed(c, "kate");
+  const s = socket("s-mail1");
+  installHandler(c, "admin:mailSend", s);
+  await s.handlers.get("admin:mailSend")({ nickname: "kate", title: " 이벤트 보상 ", body: "참여 감사", coin: 1500 });
+
+  const kate = c.playerCache.get("kate");
+  assert.ok(Array.isArray(kate.mail) && kate.mail.length === 1, "쪽지가 저장되어야 합니다");
+  assert.equal(kate.mail[0].title, "이벤트 보상");
+  assert.equal(kate.mail[0].coin, 1500);
+  assert.equal(kate.mail[0].read, false);
+  const res = s.emissions.at(-1);
+  assert.equal(res[0], "admin:mailResult");
+  assert.equal(res[1].ok, true);
+});
+
+test("admin mail send trims oldest read entries above MAIL_MAX", async () => {
+  const { c } = context();
+  const max = vm.runInContext("MAIL_MAX", c);
+  const old = Array.from({ length: max }, (_, i) => ({
+    id: `old-${i}`, title: `오래된쪽지${i}`, coin: 0, at: "", read: true
+  }));
+  seed(c, "kate", { mail: old });
+  const s = socket("s-mail2");
+  installHandler(c, "admin:mailSend", s);
+  await s.handlers.get("admin:mailSend")({ nickname: "kate", title: "새쪽지", coin: 10 });
+
+  const kate = c.playerCache.get("kate");
+  assert.equal(kate.mail.length, max, "보관 상한을 넘지 않는다");
+  assert.equal(kate.mail[0].title, "새쪽지", "새 쪽지는 맨 앞에 온다");
+  assert.equal(kate.mail.filter(m => m.id === "old-0").length, 0, "가장 오래된 읽은 쪽지부터 제거된다");
+});
+
+test("admin mail send rejects unknown nickname", async () => {
+  const { c } = context();
+  const s = socket("s-mail3");
+  installHandler(c, "admin:mailSend", s);
+  await s.handlers.get("admin:mailSend")({ nickname: "없는사람", title: "쪽지", coin: 10 });
+  const res = s.emissions.at(-1);
+  assert.equal(res[1].ok, false);
+  assert.match(String(res[1].reason), /존재하지/);
+});
+
+test("mail list returns entries with unread count and claim pays coin once", async () => {
+  const { c } = context();
+  seed(c, "kate", {
+    money: 5000,
+    mail: [
+      { id: "m-unread", title: "포상", body: "수고하셨습니다", coin: 800, at: "2026-10-01T00:00:00.000Z", read: false },
+      { id: "m-read", title: "지난쪽지", body: "", coin: 100, at: "2026-09-01T00:00:00.000Z", read: true }
+    ]
+  });
+  const s = socket("s-mail4");
+  c.socketNicks.set(s.id, "kate");
+  installHandler(c, "mail:list", s);
+  installHandler(c, "mail:claim", s);
+
+  await s.handlers.get("mail:list")();
+  let msg = s.emissions.at(-1);
+  assert.equal(msg[0], "mail:list");
+  assert.equal(msg[1].ok, true);
+  assert.equal(msg[1].mail.length, 2);
+  assert.equal(msg[1].unread, 1);
+  assert.equal(msg[1].mail[0].title, "포상");
+
+  await s.handlers.get("mail:claim")({ id: "m-unread" });
+  msg = s.emissions.at(-1);
+  assert.equal(msg[0], "mail:claim");
+  assert.equal(msg[1].ok, true);
+  assert.equal(msg[1].coin, 800);
+  const kate = c.playerCache.get("kate");
+  assert.equal(kate.money, 5800, "쪽지 코인이 지급된다");
+  assert.equal(kate.mail.find(m => m.id === "m-unread").read, true);
+  assert.equal(msg[1].unread, 0);
+
+  await s.handlers.get("mail:claim")({ id: "m-unread" });
+  msg = s.emissions.at(-1);
+  assert.equal(msg[1].ok, false, "이미 수령한 쪽지는 다시 수령할 수 없다");
+  assert.equal(c.playerCache.get("kate").money, 5800, "중복 수령 시 추가 지급 없음");
 });

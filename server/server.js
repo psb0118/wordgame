@@ -787,7 +787,8 @@ async function initDatabase() {
           firebase_name TEXT DEFAULT '',
           shield_tickets INTEGER DEFAULT 0,
           rating_history TEXT DEFAULT '[]',
-          last_seen TEXT DEFAULT ''
+          last_seen TEXT DEFAULT '',
+          extras TEXT DEFAULT '{}'
         )
       `);
       await dbPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_players_firebase_uid ON players(firebase_uid)`);
@@ -820,7 +821,8 @@ async function initDatabase() {
           ADD COLUMN IF NOT EXISTS firebase_name TEXT DEFAULT '',
           ADD COLUMN IF NOT EXISTS shield_tickets INTEGER DEFAULT 0,
           ADD COLUMN IF NOT EXISTS rating_history TEXT DEFAULT '[]',
-          ADD COLUMN IF NOT EXISTS last_seen TEXT DEFAULT ''
+          ADD COLUMN IF NOT EXISTS last_seen TEXT DEFAULT '',
+          ADD COLUMN IF NOT EXISTS extras TEXT DEFAULT '{}'
       `);
       await dbPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_players_firebase_uid ON players(firebase_uid)`);
       /* 보조 저장소(친구/시즌/관리자 설정/커스텀 사전/버그 제보) — 재배포에도 유지 */
@@ -1062,6 +1064,11 @@ async function getPlayerData(playerId) {
           ratingHistory: (() => { try { return JSON.parse(row.rating_history || "[]"); } catch { return []; } })(),
           lastSeen: row.last_seen || ""
         };
+        /* 컬럼이 아닌 부가 필드(업적/추천인/쪽지 등) 병합 — 없으면 무시 */
+        try {
+          const extras = JSON.parse(row.extras || "{}");
+          if (extras && typeof extras === "object") Object.assign(data, extras);
+        } catch { /* 손상된 extras는 무시 */ }
         const migrated = migratePlayerData(data);
         playerCache.set(key, migrated);
         return structuredClone(migrated);
@@ -1074,6 +1081,18 @@ async function getPlayerData(playerId) {
   /* 이름 없는 소켓 기본값 — 고스트를 캐시에 쌓지 않는다 (랭킹 초기화/중복의 원인이었음) */
   const defaultData = migratePlayerData({ id: key, nickname: "플레이어" });
   return { ...defaultData };
+}
+
+/* 컬럼형 필드가 아닌 부가 데이터(업적/추천인/쪽지 등) — extras JSON 컬럼에 영속 */
+const PLAYER_COLUMN_KEYS = new Set(["id","nickname","multi","single","ranked","money","moneyMultiplier","ratingBoostGames","titles","currentTitle","lastCheckDate","attendanceStreak","recentGames","shieldTickets","ratingHistory","lastSeen","daily","weekly","monthly","season","firebaseUid","firebaseEmail","firebaseName"]);
+function playerExtras(safe) {
+  const out = {};
+  for (const k of Object.keys(safe)) {
+    if (PLAYER_COLUMN_KEYS.has(k)) continue;
+    if (safe[k] === undefined) continue;
+    out[k] = safe[k];
+  }
+  return out;
 }
 
 async function savePlayerData(playerId, data) {
@@ -1123,8 +1142,8 @@ async function savePlayerData(playerId, data) {
            money, money_multiplier, rating_boost_games,
            titles, current_title, last_check_date, attendance_streak,
            recent_games, daily, weekly, monthly, season,
-           firebase_uid, firebase_email, firebase_name, shield_tickets, rating_history, last_seen, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,NOW())
+           firebase_uid, firebase_email, firebase_name, shield_tickets, rating_history, last_seen, extras, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,NOW())
         ON CONFLICT (id) DO UPDATE SET
           nickname=$2, rating=$3, wins=$4, losses=$5,
           streak=$6, best_streak=$7,
@@ -1135,7 +1154,7 @@ async function savePlayerData(playerId, data) {
           titles=$19, current_title=$20, last_check_date=$21, attendance_streak=$22,
           recent_games=$23, daily=$24, weekly=$25, monthly=$26, season=$27,
           firebase_uid=$28, firebase_email=$29, firebase_name=$30,
-          shield_tickets=$31, rating_history=$32, last_seen=$33, updated_at=NOW()
+          shield_tickets=$31, rating_history=$32, last_seen=$33, extras=$34, updated_at=NOW()
       `, [
         key, safe.nickname || "플레이어",
         safe.multi.rating, safe.multi.wins, safe.multi.losses,
@@ -1150,7 +1169,8 @@ async function savePlayerData(playerId, data) {
         JSON.stringify(safe.weekly), JSON.stringify(safe.monthly),
         JSON.stringify(safe.season || {}),
         safe.firebaseUid || null, safe.firebaseEmail || "", safe.firebaseName || "",
-        safe.shieldTickets, JSON.stringify(safe.ratingHistory), safe.lastSeen
+        safe.shieldTickets, JSON.stringify(safe.ratingHistory), safe.lastSeen,
+        JSON.stringify(playerExtras(safe))
       ]);
     } catch (err) {
       console.error("DB 쓰기 오류:", err.message);
@@ -1496,6 +1516,10 @@ function achievementDefs() {
 /* 레퍼럴(추천인) — 계정당 1회 등록, 양쪽 모두 코인 보상 */
 const REFERRAL_JOIN_COIN = 3000;
 const REFERRAL_INVITE_COIN = 5000;
+
+/* 우편(쪽지) — 쪽지함 최대 보관 개수 / 쪽지 코인 상한 */
+const MAIL_MAX = 50;
+const MAIL_COIN_MAX = 1000000;
 
 /* 누적 카운터 보장(없으면 생성+정규화) — pd.ach */
 function achievementStats(pd) {
@@ -4617,6 +4641,79 @@ io.on("connection", (socket) => {
     }
   });
 
+  /* 관리자: 전체 공지 — 접속 중인 모든 유저에게 즉시 알림 */
+  socket.on("admin:notice", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:noticeResult", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") {
+        socket.emit("admin:noticeResult", { ok: false, reason: "최고 관리자만 전체 공지를 보낼 수 있습니다." });
+        return;
+      }
+      const text = String(data?.text || "").trim().slice(0, 200);
+      if (!text) { socket.emit("admin:noticeResult", { ok: false, reason: "공지 내용을 입력해주세요." }); return; }
+      io.emit("notice:global", { text, at: new Date().toISOString(), by: reg.nickname });
+      socket.emit("admin:noticeResult", { ok: true, message: `전체 공지를 보냈습니다. (${text.length}자)` });
+      console.log(`[ADMIN] 전체 공지 by ${reg.nickname}: ${text}`);
+    } catch (err) {
+      console.error("공지 오류:", err);
+      socket.emit("admin:noticeResult", { ok: false, reason: "공지 전송에 실패했습니다." });
+    }
+  });
+
+  /* 관리자: 개별 쪽지(우편) — 대상 쪽지함에 코인과 함께 저장 */
+  socket.on("admin:mailSend", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:mailResult", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") {
+        socket.emit("admin:mailResult", { ok: false, reason: "최고 관리자만 쪽지를 보낼 수 있습니다." });
+        return;
+      }
+      const nickname = String(data?.nickname || "").trim();
+      if (!nickname) { socket.emit("admin:mailResult", { ok: false, reason: "받는 닉네임을 입력해주세요." }); return; }
+      let title = String(data?.title || "").trim().slice(0, 40);
+      if (!title) title = "관리자 쪽지";
+      const body = String(data?.body || "").trim().slice(0, 200);
+      const coin = Math.min(MAIL_COIN_MAX, Math.max(0, Math.floor(Number(data?.coin) || 0)));
+
+      let targetId = await findPlayerIdByNickname(nickname);
+      if (!targetId) targetId = await findPlayerIdByNickname(normalizeWord(nickname));
+      if (!targetId) { socket.emit("admin:mailResult", { ok: false, reason: "존재하지 않는 닉네임입니다." }); return; }
+
+      const pd = await getPlayerData(targetId);
+      const list = Array.isArray(pd.mail) ? pd.mail : [];
+      list.unshift({
+        id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+        title, body, coin,
+        at: new Date().toISOString(),
+        from: "관리자",
+        read: false
+      });
+      /* 보관 상한 초과분은 오래된 것(읽은 것 우선)부터 제거 */
+      while (list.length > MAIL_MAX) {
+        const idx = list.findIndex(m => m && m.read);
+        list.splice(idx >= 0 ? idx : list.length - 1, 1);
+      }
+      pd.mail = list;
+      await savePlayerData(targetId, pd);
+
+      /* 대상이 온라인이면 새 쪽지 알림 */
+      const sid = onlineNicks.get(normKey(nickname));
+      const targetSocket = sid ? io.sockets.sockets.get(sid) : null;
+      if (targetSocket) targetSocket.emit("mail:new", { title, coin });
+
+      socket.emit("admin:mailResult", {
+        ok: true,
+        message: `'${nickname}' 쪽지함에 '${title}' 쪽지를 보냈습니다${coin ? ` (+${coin.toLocaleString()}코인)` : ""}.`
+      });
+      console.log(`[ADMIN] 쪽지 발송: '${nickname}' ← '${title}'${coin ? ` +${coin}` : ""} by ${reg.nickname}`);
+    } catch (err) {
+      console.error("쪽지 발송 오류:", err);
+      socket.emit("admin:mailResult", { ok: false, reason: "쪽지 발송에 실패했습니다." });
+    }
+  });
+
   /* -- 실시간 채팅 (방 단위) ---------------------------- */
   socket.on("chat:send", (data) => {
     try {
@@ -4791,6 +4888,58 @@ io.on("connection", (socket) => {
         inviteCoin: REFERRAL_INVITE_COIN
       });
     } catch (err) { console.error("추천인 상태 오류:", err); }
+  });
+
+  /* -- 우편(쪽지)함 — 목록 / 수령 ------------------------ */
+  socket.on("mail:list", async () => {
+    try {
+      const myNick = socketNicks.get(socket.id) || "";
+      if (!myNick) { socket.emit("mail:list", { ok: false, reason: "먼저 닉네임을 설정해주세요." }); return; }
+      const myPd = await getPlayerData(normKey(myNick));
+      const mail = (Array.isArray(myPd.mail) ? myPd.mail : [])
+        .map(m => ({
+          id: String(m?.id || ""),
+          title: String(m?.title || "쪽지"),
+          body: String(m?.body || ""),
+          coin: Math.max(0, Math.floor(Number(m?.coin) || 0)),
+          at: String(m?.at || ""),
+          from: String(m?.from || ""),
+          read: !!m?.read
+        }))
+        .filter(m => m.id);
+      const unread = mail.filter(m => !m.read).length;
+      socket.emit("mail:list", { ok: true, mail, unread });
+    } catch (err) { console.error("쪽지함 조회 오류:", err); socket.emit("mail:list", { ok: false, reason: "쪽지함을 불러오지 못했습니다." }); }
+  });
+
+  socket.on("mail:claim", async (data) => {
+    try {
+      const myNick = socketNicks.get(socket.id) || "";
+      if (!myNick) { socket.emit("mail:claim", { ok: false, reason: "먼저 닉네임을 설정해주세요." }); return; }
+      const mailId = String(data?.id || "");
+      if (!mailId) { socket.emit("mail:claim", { ok: false, reason: "쪽지가 지정되지 않았습니다." }); return; }
+      const myId = normKey(myNick);
+      const myPd = await getPlayerData(myId);
+      const mail = Array.isArray(myPd.mail) ? myPd.mail : [];
+      const entry = mail.find(m => String(m?.id || "") === mailId);
+      if (!entry) { socket.emit("mail:claim", { ok: false, reason: "찾을 수 없는 쪽지입니다." }); return; }
+      if (entry.read) { socket.emit("mail:claim", { ok: false, reason: "이미 수령한 쪽지입니다." }); return; }
+      entry.read = true;
+      const coin = Math.min(MAIL_COIN_MAX, Math.max(0, Math.floor(Number(entry.coin) || 0)));
+      myPd.money = Math.max(0, (Number(myPd.money) || 0) + coin);
+      myPd.mail = mail;
+      await savePlayerData(myId, myPd);
+      const unread = mail.filter(m => !m?.read).length;
+      socket.emit("mail:claim", {
+        ok: true, id: mailId, coin,
+        money: Math.max(0, Math.floor(Number(myPd.money) || 0)),
+        unread,
+        message: coin > 0 ? `쪽지를 수령했습니다. +${coin.toLocaleString()}코인!` : "쪽지를 확인했습니다."
+      });
+    } catch (err) {
+      console.error("쪽지 수령 오류:", err);
+      socket.emit("mail:claim", { ok: false, reason: "쪽지 수령에 실패했습니다." });
+    }
   });
 
   /* 표시 이름 설정 — Google 로그인 세션이 있는 소켓만 가능하다.

@@ -1289,6 +1289,45 @@ function initSocket() {
     chatNotice(text, true);
   });
 
+  /* -- 전체 공지 · 우편(쪽지) --------------------------- */
+  socket.on("notice:global", (data) => {
+    const text = String(data?.text || "").trim();
+    if (!text) return;
+    showMessage(text, "info");
+    chatNotice(`📢 ${text}`);
+  });
+  socket.on("admin:noticeResult", (data) => {
+    if (!data) return;
+    if (data.ok) { setAdminStatus(data.message || "공지를 보냈습니다.", "ok"); showMessage(data.message || "공지를 보냈습니다.", "success"); }
+    else { setAdminStatus(data.reason || "공지 전송에 실패했습니다.", "error"); showMessage(data.reason || "공지 전송에 실패했습니다.", "error"); }
+  });
+  socket.on("admin:mailResult", (data) => {
+    if (!data) return;
+    if (data.ok) { setAdminStatus(data.message || "쪽지를 보냈습니다.", "ok"); showMessage(data.message || "쪽지를 보냈습니다.", "success"); }
+    else { setAdminStatus(data.reason || "쪽지 발송에 실패했습니다.", "error"); showMessage(data.reason || "쪽지 발송에 실패했습니다.", "error"); }
+  });
+  socket.on("mail:list", (data) => {
+    if (!data || !data.ok) return;
+    renderMailList(data.mail || [], data.unread || 0);
+  });
+  socket.on("mail:claim", (data) => {
+    if (!data) return;
+    if (data.ok) {
+      if (typeof data.money === "number") { moneyBalance = data.money; renderMoneyBar(); }
+      showMessage(data.message || "쪽지를 수령했습니다.", "success");
+      if (socket && socketConnected) socket.emit("mail:list");
+    } else {
+      showMessage(data.reason || "쪽지를 수령하지 못했습니다.", "error");
+    }
+  });
+  socket.on("mail:new", (data) => {
+    const title = String(data?.title || "쪽지");
+    const coin = Number(data?.coin) || 0;
+    showMessage(`새 쪽지가 도착했습니다: ${title}${coin ? ` (+${coin}코인)` : ""}`, "info");
+    const panel = $("#accountPanel");
+    if (panel && !panel.classList.contains("hidden")) socket.emit("mail:list");
+  });
+
   /* -- 커스텀 사전 (단어 신청) — 상점 탭에서만 사용 ------------------------- */
   socket.on("word:requestResult", (data) => {
     if (!data) return;
@@ -2915,6 +2954,28 @@ function renderAdminBody(data) {
     </div>
   ` : "";
 
+  /* 관리자: 전체 공지 · 개별 쪽지(우편) */
+  const noticeCard = isSuper ? `
+    <div class="admin-card">
+      <h4>공지 · 우편(쪽지)</h4>
+      <div class="admin-info"><b>공지</b>는 접속 중인 모든 유저에게 즉시 뜨고, <b>쪽지</b>는 특정 유저의 쪽지함에 코인과 함께 저장됩니다.</div>
+      <div class="admin-row">
+        <input type="text" id="adminNoticeText" class="admin-text" maxlength="200" placeholder="전체 공지 내용" autocomplete="off" data-admin-enter="[data-admin-notice]">
+        <button type="button" class="admin-apply" data-admin-notice="1">공지 보내기</button>
+      </div>
+      <div class="admin-info" style="margin-top:8px;">쪽지 보내기 (개별 — 코인 보상 포함 가능)</div>
+      <div class="admin-row">
+        <input type="text" id="adminMailNick" class="admin-text" maxlength="12" placeholder="받는 닉네임" autocomplete="off">
+        <input type="text" id="adminMailTitle" class="admin-text" maxlength="40" placeholder="제목" autocomplete="off">
+      </div>
+      <div class="admin-row">
+        <input type="text" id="adminMailBody" class="admin-text" maxlength="200" placeholder="내용 (선택)" autocomplete="off">
+        <input type="number" id="adminMailCoin" class="admin-num" placeholder="코인 (선택)" autocomplete="off" min="0">
+        <button type="button" class="admin-apply" id="adminMailSend">쪽지 보내기</button>
+      </div>
+    </div>
+  ` : "";
+
   /* 관리자: 버그 제보 (최고 관리자 전용) */
   const bugCard = isSuper ? `
     <div class="admin-card">
@@ -2969,6 +3030,7 @@ function renderAdminBody(data) {
     ${watchCard}
     ${statsCard}
     ${moneyCard}
+    ${noticeCard}
     ${wordCard}
     ${bugCard}
     ${modCard}
@@ -2985,6 +3047,25 @@ function renderAdminBody(data) {
     const amount = Number($("#adminMoneyAmount")?.value ?? 0);
     if (!nick) { setAdminStatus("닉네임을 입력해주세요.", "error"); return; }
     socket.emit("admin:setMoney", { nickname: nick, amount });
+  });
+
+  /* 전체 공지 · 쪽지 발송 */
+  const noticeSend = $("[data-admin-notice]");
+  if (noticeSend) noticeSend.addEventListener("click", () => {
+    const text = $("#adminNoticeText")?.value.trim() || "";
+    if (!text) { setAdminStatus("공지 내용을 입력해주세요.", "error"); return; }
+    socket.emit("admin:notice", { text });
+  });
+  const mailSend = $("#adminMailSend");
+  if (mailSend) mailSend.addEventListener("click", () => {
+    const nick = $("#adminMailNick")?.value.trim() || "";
+    if (!nick) { setAdminStatus("받는 닉네임을 입력해주세요.", "error"); return; }
+    socket.emit("admin:mailSend", {
+      nickname: nick,
+      title: $("#adminMailTitle")?.value.trim() || "",
+      body: $("#adminMailBody")?.value.trim() || "",
+      coin: Number($("#adminMailCoin")?.value || 0)
+    });
   });
 
   const bugLoad = $("#adminBugLoad");
@@ -3175,7 +3256,7 @@ function openAccountPanel(force) {
   panel.classList.toggle("hidden", !open);
   if (open) {
     renderAccountInfo($("#nickInput")?.value.trim() || myNickname || "");
-    if (socket && socketConnected) socket.emit("referral:status");
+    if (socket && socketConnected) { socket.emit("referral:status"); socket.emit("mail:list"); }
     setTimeout(() => $("#accNickInput")?.focus(), 60);
   }
 }
@@ -3183,6 +3264,41 @@ function openAccountPanel(force) {
 function renderAccountInfo(nick) {
   const input = $("#accNickInput");
   if (input && nick !== undefined) input.value = nick || "";
+}
+
+function renderMailList(list, unread) {
+  const badge = $("#mailUnread");
+  if (badge) {
+    badge.textContent = String(unread);
+    badge.classList.toggle("hidden", !unread);
+  }
+  const wrap = $("#mailList");
+  if (!wrap) return;
+  if (!list.length) {
+    wrap.innerHTML = `<div class="acc-referral-status">쪽지가 없습니다.</div>`;
+    return;
+  }
+  wrap.innerHTML = list.map(m => {
+    let at = "";
+    try {
+      const d = new Date(m.at);
+      if (!Number.isNaN(d.getTime())) at = d.toLocaleString();
+    } catch {}
+    return `
+    <div class="mail-item${m.read ? " read" : ""}">
+      <div class="mail-item-head"><b>${escapeHtml(String(m.title || "쪽지"))}</b>${m.coin ? `<span class="mail-coin">+${Number(m.coin).toLocaleString()}코인</span>` : ""}</div>
+      ${m.body ? `<div class="mail-item-body">${escapeHtml(String(m.body))}</div>` : ""}
+      <div class="mail-item-foot">
+        <span class="mail-item-at">${escapeHtml(at)}</span>
+        ${m.read ? `<span class="mail-done">수령 완료</span>` : `<button type="button" class="mail-claim-btn" data-mail-claim="${escapeHtml(String(m.id))}">수령</button>`}
+      </div>
+    </div>`;
+  }).join("");
+  wrap.querySelectorAll("[data-mail-claim]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (socket && socketConnected) socket.emit("mail:claim", { id: btn.dataset.mailClaim });
+    });
+  });
 }
 
 function renderAccountScores() {
