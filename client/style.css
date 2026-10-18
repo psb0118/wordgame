@@ -376,6 +376,23 @@ button:disabled {
   padding: 10px;
 }
 
+/* 방 종류 선택 (일반 / 2v2 파티) */
+.onlineTop select {
+  padding: 10px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.onlineTop select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 /* 방 목록 브라우저 */
 .room-list-panel {
   margin-bottom: 12px;
@@ -466,6 +483,23 @@ button:disabled {
 .room-list-row .rl-join {
   color: var(--accent);
   font-weight: 600;
+}
+
+/* 2v2 파티 방 배지 */
+.room-list-row .rl-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--purple);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+
+.room-list-row.party {
+  border-left: 3px solid var(--purple);
 }
 
 .room-list-status {
@@ -641,6 +675,22 @@ button:disabled {
   opacity: 0.5;
   text-decoration: line-through;
 }
+
+/* 파티(2v2) 팀 배지 — A팀 파랑, B팀 빨강 */
+.player-item .team-chip {
+  display: inline-block;
+  min-width: 36px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #fff;
+  text-align: center;
+  flex: none;
+}
+
+.player-item .team-chip.team-0 { background: #2563eb; }
+.player-item .team-chip.team-1 { background: #dc2626; }
 
 /* 랭킹 */
 .ranking-section {

@@ -56,7 +56,8 @@ function context(extra = {}) {
     getPlayerRoom: () => null,
     cancelRankedInvitesFor() {}, removeFromRankedQueue() {}, broadcastRankedQueue() {},
     broadcastRoomState() {}, getPublicRoomState: r => ({ roomId: r.id }),
-    TURN_TIME: 20, MAX_PLAYERS: 10, RECONNECT_GRACE_MS: 30000,
+    TURN_TIME: 20, MAX_PLAYERS: 10, RECONNECT_GRACE_MS: 30000, MAX_HEARTS: 3,
+    PARTY_PLAYERS: 4, PARTY_TEAM_SIZE: 2, PARTY_TEAM_COUNT: 2,
     setTimeout(fn, ms) { const t = { fn, ms, active: true }; timers.push(t); return t; },
     clearTimeout(t) { if (t && typeof t === "object") t.active = false; },
     io: { to: () => ({ emit: (...args) => emissions.push(args) }),
@@ -81,6 +82,8 @@ function context(extra = {}) {
     "getBan", "getMute", "banGuard", "banGuardByUid", "readModEntries",
     "applyModeration", "saveModeration", "loadModeration",
     "listModeration", "addModeration", "removeModeration",
+    "roomCapacity", "partyAliveTeams", "checkPartyEnd",
+    "partyReadyError", "partyResultPairs", "addPlayer",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions };
 }
@@ -635,4 +638,109 @@ test("rating history keeps one snapshot per day for ranked and multi", async () 
   assert.equal(w.ratingHistory.length, 1, "같은 날은 하루 1점으로 갱신됩니다");
   assert.equal(w.ratingHistory[0].d, "2026-10-04");
   assert.ok(Number.isFinite(w.ratingHistory[0].r) && Number.isFinite(w.ratingHistory[0].m));
+});
+
+/* =========================================================
+   2v2 파티 모드 — 팀 배정 / 팀 승패 / 레이팅
+========================================================= */
+function partyRoom(nicknames = ["pa1", "pb1", "pa2", "pb2"]) {
+  const room = {
+    id: "PTY01", mode: "party", hostSocketId: "s1",
+    players: [], history: [], usedWords: new Set(),
+    started: true, finished: false, turnPlayerIndex: 0, turnNumber: 1,
+    gameSessionId: 7, hintsUsed: 0, timer: null,
+    turnStartedAt: null, turnEndsAt: null, currentWord: null,
+    pendingMissionWrites: null
+  };
+  const teams = [0, 1, 0, 1];
+  nicknames.forEach((n, i) => {
+    room.players.push({
+      id: `s${i + 1}`, socketId: `s${i + 1}`, playerIndex: i,
+      nickname: n, isBot: false, alive: true, connected: true,
+      hearts: 3, eliminated: false, mistakes: 0, waiting: false, teamOf: teams[i]
+    });
+  });
+  return room;
+}
+
+test("party seats alternate teams (A,B,A,B) and stop at four players", () => {
+  const { c } = context();
+  const room = { id: "p1", mode: "party", players: [] };
+  const a = c.addPlayer(room, "s1", "alpha", { teamOf: 0 });
+  const b = c.addPlayer(room, "s2", "bravo");
+  const d = c.addPlayer(room, "s3", "charlie");
+  const e = c.addPlayer(room, "s4", "delta");
+  assert.deepEqual([a.teamOf, b.teamOf, d.teamOf, e.teamOf], [0, 1, 0, 1], "팀이 번갈아 배정되어야 합니다");
+  assert.deepEqual([a.playerIndex, b.playerIndex, d.playerIndex, e.playerIndex], [0, 1, 2, 3], "좌석은 인터리브 순서여야 합니다");
+  assert.equal(c.addPlayer(room, "s5", "fifth"), null, "정원 4명 초과 시 입장 거절");
+});
+
+test("party capacity is 4 regardless of MAX_PLAYERS", () => {
+  const { c } = context();
+  assert.equal(c.roomCapacity({ mode: "party" }), 4);
+  assert.equal(c.roomCapacity({ mode: "online" }), c.MAX_PLAYERS);
+  assert.equal(c.roomCapacity(null), c.MAX_PLAYERS);
+});
+
+test("party ends only when an entire team is eliminated", async () => {
+  const { c, errors } = context();
+  const room = partyRoom();
+  assert.equal(c.checkPartyEnd(room), false, "양 팀 모두 생존이면 계속 진행");
+
+  room.players[1].eliminated = true;
+  room.players[1].alive = false;
+  assert.equal(c.checkPartyEnd(room), false, "팀 중 한 명만 탈락해도 계속 진행");
+
+  room.players[3].eliminated = true;
+  room.players[3].alive = false;
+  assert.equal(c.checkPartyEnd(room), true, "한 팀이 전멸하면 종료 처리");
+  assert.equal(room.finished, true);
+  assert.equal(room.players[room.winner].teamOf, 0, "승자는 생존 팀(0번) 소속이어야 합니다");
+
+  await new Promise(r => setImmediate(r));
+  assert.equal(errors.length, 0);
+});
+
+test("party rating pairs match each winner against a loser of the other team", () => {
+  const { c } = context();
+  const room = partyRoom();
+  const jp = v => JSON.parse(JSON.stringify(v));
+  assert.deepEqual(jp(c.partyResultPairs(room, 0)), [[0, 1], [2, 3]]);
+  assert.deepEqual(jp(c.partyResultPairs(room, 1)), [[1, 0], [3, 2]]);
+  assert.deepEqual(jp(c.partyResultPairs(room, null)), [], "무승부는 페어 없음");
+  assert.deepEqual(jp(c.partyResultPairs({ mode: "online", players: room.players }, 0)), [], "비파티는 페어 없음");
+});
+
+test("party start requires one connected player per team", () => {
+  const { c } = context();
+  const room = partyRoom();
+  const eligible = room.players;
+  assert.equal(c.partyReadyError(room, eligible), null);
+  assert.equal(c.partyReadyError({ mode: "online", players: room.players }, [room.players[0]]), null, "비파티는 검사 없음");
+  const onlyA = [room.players[0], room.players[2]];
+  assert.match(String(c.partyReadyError(room, onlyA)), /각 팀/);
+});
+
+test("party win rates up both teammates and down both opponents", async () => {
+  const { c, errors } = context();
+  for (const n of ["pa1", "pb1", "pa2", "pb2"]) seed(c, n);
+  const room = partyRoom();
+  const before = n => c.playerCache.get(n).multi.rating;
+  const b = { pa1: before("pa1"), pb1: before("pb1"), pa2: before("pa2"), pb2: before("pb2") };
+
+  await c.finishGame(room, 0, 1);
+  await new Promise(r => setImmediate(r));
+
+  assert.ok(c.playerCache.get("pa1").multi.rating > b.pa1, "승팀 1 레이팅 상승");
+  assert.ok(c.playerCache.get("pa2").multi.rating > b.pa2, "승팀 2 레이팅 상승");
+  assert.ok(c.playerCache.get("pb1").multi.rating < b.pb1, "패팀 1 레이팅 하락");
+  assert.ok(c.playerCache.get("pb2").multi.rating < b.pb2, "패팀 2 레이팅 하락");
+
+  const hist = c.playerCache.get("pa2").recentGames;
+  assert.equal(hist.length, 1, "팀원 전원에게 전적이 기록됩니다");
+  assert.equal(hist[0].result, "win");
+  assert.equal(hist[0].mode, "party");
+  const histB = c.playerCache.get("pb2").recentGames;
+  assert.equal(histB[0].result, "lose");
+  assert.equal(errors.length, 0, "오류 없이 처리되어야 합니다");
 });

@@ -1701,6 +1701,10 @@ function buildSeasonInfo() {
 /* 최근 10판 전적 기록 — 종료된 방의 각 인간 플레이어에 기록 */
 async function recordMatchHistory(room, winnerIndex, loserIndex) {
   if (!room || !room.players) return;
+  const isParty = room.mode === "party";
+  const winTeam = isParty && winnerIndex !== null && winnerIndex !== undefined
+    ? (room.players[winnerIndex] ? room.players[winnerIndex].teamOf : null)
+    : null;
   for (const p of room.players) {
     if (p.isBot) continue;
     try {
@@ -1709,8 +1713,12 @@ async function recordMatchHistory(room, winnerIndex, loserIndex) {
       const mine = (room.history || []).filter(h => h.player === p.playerIndex && typeof h.word === "string" && h.word.length > 0);
       const wordCount = mine.length;
       const avgWordLen = wordCount > 0 ? Math.round((mine.reduce((a, w) => a + w.word.length, 0) / wordCount) * 10) / 10 : 0;
-      const opp = room.players.find(o => o.playerIndex !== p.playerIndex && !o.isBot && o.id !== p.id);
-      const result = winnerIndex === null ? "draw" : (p.playerIndex === winnerIndex ? "win" : "lose");
+      const opp = (isParty && p.teamOf !== null && p.teamOf !== undefined)
+        ? room.players.find(o => o.playerIndex !== p.playerIndex && !o.isBot && o.teamOf !== p.teamOf)
+        : room.players.find(o => o.playerIndex !== p.playerIndex && !o.isBot && o.id !== p.id);
+      const result = winnerIndex === null ? "draw"
+        : (winTeam !== null && winTeam !== undefined) ? (p.teamOf === winTeam ? "win" : "lose")
+        : (p.playerIndex === winnerIndex ? "win" : "lose");
       const list = Array.isArray(pd.recentGames) ? pd.recentGames : [];
       list.push({
         date: new Date().toISOString(),
@@ -1818,6 +1826,11 @@ function createRoomId() {
   return id;
 }
 
+/* 방 정원 — 파티(2v2)는 4명 고정, 그 외는 관리자 설정값(MAX_PLAYERS) */
+function roomCapacity(room) {
+  return room && room.mode === "party" ? PARTY_PLAYERS : MAX_PLAYERS;
+}
+
 function createRoom(socketId, nickname, mode, opts = {}) {
   const roomId = createRoomId();
   const room = {
@@ -1848,19 +1861,22 @@ function createRoom(socketId, nickname, mode, opts = {}) {
     difficulty: opts.difficulty || "normal",
     aiThinkMs: { easy: 1500, normal: 800, hard: 300 }[opts.difficulty || "normal"] || 800
   };
-  addPlayer(room, socketId, nickname);
+  /* 방장은 파티(2v2)에서 항상 0번 팀(첫 좌석)에 배치된다 */
+  addPlayer(room, socketId, nickname, room.mode === "party" ? { teamOf: 0 } : {});
   ROOMS.set(roomId, room);
   return room;
 }
 
 function addPlayer(room, socketId, nickname, opts = {}) {
-  if (room.players.length >= MAX_PLAYERS) return null;
+  if (room.players.length >= roomCapacity(room)) return null;
   if (room.mode === "party") {
     /* 2v2 파티 — 좌석을 A1,B1,A2,B2 순서로 배치(인터리브)해서 기존의 선형
        턴 순회(findNextAlivePlayer)가 자동으로 팀이 번갈아 가며 차례를 갖게 한다.
        즉 '한방'은 항상 상대 팀(다음 살아있는 상대)을 노리게 되므로 턴/한방/종료
        엔진을 전혀 건드리지 않고 2v2가 성립한다. teamOf는 0 또는 1. */
-    const teamOf = opts.teamOf == null ? (typeof room.partyTeamCounts === "object" ? (room.players.filter(p => p.teamOf === 1).length < PARTY_TEAM_COUNT ? 1 : 0) : 1) : opts.teamOf;
+    const count0 = room.players.filter(p => p.teamOf === 0).length;
+    const count1 = room.players.filter(p => p.teamOf === 1).length;
+    const teamOf = opts.teamOf != null ? opts.teamOf : (count1 < count0 ? 1 : 0);
     const teamMemberCount = teamOf === 1
       ? room.players.filter(p => p.teamOf === 1).length
       : room.players.filter(p => p.teamOf === 0).length;
@@ -1997,6 +2013,7 @@ function getPublicRoomState(room) {
       connected: p.connected, eliminated: p.eliminated,
       mistakes: p.mistakes || 0,
       waiting: p.waiting || false,
+      team: (p.teamOf === 0 || p.teamOf === 1) ? p.teamOf : null,
       title: playerTitle(p),
       isAdmin: isAdminPd(playerCache.get(resolvePlayerId(p.id)))
     })),
@@ -2010,7 +2027,7 @@ function getPublicRoomState(room) {
       return o;
     })(),
     playerCount: room.players.filter(p => !p.isBot && !p.waiting).length,
-    maxPlayers: MAX_PLAYERS,
+    maxPlayers: roomCapacity(room),
     maxHearts: MAX_HEARTS,
     turnStartedAt: room.turnStartedAt,
     turnEndsAt: room.turnEndsAt
@@ -2082,10 +2099,14 @@ function handleTurnTimeout(room, gameSessionId) {
   });
 
   const alive = getAlivePlayers(room);
-  if (alive.length === 0) { finishGame(room, null, null); return; }
-  if (alive.length === 1) {
-    finishGame(room, alive[0].playerIndex, player.playerIndex);
-    return;
+  if (room.mode === "party") {
+    if (checkPartyEnd(room)) return;
+  } else {
+    if (alive.length === 0) { finishGame(room, null, null); return; }
+    if (alive.length === 1) {
+      finishGame(room, alive[0].playerIndex, player.playerIndex);
+      return;
+    }
   }
 
   if (heartLost && !player.eliminated) {
@@ -2112,6 +2133,56 @@ function handleTurnTimeout(room, gameSessionId) {
    winnerIndex가 이긴 사람, loserIndex가 진 사람
 ========================================================= */
 
+/* =========================================================
+   파티(2v2) — 팀 승패 판정
+   한 팀원이라도 생존해 있으면 게임 계속, 한 팀만 남으면 종료.
+========================================================= */
+function partyAliveTeams(room) {
+  const teams = new Set();
+  for (const p of room.players) {
+    if (p.eliminated || p.waiting) continue;
+    if (p.teamOf === 0 || p.teamOf === 1) teams.add(p.teamOf);
+  }
+  return teams;
+}
+
+/* 파티(2v2) 시작/재시작 조건 — 양 팀에 최소 1명씩 연결되어 있어야 한다 */
+function partyReadyError(room, eligible) {
+  if (!room || room.mode !== "party") return null;
+  const t0 = eligible.some(p => p.teamOf === 0);
+  const t1 = eligible.some(p => p.teamOf === 1);
+  return (!t0 || !t1) ? "각 팀에 최소 1명씩 연결되어 있어야 합니다." : null;
+}
+
+/* 종료 처리를 했으면 true */
+function checkPartyEnd(room) {
+  if (!room || room.mode !== "party" || room.finished) return false;
+  const teams = partyAliveTeams(room);
+  if (teams.size >= 2) return false;
+  if (teams.size === 0) { finishGame(room, null, null); return true; }
+  const winTeam = [...teams][0];
+  const winPlayer = room.players.find(p => !p.eliminated && !p.waiting && p.teamOf === winTeam);
+  const losePlayer = room.players.find(p => p.teamOf !== winTeam && p.eliminated)
+    || room.players.find(p => p.teamOf !== winTeam);
+  if (!winPlayer) { finishGame(room, null, null); return true; }
+  finishGame(room, winPlayer.playerIndex, losePlayer ? losePlayer.playerIndex : null);
+  return true;
+}
+
+/* 파티 승/패 페어 (승팀원 vs 패팀원 짝지어 레이팅에 반영) */
+function partyResultPairs(room, winnerIndex) {
+  if (!room || room.mode !== "party" || winnerIndex == null) return [];
+  const winner = room.players[winnerIndex];
+  if (!winner || winner.teamOf == null) return [];
+  const winTeam = winner.teamOf;
+  const winners = room.players.filter(p => !p.isBot && p.teamOf === winTeam);
+  const losers = room.players.filter(p => !p.isBot && p.teamOf !== winTeam);
+  const pairs = [];
+  const n = Math.min(winners.length, losers.length);
+  for (let i = 0; i < n; i++) pairs.push([winners[i].playerIndex, losers[i].playerIndex]);
+  return pairs;
+}
+
 async function finishGame(room, winnerIndex, loserIndex) {
   if (!room || room.finished) return;
   room.finished = true;
@@ -2137,7 +2208,30 @@ async function finishGame(room, winnerIndex, loserIndex) {
   const winnerAccountId = w ? normKey(w.nickname) || w.id : null;
   const loserAccountId = l ? normKey(l.nickname) || l.id : null;
   const humanOnly = w && l && !w.isBot && !l.isBot;
-  if (w && l && w.id !== l.id && (room.mode === "online" || room.mode === "ranked") && humanOnly) {
+  if (room.mode === "party" && humanOnly && w && l && winnerIndex !== null) {
+    /* 2v2 — 승리 팀·패배 팀 전원에게 멀티 레이팅 승/패를 각각 반영 */
+    const pairs = partyResultPairs(resultRoom, winnerIndex);
+    resultSave = (async () => {
+      for (const [wi, li] of pairs) {
+        const wp = resultRoom.players[wi];
+        const lp = resultRoom.players[li];
+        if (!wp || !lp) continue;
+        try {
+          const res = await updateRating(
+            normKey(wp.nickname) || wp.id, normKey(lp.nickname) || lp.id,
+            wp.nickname || "플레이어", lp.nickname || "플레이어", "multi", {}
+          );
+          for (const [data, p] of [[res.winner, wp], [res.loser, lp]]) {
+            if (p && p.socketId) {
+              const s = io.sockets.sockets.get(p.socketId);
+              if (s) s.emit("player:ranking", { ...data, rank: data.rank });
+            }
+          }
+        } catch (err) { console.error("파티 레이팅 반영 오류:", err.message); }
+      }
+      await recordMatchHistory(resultRoom, winnerIndex, loserIndex);
+    })().catch(err => console.error("파티 결과 저장 오류:", err.message));
+  } else if (w && l && w.id !== l.id && (room.mode === "online" || room.mode === "ranked") && humanOnly) {
     const mode = room.mode === "ranked" ? "ranked" : "multi";
     const updateOpts = {};
     if (room.mode === "ranked") {
@@ -2398,10 +2492,14 @@ function playWord(room, player, rawWord, gameSessionId) {
     }
 
     const alive = getAlivePlayers(room);
-    if (alive.length === 0) { finishGame(room, null, null); return { ok: true, finished: true }; }
-    if (alive.length === 1) {
-      finishGame(room, alive[0].playerIndex, loser);
-      return { ok: true, finished: true };
+    if (room.mode === "party") {
+      if (checkPartyEnd(room)) return { ok: true, finished: true };
+    } else {
+      if (alive.length === 0) { finishGame(room, null, null); return { ok: true, finished: true }; }
+      if (alive.length === 1) {
+        finishGame(room, alive[0].playerIndex, loser);
+        return { ok: true, finished: true };
+      }
     }
 
     /* 다음 라운드로 자연스럽게 이어짐 — 게임(목숨)은 유지 */
@@ -2524,7 +2622,9 @@ function removePlayer(room, socketId, reason) {
     }
 
     const alive = getAlivePlayers(room);
-    if (alive.length <= 1) {
+    if (room.mode === "party") {
+      if (checkPartyEnd(room)) return;
+    } else if (alive.length <= 1) {
       finishGame(room, alive.length === 1 ? alive[0].playerIndex : null, player.playerIndex);
       return;
     }
@@ -2814,7 +2914,7 @@ io.on("connection", (socket) => {
   socket.on("room:create", async (data) => {
     try {
       const nickname = normalizeWord(data?.nickname) || "플레이어";
-      const mode = data?.mode === "ai" ? "ai" : "online";
+      const mode = data?.mode === "ai" ? "ai" : (data?.mode === "party" ? "party" : "online");
       /* 싱글 난이도 — 잘못된 값이면 보통으로 폴백 */
       const difficulty = ["easy", "normal", "hard"].includes(data?.difficulty) ? data.difficulty : "normal";
       const banMsg = banGuard(nickname);
@@ -2898,8 +2998,14 @@ io.on("connection", (socket) => {
         return;
       }
       /* 정원 검사는 기존 좌석의 재접속 처리 후에 한다. */
-      if (room.players.filter(p => !p.isBot).length >= MAX_PLAYERS) {
+      if (room.players.filter(p => !p.isBot).length >= roomCapacity(room)) {
         socket.emit("room:error", { ok: false, reason: "방이 가득 찼습니다." }); return;
+      }
+      /* 파티(2v2) 진행 중에는 새로 들어올 수 없다 — 대기 없이 정원 4명 채워
+         시작하는 방이므로 중간 합류는 팀 균형을 깨뜨린다 */
+      if (room.mode === "party" && room.started && !room.finished) {
+        socket.emit("room:error", { ok: false, reason: "파티 게임이 진행 중입니다. 잠시 후 다시 입장해 주세요." });
+        return;
       }
 
       /* 입장 확정 전에 이전 방(싱글/AI 방 포함)에서 분리 — 한 소켓이 여러 방에
@@ -2970,31 +3076,6 @@ io.on("connection", (socket) => {
     }
   });
 
-  /* -- 방 목록 브라우저 ---------------------------------- */
-  socket.on("room:list", () => {
-    try {
-      const rooms = [];
-      for (const room of ROOMS.values()) {
-        if (room.mode !== "online") continue;
-        if (room.started || room.finished) continue;
-        const humans = room.players.filter(p => !p.isBot);
-        if (humans.length >= MAX_PLAYERS) continue;
-        if (humans.some(p => p.socketId === socket.id)) continue;
-        rooms.push({
-          roomId: room.id,
-          host: room.players[0] ? room.players[0].nickname : "",
-          playerCount: humans.length,
-          max: MAX_PLAYERS,
-          createdAt: room.createdAt || 0
-        });
-      }
-      rooms.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-      socket.emit("room:list", { ok: true, rooms });
-    } catch (error) {
-      console.error("room:list 오류:", error);
-    }
-  });
-
   socket.on("room:joinRandom", () => {
     try {
       const candidates = [];
@@ -3060,10 +3141,14 @@ io.on("connection", (socket) => {
           broadcastRoomState(room);
           if (room.finished) return;
           const alive = getAlivePlayers(room);
-          if (alive.length === 0) { finishGame(room, null, null); return; }
-          if (alive.length === 1) {
-            finishGame(room, alive[0].playerIndex, player.playerIndex);
-            return;
+          if (room.mode === "party") {
+            if (checkPartyEnd(room)) return;
+          } else {
+            if (alive.length === 0) { finishGame(room, null, null); return; }
+            if (alive.length === 1) {
+              finishGame(room, alive[0].playerIndex, player.playerIndex);
+              return;
+            }
           }
           if (player.eliminated) {
             const next = findNextAlivePlayer(room, player.playerIndex);
@@ -3174,7 +3259,7 @@ io.on("connection", (socket) => {
     try {
       const room = getPlayerRoom(socket);
       if (!room) return;
-      if (room.mode !== "online") {
+      if (room.mode !== "online" && room.mode !== "party") {
         socket.emit("game:error", { ok: false, reason: "온라인 모드에서만 시작할 수 있습니다." });
         return;
       }
@@ -3196,6 +3281,8 @@ io.on("connection", (socket) => {
         socket.emit("game:error", { ok: false, reason: "최소 2명 이상의 연결된 플레이어가 필요합니다." });
         return;
       }
+      const partyErr = partyReadyError(room, eligible);
+      if (partyErr) { socket.emit("game:error", { ok: false, reason: partyErr }); return; }
       startNewGame(room);
       console.log(`[GAME START] ${room.id} by ${socket.id}`);
     } catch (error) { console.error("game:start 오류:", error); }
@@ -3223,6 +3310,8 @@ io.on("connection", (socket) => {
         socket.emit("game:error", { ok: false, reason: "최소 2명 이상의 연결된 플레이어가 필요합니다." });
         return;
       }
+      const partyErr = partyReadyError(room, eligible);
+      if (partyErr) { socket.emit("game:error", { ok: false, reason: partyErr }); return; }
       startNewGame(room);
       console.log(`[GAME RESTART] ${room.id}`);
     } catch (error) { console.error("game:restart 오류:", error); }
@@ -3338,7 +3427,7 @@ io.on("connection", (socket) => {
   socket.on("room:list", () => {
     try {
       const rooms = [...ROOMS.values()]
-        .filter(r => r && r.mode === "online" && !r.finished)
+        .filter(r => r && (r.mode === "online" || r.mode === "party") && !r.finished)
         .map(r => {
           const humans = r.players.filter(p => !p.isBot);
           const host = humans.find(p => p.socketId === r.hostSocketId) || humans[0] || null;
@@ -3346,7 +3435,11 @@ io.on("connection", (socket) => {
             roomId: r.id,
             host: host ? host.nickname : "플레이어",
             playerCount: r.players.filter(p => !p.isBot && !p.waiting).length,
-            maxPlayers: MAX_PLAYERS,
+            maxPlayers: roomCapacity(r),
+            party: r.mode === "party",
+            teams: r.mode === "party"
+              ? { 0: r.players.filter(p => p.teamOf === 0 && !p.isBot).length, 1: r.players.filter(p => p.teamOf === 1 && !p.isBot).length }
+              : null,
             started: !!r.started
           };
         });
