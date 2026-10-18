@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=22">
+  <link rel="stylesheet" href="style.css?v=23">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -592,11 +592,18 @@
     </div>
   </div>
 
+  <!-- 이모지 리액션 (우측 하단, 서버 REACT_EMOJIS와 동일해야 함) -->
+  <div class="react-wrap">
+    <div id="reactTray" class="react-tray hidden"></div>
+    <button id="reactBtn" class="react-btn" title="이모지 리액션 보내기">😊</button>
+  </div>
+  <div id="reactLayer" class="react-layer" aria-hidden="true"></div>
+
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="script.js?v=23"></script>
+  <script src="script.js?v=24"></script>
   <script src="firebase-auth.js?v=1"></script>
 </body>
 </html>

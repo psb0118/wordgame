@@ -964,6 +964,14 @@ function initSocket() {
 
   /* -- 실시간 채팅 -------------------------------------- */
   socket.on("chat:message", (data) => appendChatLine(data));
+
+  /* 이모지 리액션 */
+  socket.on("game:react", (data) => spawnReaction(data));
+  socket.on("react:error", (data) => {
+    const reason = (data && data.reason) || "리액션을 보낼 수 없습니다.";
+    showMessage(reason, "error");
+    chatNotice(reason, false);
+  });
   socket.on("chat:error", (data) => chatNotice((data && data.reason) || "전송하지 못했습니다.", false));
   socket.on("chat:reportResult", (data) => {
     chatNotice((data && data.reason) || (data && data.ok ? "접수되었습니다." : "신고에 실패했습니다."), !!(data && data.ok));
@@ -2702,6 +2710,47 @@ function clearChat() {
 }
 
 /* ---------------------------------------------------------
+   이모지 리액션 — 서버 REACT_EMOJIS와 순서·구성 동일 유지
+--------------------------------------------------------- */
+const REACT_EMOJIS = ["👍", "👏", "🔥", "😮", "😅", "😢", "❤️", "😂", "💪", "🎉", "🤔", "😡"];
+
+function spawnReaction(data) {
+  const layer = $("#reactLayer");
+  if (!layer || !data || !data.emoji) return;
+  const bubble = document.createElement("div");
+  bubble.className = "react-bubble";
+  bubble.textContent = data.emoji;
+  bubble.title = data.from || "";
+  const fromLeft = 18 + Math.random() * 64;
+  bubble.style.left = `${fromLeft}%`;
+  bubble.style.setProperty("--drift", `${Math.round(Math.random() * 60 - 30)}px`);
+  layer.appendChild(bubble);
+  while (layer.children.length > 8) layer.removeChild(layer.firstChild);
+  setTimeout(() => bubble.remove(), 1700);
+}
+
+function buildReactTray() {
+  const tray = $("#reactTray");
+  if (!tray || tray.dataset.built) return;
+  tray.dataset.built = "1";
+  tray.innerHTML = REACT_EMOJIS.map(e => `<button type="button" class="react-emoji" data-e="${e}">${e}</button>`).join("");
+  tray.querySelectorAll(".react-emoji").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+      socket.emit("game:react", { emoji: btn.dataset.e });
+      tray.classList.add("hidden");
+    });
+  });
+}
+
+function toggleReactTray(force) {
+  const tray = $("#reactTray");
+  if (!tray) return;
+  const show = force != null ? force : tray.classList.contains("hidden");
+  tray.classList.toggle("hidden", !show);
+}
+
+/* ---------------------------------------------------------
    관리자 패널 (서버 검증 Google 관리자 계정에만 보이는 버튼)
 --------------------------------------------------------- */
 let myAdminRole = "none";
@@ -3861,6 +3910,7 @@ document.addEventListener("DOMContentLoaded", () => {
       closeAdminPanel();
       $("#howModal")?.classList.add("hidden");
       $("#chatPanel")?.classList.add("hidden");
+      $("#reactTray")?.classList.add("hidden");
     }
   });
 
@@ -3893,6 +3943,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.key === "Enter") { e.preventDefault(); sendChat(); }
   });
   clearChat();
+
+  /* 이모지 리액션 (우측 하단) */
+  buildReactTray();
+  $("#reactBtn")?.addEventListener("click", () => toggleReactTray());
 
   /* 닉네임 */
   $("#nickSave")?.addEventListener("click", saveNickname);

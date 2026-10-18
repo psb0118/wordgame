@@ -2705,6 +2705,83 @@ button:active:not(:disabled) {
   z-index: 96;
 }
 
+/* 이모지 리액션 (우측 하단 —/how 버튼 위) */
+.react-wrap {
+  position: fixed;
+  right: 16px;
+  bottom: 74px;
+  z-index: 95;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.react-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  box-shadow: var(--shadow);
+  font-size: 1.2rem;
+  cursor: pointer;
+  transition: transform 0.12s, border-color 0.12s;
+}
+
+.react-btn:hover { transform: translateY(-2px); border-color: var(--accent); }
+
+.react-tray {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  padding: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+.react-emoji {
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 1.15rem;
+  cursor: pointer;
+  transition: background 0.12s, transform 0.12s;
+}
+
+.react-emoji:hover { background: var(--accent-soft); transform: scale(1.15); }
+
+/* 떠오르는 리액션 버블 */
+.react-layer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 26%;
+  height: 200px;
+  pointer-events: none;
+  z-index: 94;
+  overflow: hidden;
+}
+
+.react-bubble {
+  position: absolute;
+  bottom: 0;
+  font-size: 2rem;
+  animation: reactFloat 1.6s ease-out forwards;
+  will-change: transform, opacity;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.35));
+}
+
+@keyframes reactFloat {
+  0% { transform: translateY(0) translateX(0) scale(0.7); opacity: 0; }
+  15% { opacity: 1; transform: translateY(-20px) translateX(var(--drift, 0)) scale(1.08); }
+  100% { transform: translateY(-150px) translateX(var(--drift, 0)) scale(1); opacity: 0; }
+}
+
 .chat-btn {
   position: relative;
   padding: 9px 14px;

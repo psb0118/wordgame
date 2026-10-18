@@ -64,7 +64,7 @@ function context(extra = {}) {
       sockets: { sockets: new Map() } },
     ...extra,
   });
-  for (const name of ["normKey", "MODE_DEFAULT", "SEASON_DEFAULT"]) {
+  for (const name of ["normKey", "MODE_DEFAULT", "SEASON_DEFAULT", "REACT_EMOJIS", "REACT_COOLDOWN_MS"]) {
     const declaration = new RegExp(`^const ${name} = .*;$`, "m").exec(source);
     assert.ok(declaration, `missing constant: ${name}`);
     vm.runInContext(declaration[0], c);
@@ -820,4 +820,60 @@ test("achievements list reports unlocked and locked state", async () => {
   assert.ok(w10 && !w10.unlockedAt, "미해금 업적은 unlockedAt 없음");
   assert.ok(body.unlockedCount >= 1);
   assert.equal(body.totals.wins, 1);
+});
+
+/* =========================================================
+   이모지 리액션 — 허용 목록 / 뮤트 / 속도 제한
+========================================================= */
+function reactRoom(nick = "hong") {
+  return { id: "RR1", players: [{ id: "s-r1", socketId: "s-r1", playerIndex: 0, nickname: nick, isBot: false }] };
+}
+
+test("emoji reaction is broadcast to the room", () => {
+  const room = reactRoom();
+  const { c, emissions } = context({ getPlayerRoom: () => room });
+  const s = socket("s-r1");
+  installHandler(c, "game:react", s);
+  s.handlers.get("game:react")({ emoji: "🔥" });
+  assert.equal(emissions.length, 1, "방 전체에 브로드캐스트되어야 합니다");
+  assert.equal(emissions[0][0], "game:react");
+  assert.equal(emissions[0][1].emoji, "🔥");
+  assert.equal(emissions[0][1].from, "hong");
+  assert.equal(emissions[0][1].roomId, "RR1");
+  assert.equal(s.emissions.length, 0, "오류 응답은 없어야 합니다");
+});
+
+test("reaction with a non-allowlisted emoji is rejected", () => {
+  const room = reactRoom();
+  const { c, emissions } = context({ getPlayerRoom: () => room });
+  const s = socket("s-r1");
+  installHandler(c, "game:react", s);
+  s.handlers.get("game:react")({ emoji: "💣" });
+  assert.equal(emissions.length, 0, "허용되지 않은 이모지는 브로드캐스트 금지");
+  assert.equal(s.emissions[0][0], "react:error");
+  assert.match(String(s.emissions[0][1].reason), /이모지/);
+});
+
+test("muted player cannot send emoji reactions", () => {
+  const room = reactRoom("mutedUser");
+  const { c, emissions } = context({ getPlayerRoom: () => room });
+  const normKey = vm.runInContext("normKey", c);
+  c.mutedMap.set(normKey("mutedUser"), { nick: "mutedUser", by: "admin", at: Date.now(), reason: "도배" });
+  const s = socket("s-r1");
+  installHandler(c, "game:react", s);
+  s.handlers.get("game:react")({ emoji: "👍" });
+  assert.equal(emissions.length, 0, "뮤트 상태면 브로드캐스트 금지");
+  assert.equal(s.emissions[0][0], "react:error");
+  assert.match(String(s.emissions[0][1].reason), /차단/);
+});
+
+test("reactions are rate limited per socket", () => {
+  const room = reactRoom();
+  const { c, emissions } = context({ getPlayerRoom: () => room });
+  const s = socket("s-r1");
+  installHandler(c, "game:react", s);
+  s.handlers.get("game:react")({ emoji: "👍" });
+  s.handlers.get("game:react")({ emoji: "🔥" });
+  assert.equal(emissions.length, 1, "연속 요청은 조용히 무시되어야 합니다");
+  assert.equal(s.emissions.length, 0, "속도 제한은 오류가 아니라 무시로 처리");
 });

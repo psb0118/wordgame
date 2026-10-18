@@ -259,6 +259,9 @@ const CHAT_MAX_LEN = 100;
 const CHAT_COOLDOWN_MS = 1200;
 const CHAT_WINDOW_MS = 10000;
 const CHAT_WINDOW_MAX = 6;
+/* 이모지 리액션 — 허용 목록 밖은 거부, 소켓당 최소 간격 제한 */
+const REACT_EMOJIS = ["👍", "👏", "🔥", "😮", "😅", "😢", "❤️", "😂", "💪", "🎉", "🤔", "😡"];
+const REACT_COOLDOWN_MS = 600;
 const PROFANITY_WORDS = [
   "시발", "씨발", "씨바", "쇼발", "병신", "븅신", "지랄", "저랄",
   "좆", "닥쳐", "닥치", "느금마", "개새끼", "새끼", "ㅗㅗ", "┻┻"
@@ -4677,6 +4680,32 @@ io.on("connection", (socket) => {
       notifySuperAdmins({ nickname: reporter, at: new Date().toISOString(), reason: "chat-report", target });
       console.log(`[CHAT REPORT] '${reporter}' → '${target}': ${text.slice(0, 60)}`);
     } catch (err) { console.error("채팅 신고 오류:", err); socket.emit("chat:reportResult", { ok: false, reason: "신고 접수에 실패했습니다." }); }
+  });
+
+  /* 이모지 리액션 — 방 전체 브로드캐스트 (뮤트·속도 제한 적용) */
+  socket.on("game:react", (data) => {
+    try {
+      const room = getPlayerRoom(socket);
+      if (!room) { socket.emit("react:error", { reason: "방에 들어와 있을 때만 리액션을 보낼 수 있습니다." }); return; }
+      const me = getPlayerBySocket(room, socket.id);
+      const nickname = (me && me.nickname) || socketNicks.get(socket.id) || "";
+      if (!nickname) { socket.emit("react:error", { reason: "닉네임을 먼저 설정해주세요." }); return; }
+      const mute = getMute(nickname);
+      if (mute) {
+        socket.emit("react:error", { reason: `리액션이 차단되었습니다${mute.reason ? ` (${mute.reason})` : ""}. 관리자에게 문의하세요.` });
+        return;
+      }
+      const emoji = String(data?.emoji || "");
+      if (!REACT_EMOJIS.includes(emoji)) {
+        socket.emit("react:error", { reason: "사용할 수 없는 이모지입니다." });
+        return;
+      }
+      const now = Date.now();
+      const sd = socket.data || (socket.data = {});
+      if (now - Number(sd.reactLastAt || 0) < REACT_COOLDOWN_MS) return;   /* 조용히 무시 */
+      sd.reactLastAt = now;
+      io.to(room.id).emit("game:react", { from: nickname, emoji, at: now, roomId: room.id });
+    } catch (err) { console.error("리액션 오류:", err); }
   });
 
   /* 표시 이름 설정 — Google 로그인 세션이 있는 소켓만 가능하다.
