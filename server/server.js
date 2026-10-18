@@ -698,6 +698,111 @@ function saveFriends() {
   } catch (e) { console.warn("친구 데이터 저장 실패:", e.message); }
 }
 
+/* =========================================================
+   길드/클랜 — kv_store 'guilds' (PG·JSON 공통 파일 미러)
+   shape: { [guildKey]: { key, name, leader, leaderNick, createdAt,
+                          members: [{ key, nick, joinedAt }] } }
+========================================================= */
+const guildsPath = path.join(RUNTIME_DATA_DIR, "guilds.json");
+const GUILD_MAX_MEMBERS = 30;
+const GUILD_CREATE_COIN = 10000;
+let guildCache = null;
+
+function applyGuilds(data) {
+  const out = {};
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    for (const [k, v] of Object.entries(data)) {
+      const key = normKey(k);
+      if (!key || !v || typeof v !== "object") continue;
+      const members = (Array.isArray(v.members) ? v.members : [])
+        .filter(m => m && typeof m === "object" && normKey(String(m.key || "")))
+        .map(m => ({ key: normKey(String(m.key || "")), nick: String(m.nick || m.key || ""), joinedAt: String(m.joinedAt || "") }))
+        .filter((m, i, arr) => arr.findIndex(x => x.key === m.key) === i)
+        .slice(0, GUILD_MAX_MEMBERS);
+      if (!members.length) continue;
+      const g = {
+        key,
+        name: String(v.name || "").trim().slice(0, 12) || k,
+        leader: normKey(String(v.leader || "")),
+        leaderNick: String(v.leaderNick || ""),
+        createdAt: String(v.createdAt || ""),
+        members
+      };
+      if (!members.some(m => m.key === g.leader)) g.leader = members[0].key;
+      const leaderMember = members.find(m => m.key === g.leader);
+      if (leaderMember) g.leaderNick = leaderMember.nick;
+      out[key] = g;
+    }
+  }
+  guildCache = out;
+  return out;
+}
+
+async function loadGuilds() {
+  if (guildCache) return guildCache;
+  try {
+    const data = await loadStoreJSON("guilds", guildsPath, null);
+    applyGuilds(data);
+  } catch (e) { console.warn("길드 데이터 로드 실패:", e.message); }
+  if (!guildCache) guildCache = {};
+  return guildCache;
+}
+
+function saveGuilds() {
+  try {
+    if (!guildCache) return;
+    writeStoreFile(guildsPath, guildCache, "guilds");
+  } catch (e) { console.warn("길드 데이터 저장 실패:", e.message); }
+}
+
+/* 멤버가 속한 길드 찾기 — loadGuilds() 후 호출 */
+function guildOf(memberKey) {
+  if (!guildCache) return null;
+  const nk = normKey(memberKey);
+  for (const g of Object.values(guildCache)) {
+    if (g.members.some(m => m.key === nk)) return g;
+  }
+  return null;
+}
+
+/* 길드 상태 — 내 계정 기준 (가입 여부·리더 여부·멤버 온라인) */
+function buildGuildState(nickname) {
+  const nk = normKey(nickname);
+  const g = guildOf(nk);
+  if (!g) return { ok: true, guild: null };
+  return {
+    ok: true,
+    guild: {
+      key: g.key,
+      name: g.name,
+      leader: g.leaderNick || g.leader,
+      leaderKey: g.leader,
+      isLeader: g.leader === nk,
+      createdAt: g.createdAt,
+      memberCount: g.members.length,
+      maxMembers: GUILD_MAX_MEMBERS,
+      members: g.members.map(m => ({
+        nick: m.nick,
+        key: m.key,
+        leader: m.key === g.leader,
+        online: onlineNicks.has(m.key),
+        joinedAt: m.joinedAt
+      }))
+    }
+  };
+}
+
+/* 길드원 전체 알림 — exceptKey는 발신자(본인 제외) */
+function notifyGuildMembers(guild, text, exceptKey) {
+  if (!guild) return;
+  for (const m of guild.members) {
+    if (exceptKey && m.key === exceptKey) continue;
+    const sid = onlineNicks.get(m.key);
+    const s = sid ? io.sockets.sockets.get(sid) : null;
+    if (s) s.emit("guild:notice", { text, guild: guild.name });
+  }
+}
+
 function registerOnline(socketId, nickname) {
   const key = normKey(nickname);
   if (!key) return;
@@ -4942,6 +5047,144 @@ io.on("connection", (socket) => {
     }
   });
 
+  /* -- 길드/클랜 — 생성 / 가입 / 나가기 / 추방 / 해산 ------- */
+  socket.on("guild:create", async (data) => {
+    try {
+      const nick = socketNicks.get(socket.id) || "";
+      if (!nick) { socket.emit("guild:state", { ok: false, reason: "먼저 닉네임을 설정해주세요." }); return; }
+      const name = String(data?.name || "").trim().slice(0, 12);
+      if (name.length < 2) { socket.emit("guild:state", { ok: false, reason: "길드 이름은 2자 이상 입력해주세요." }); return; }
+      const nk = normKey(nick);
+      const pd = await getPlayerData(nk);
+      await loadGuilds();
+      if (guildOf(nk)) { socket.emit("guild:state", { ok: false, reason: "이미 길드에 가입되어 있습니다." }); return; }
+      const gkey = normKey(name);
+      if (guildCache[gkey]) { socket.emit("guild:state", { ok: false, reason: "이미 존재하는 길드 이름입니다." }); return; }
+      const cost = GUILD_CREATE_COIN;
+      if ((Number(pd.money) || 0) < cost) {
+        socket.emit("guild:state", { ok: false, reason: `길드 생성에는 ${cost.toLocaleString()}코인이 필요합니다.` });
+        return;
+      }
+      pd.money = Math.max(0, (Number(pd.money) || 0) - cost);
+      await savePlayerData(nk, pd);
+      const now = new Date().toISOString();
+      guildCache[gkey] = {
+        key: gkey, name, leader: nk, leaderNick: nick, createdAt: now,
+        members: [{ key: nk, nick, joinedAt: now }]
+      };
+      saveGuilds();
+      socket.emit("guild:state", {
+        ...buildGuildState(nick),
+        message: `'${name}' 길드를 만들었습니다! (-${cost.toLocaleString()}코인)`,
+        money: Math.max(0, Math.floor(Number(pd.money) || 0))
+      });
+    } catch (err) { console.error("길드 생성 오류:", err); socket.emit("guild:state", { ok: false, reason: "길드 생성에 실패했습니다." }); }
+  });
+
+  socket.on("guild:join", async (data) => {
+    try {
+      const nick = socketNicks.get(socket.id) || "";
+      if (!nick) { socket.emit("guild:state", { ok: false, reason: "먼저 닉네임을 설정해주세요." }); return; }
+      const name = String(data?.name || "").trim();
+      if (!name) { socket.emit("guild:state", { ok: false, reason: "가입할 길드 이름을 입력해주세요." }); return; }
+      const nk = normKey(nick);
+      await loadGuilds();
+      const g = guildCache[normKey(name)];
+      if (!g) { socket.emit("guild:state", { ok: false, reason: "존재하지 않는 길드입니다." }); return; }
+      if (guildOf(nk)) { socket.emit("guild:state", { ok: false, reason: "이미 길드에 가입되어 있습니다. 먼저 나가야 합니다." }); return; }
+      if (g.members.length >= GUILD_MAX_MEMBERS) {
+        socket.emit("guild:state", { ok: false, reason: "길드 인원이 가득 찼습니다." });
+        return;
+      }
+      g.members.push({ key: nk, nick, joinedAt: new Date().toISOString() });
+      saveGuilds();
+      socket.emit("guild:state", { ...buildGuildState(nick), message: `'${g.name}' 길드에 가입했습니다!` });
+      notifyGuildMembers(g, `'${nick}' 님이 가입했습니다.`, nk);
+    } catch (err) { console.error("길드 가입 오류:", err); socket.emit("guild:state", { ok: false, reason: "길드 가입에 실패했습니다." }); }
+  });
+
+  socket.on("guild:leave", async () => {
+    try {
+      const nick = socketNicks.get(socket.id) || "";
+      if (!nick) { socket.emit("guild:state", { ok: false, reason: "먼저 닉네임을 설정해주세요." }); return; }
+      const nk = normKey(nick);
+      await loadGuilds();
+      const g = guildOf(nk);
+      if (!g) { socket.emit("guild:state", { ok: false, reason: "가입된 길드가 없습니다." }); return; }
+
+      if (g.members.length <= 1) {
+        /* 마지막 멤버가 나가면 길드 해산 */
+        delete guildCache[g.key];
+        saveGuilds();
+        socket.emit("guild:state", { ok: true, guild: null, message: `'${g.name}' 길드를 해산했습니다.` });
+        return;
+      }
+      const wasLeader = g.leader === nk;
+      g.members = g.members.filter(m => m.key !== nk);
+      if (wasLeader) {
+        /* 리더가 나가면 가장 오래된 멤버가 리더 승계 */
+        g.leader = g.members[0].key;
+        g.leaderNick = g.members[0].nick;
+      }
+      saveGuilds();
+      socket.emit("guild:state", { ok: true, guild: null, message: `'${g.name}' 길드에서 나갔습니다.` });
+      notifyGuildMembers(g, `'${nick}' 님이 ${wasLeader ? "리더 자리를 넘기고 " : ""}나갔습니다.`, nk);
+    } catch (err) { console.error("길드 나가기 오류:", err); socket.emit("guild:state", { ok: false, reason: "길드 나가기에 실패했습니다." }); }
+  });
+
+  socket.on("guild:kick", async (data) => {
+    try {
+      const nick = socketNicks.get(socket.id) || "";
+      if (!nick) { socket.emit("guild:state", { ok: false, reason: "먼저 닉네임을 설정해주세요." }); return; }
+      const nk = normKey(nick);
+      const targetNick = String(data?.nickname || "").trim();
+      const tk = normKey(targetNick);
+      if (!tk) { socket.emit("guild:state", { ok: false, reason: "추방할 닉네임을 입력해주세요." }); return; }
+      if (tk === nk) { socket.emit("guild:state", { ok: false, reason: "자기 자신은 추방할 수 없습니다." }); return; }
+      await loadGuilds();
+      const g = guildOf(nk);
+      if (!g) { socket.emit("guild:state", { ok: false, reason: "가입된 길드가 없습니다." }); return; }
+      if (g.leader !== nk) { socket.emit("guild:state", { ok: false, reason: "리더만 멤버를 추방할 수 있습니다." }); return; }
+      if (!g.members.some(m => m.key === tk)) { socket.emit("guild:state", { ok: false, reason: "길드 멤버가 아닙니다." }); return; }
+      g.members = g.members.filter(m => m.key !== tk);
+      saveGuilds();
+      socket.emit("guild:state", { ...buildGuildState(nick), message: `'${targetNick}' 님을 추방했습니다.` });
+      notifyGuildMembers(g, `'${targetNick}' 님이 추방되었습니다.`, tk);
+      /* 추방된 대상이 온라인이면 즉시 알림 */
+      const tsid = onlineNicks.get(tk);
+      const tsock = tsid ? io.sockets.sockets.get(tsid) : null;
+      if (tsock) {
+        tsock.emit("guild:state", { ok: true, guild: null, reason: `'${g.name}' 길드에서 추방되었습니다.` });
+        tsock.emit("guild:notice", { text: `'${g.name}' 길드에서 추방되었습니다.`, guild: g.name });
+      }
+    } catch (err) { console.error("길드 추방 오류:", err); socket.emit("guild:state", { ok: false, reason: "추방에 실패했습니다." }); }
+  });
+
+  socket.on("guild:disband", async () => {
+    try {
+      const nick = socketNicks.get(socket.id) || "";
+      if (!nick) { socket.emit("guild:state", { ok: false, reason: "먼저 닉네임을 설정해주세요." }); return; }
+      const nk = normKey(nick);
+      await loadGuilds();
+      const g = guildOf(nk);
+      if (!g) { socket.emit("guild:state", { ok: false, reason: "가입된 길드가 없습니다." }); return; }
+      if (g.leader !== nk) { socket.emit("guild:state", { ok: false, reason: "리더만 길드를 해산할 수 있습니다." }); return; }
+      notifyGuildMembers(g, `'${g.name}' 길드가 해산되었습니다.`, nk);
+      delete guildCache[g.key];
+      saveGuilds();
+      socket.emit("guild:state", { ok: true, guild: null, message: `'${g.name}' 길드를 해산했습니다.` });
+    } catch (err) { console.error("길드 해산 오류:", err); socket.emit("guild:state", { ok: false, reason: "길드 해산에 실패했습니다." }); }
+  });
+
+  socket.on("guild:info", async () => {
+    try {
+      const nick = socketNicks.get(socket.id) || "";
+      if (!nick) { socket.emit("guild:state", { ok: false, reason: "먼저 닉네임을 설정해주세요." }); return; }
+      await loadGuilds();
+      socket.emit("guild:state", buildGuildState(nick));
+    } catch (err) { console.error("길드 조회 오류:", err); socket.emit("guild:state", { ok: false, reason: "길드 정보를 불러오지 못했습니다." }); }
+  });
+
   /* 표시 이름 설정 — Google 로그인 세션이 있는 소켓만 가능하다.
      이름은 정규화(공백 제거·소문자) 후 대소문자 무시로 고유해야 하며,
      서버/DB에서 원자적으로 선점한다. 기존 기록(돈/랭킹/연승)은 이름 키 계정에 그대로 보존된다 */
@@ -5287,8 +5530,9 @@ initDatabase().then(async () => {
   /* PG 모드에서는 파일이 남아있지 않아도 DB(kv_store)에서 보조 저장소를 복구한다 */
   await Promise.all([
     loadAdminConfig(),
-    loadModeration(),
-    loadFriends(),
+  loadModeration(),
+  loadFriends(),
+  loadGuilds(),
     loadBugReports(),
     loadCustomDict(),
     hydrateCustomWordsFromPG()

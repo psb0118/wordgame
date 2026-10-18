@@ -43,6 +43,7 @@ function context(extra = {}) {
     socketFirebaseUid: new Map(), socketFirebaseEmail: new Map(),
     ROOMS: new Map(),
     bannedMap: new Map(), mutedMap: new Map(),
+    guildCache: null, guildsPath: "guilds.json",
     writeStoreFile() {}, loadStoreJSON: async () => null,
     dbMode: "json", dbPool: null,
     firebaseReady: false, firebaseAuth: null,
@@ -67,7 +68,8 @@ function context(extra = {}) {
     ...extra,
   });
   for (const name of ["normKey", "MODE_DEFAULT", "SEASON_DEFAULT", "REACT_EMOJIS", "REACT_COOLDOWN_MS",
-    "REFERRAL_JOIN_COIN", "REFERRAL_INVITE_COIN", "MAIL_MAX", "MAIL_COIN_MAX", "PLAYER_COLUMN_KEYS"]) {
+    "REFERRAL_JOIN_COIN", "REFERRAL_INVITE_COIN", "MAIL_MAX", "MAIL_COIN_MAX", "PLAYER_COLUMN_KEYS",
+    "GUILD_MAX_MEMBERS", "GUILD_CREATE_COIN"]) {
     const declaration = new RegExp(`^const ${name} = .*;$`, "m").exec(source);
     assert.ok(declaration, `missing constant: ${name}`);
     vm.runInContext(declaration[0], c);
@@ -90,6 +92,8 @@ function context(extra = {}) {
     "achievementStats", "evaluateAchievements", "achievementDefs",
     "findPlayerIdByNickname", "findAllPlayerIdsByNickname",
     "playerExtras",
+    "applyGuilds", "loadGuilds", "saveGuilds", "guildOf",
+    "buildGuildState", "notifyGuildMembers",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions };
 }
@@ -1116,4 +1120,183 @@ test("mail list returns entries with unread count and claim pays coin once", asy
   msg = s.emissions.at(-1);
   assert.equal(msg[1].ok, false, "이미 수령한 쪽지는 다시 수령할 수 없다");
   assert.equal(c.playerCache.get("kate").money, 5800, "중복 수령 시 추가 지급 없음");
+});
+
+/* =========================================================
+   길드/클랜 — 생성 / 가입 / 승계 / 추방 / 해산
+========================================================= */
+test("guild creation deducts fee and sets leader", async () => {
+  const { c } = context();
+  seed(c, "kate", { money: 90000 });
+  const s = socket("s-g1");
+  c.socketNicks.set(s.id, "kate");
+  installHandler(c, "guild:create", s);
+  await s.handlers.get("guild:create")({ name: "호랑이 길드" });
+
+  const g = c.guildCache["호랑이길드"];
+  assert.ok(g, "길드 캐시에 저장된다 (키는 공백 없는 정규화)");
+  assert.equal(g.leader, "kate");
+  assert.equal(g.members.length, 1);
+  assert.equal(c.playerCache.get("kate").money, 80000, "생성비가 차감된다");
+  const msg = s.emissions.at(-1);
+  assert.equal(msg[0], "guild:state");
+  assert.equal(msg[1].ok, true);
+  assert.equal(msg[1].guild.name, "호랑이 길드");
+  assert.equal(msg[1].guild.isLeader, true);
+  assert.equal(msg[1].money, 80000);
+});
+
+test("guild creation is blocked for members and for broke players", async () => {
+  const { c } = context();
+  seed(c, "kate", { money: 100 });
+  c.applyGuilds({ existing: { name: "기존길드", leader: "kate", members: [{ key: "kate", nick: "kate" }] } });
+  const s1 = socket("s-g2a");
+  c.socketNicks.set(s1.id, "kate");
+  installHandler(c, "guild:create", s1);
+  await s1.handlers.get("guild:create")({ name: "새길드" });
+  let msg = s1.emissions.at(-1);
+  assert.equal(msg[1].ok, false);
+  assert.match(String(msg[1].reason), /이미 길드/);
+
+  const { c: c2 } = context();
+  seed(c2, "poor", { money: 100 });
+  const s2 = socket("s-g2b");
+  c2.socketNicks.set(s2.id, "poor");
+  installHandler(c2, "guild:create", s2);
+  await s2.handlers.get("guild:create")({ name: "새길드" });
+  msg = s2.emissions.at(-1);
+  assert.equal(msg[1].ok, false);
+  assert.match(String(msg[1].reason), /필요/);
+  assert.equal(Object.keys(c2.guildCache || {}).length, 0, "실패 시 길드가 만들어지지 않는다");
+  assert.equal(c2.playerCache.get("poor").money, 100, "실패 시 생성비가 차감되지 않는다");
+});
+
+test("player joins an existing guild and member list shows online state", async () => {
+  const { c } = context();
+  seed(c, "kate"); seed(c, "tom");
+  c.onlineNicks.set("kate", "s-ga");
+  const s1 = socket("s-ga"); c.socketNicks.set(s1.id, "kate");
+  const s2 = socket("s-gb"); c.socketNicks.set(s2.id, "tom");
+  installHandler(c, "guild:create", s1);
+  installHandler(c, "guild:join", s2);
+  await s1.handlers.get("guild:create")({ name: "선착순" });
+  await s2.handlers.get("guild:join")({ name: "선착순" });
+
+  const g = c.guildCache["선착순"];
+  assert.equal(g.members.length, 2, "가입하면 멤버가 늘어난다");
+  const msg = s2.emissions.at(-1);
+  assert.equal(msg[1].ok, true);
+  assert.equal(msg[1].guild.isLeader, false);
+  assert.equal(msg[1].guild.memberCount, 2);
+  const kateMember = msg[1].guild.members.find(m => m.key === "kate");
+  assert.ok(kateMember, "기존 멤버가 목록에 있다");
+  assert.equal(kateMember.online, true, "온라인 멤버는 온라인 표시");
+  assert.equal(kateMember.leader, true, "리더 표시");
+});
+
+test("guild join rejects unknown, duplicate membership, and full guilds", async () => {
+  const { c } = context();
+  seed(c, "tom");
+  const s = socket("s-g3");
+  c.socketNicks.set(s.id, "tom");
+  installHandler(c, "guild:join", s);
+
+  await s.handlers.get("guild:join")({ name: "없는길드" });
+  let msg = s.emissions.at(-1);
+  assert.equal(msg[1].ok, false);
+  assert.match(String(msg[1].reason), /존재하지/);
+
+  c.applyGuilds({
+    "내길드": { name: "내길드", leader: "tom", members: [{ key: "tom", nick: "tom" }] },
+    "가득찬길드": {
+      name: "가득찬길드", leader: "other",
+      members: [{ key: "other", nick: "other" },
+        ...Array.from({ length: 29 }, (_, i) => ({ key: `m${i}`, nick: `m${i}` }))]
+    }
+  });
+  await s.handlers.get("guild:join")({ name: "가득찬길드" });
+  msg = s.emissions.at(-1);
+  assert.equal(msg[1].ok, false);
+  assert.match(String(msg[1].reason), /이미 길드/, "이미 가입 상태면 거부");
+
+  const { c: c2 } = context();
+  seed(c2, "alice");
+  const s2 = socket("s-g3b");
+  c2.socketNicks.set(s2.id, "alice");
+  installHandler(c2, "guild:join", s2);
+  c2.applyGuilds({
+    "가득찬길드": {
+      name: "가득찬길드", leader: "other",
+      members: [{ key: "other", nick: "other" },
+        ...Array.from({ length: 29 }, (_, i) => ({ key: `m${i}`, nick: `m${i}` }))]
+    }
+  });
+  await s2.handlers.get("guild:join")({ name: "가득찬길드" });
+  msg = s2.emissions.at(-1);
+  assert.equal(msg[1].ok, false);
+  assert.match(String(msg[1].reason), /가득/, "정원이 차면 거부");
+});
+
+test("leader leaving promotes the next member; last member leaving disbands", async () => {
+  const { c } = context();
+  seed(c, "kate"); seed(c, "tom");
+  c.applyGuilds({ g1: { name: "해체위기", leader: "kate", members: [
+    { key: "kate", nick: "kate" }, { key: "tom", nick: "tom" }
+  ] } });
+  const s1 = socket("s-gl1"); c.socketNicks.set(s1.id, "kate");
+  installHandler(c, "guild:leave", s1);
+  await s1.handlers.get("guild:leave")();
+
+  const g = c.guildCache["g1"];
+  assert.equal(g.members.length, 1, "리더가 나가면 멤버가 줄어든다");
+  assert.equal(g.leader, "tom", "다음 멤버가 리더를 승계한다");
+  let msg = s1.emissions.at(-1);
+  assert.equal(msg[1].ok, true);
+  assert.equal(msg[1].guild, null, "나간 뒤 내 길드는 없음");
+
+  const s2 = socket("s-gl2"); c.socketNicks.set(s2.id, "tom");
+  installHandler(c, "guild:leave", s2);
+  await s2.handlers.get("guild:leave")();
+  assert.equal(c.guildCache["g1"], undefined, "마지막 멤버가 나가면 길드가 해산된다");
+  msg = s2.emissions.at(-1);
+  assert.equal(msg[1].ok, true);
+  assert.match(String(msg[1].message), /해산/);
+});
+
+test("only the guild leader can kick and disband", async () => {
+  const { c } = context();
+  seed(c, "kate"); seed(c, "tom"); seed(c, "rong");
+  c.applyGuilds({ g1: { name: "우리길드", leader: "kate", members: [
+    { key: "kate", nick: "kate" }, { key: "tom", nick: "tom" }, { key: "rong", nick: "rong" }
+  ] } });
+
+  const st = socket("s-gk1"); c.socketNicks.set(st.id, "tom");
+  installHandler(c, "guild:kick", st);
+  installHandler(c, "guild:disband", st);
+  await st.handlers.get("guild:kick")({ nickname: "rong" });
+  let msg = st.emissions.at(-1);
+  assert.equal(msg[1].ok, false);
+  assert.match(String(msg[1].reason), /리더만/);
+  await st.handlers.get("guild:disband")();
+  msg = st.emissions.at(-1);
+  assert.equal(msg[1].ok, false);
+  assert.match(String(msg[1].reason), /리더만/);
+  assert.equal(c.guildCache["g1"].members.length, 3, "비리더 작업은 변경 없음");
+
+  const sk = socket("s-gk2"); c.socketNicks.set(sk.id, "kate");
+  installHandler(c, "guild:kick", sk);
+  installHandler(c, "guild:disband", sk);
+  await sk.handlers.get("guild:kick")({ nickname: "rong" });
+  let g = c.guildCache["g1"];
+  assert.equal(g.members.length, 2, "리더는 추방할 수 있다");
+  assert.ok(!g.members.some(m => m.key === "rong"));
+  msg = sk.emissions.at(-1);
+  assert.equal(msg[1].ok, true);
+  assert.equal(msg[1].guild.memberCount, 2);
+
+  await sk.handlers.get("guild:disband")();
+  assert.equal(c.guildCache["g1"], undefined, "리더는 해산할 수 있다");
+  msg = sk.emissions.at(-1);
+  assert.equal(msg[1].ok, true);
+  assert.equal(msg[1].guild, null);
 });

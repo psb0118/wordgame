@@ -2026,6 +2026,88 @@ button:disabled {
   cursor: pointer;
 }
 
+/* 길드/클랜 */
+.acc-guild {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.acc-guild-head {
+  font-size: 0.85rem;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+.guild-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.82rem;
+  margin-bottom: 6px;
+}
+.guild-sub { color: var(--text-dim); font-size: 0.74rem; white-space: nowrap; }
+.guild-members {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 150px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.guild-member {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--card-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 7px;
+  font-size: 0.78rem;
+}
+.guild-member-nick { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guild-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #cbd5e1;
+  flex-shrink: 0;
+}
+.guild-member.online .guild-dot { background: #22c55e; box-shadow: 0 0 4px rgba(34, 197, 94, 0.7); }
+.guild-kick {
+  border: 1px solid var(--border-strong);
+  background: #fff;
+  color: var(--red);
+  border-radius: 5px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+.guild-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.guild-actions button {
+  flex: 1;
+  border-radius: 6px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  padding: 5px 0;
+  cursor: pointer;
+}
+.guild-leave {
+  border: 1px solid var(--border-strong);
+  background: #fff;
+  color: var(--text-dim);
+}
+.guild-disband {
+  border: 1px solid var(--red);
+  background: var(--red);
+  color: #fff;
+}
+
 /* =========================================================
    초대 토스트 (가운데 위)
 ========================================================= */

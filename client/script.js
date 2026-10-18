@@ -1328,6 +1328,24 @@ function initSocket() {
     if (panel && !panel.classList.contains("hidden")) socket.emit("mail:list");
   });
 
+  /* -- 길드/클랜 ---------------------------------------- */
+  socket.on("guild:state", (data) => {
+    if (!data) return;
+    if (data.ok && typeof data.money === "number") { moneyBalance = data.money; renderMoneyBar(); }
+    renderGuildState(data);
+    if (data.ok && data.message) showMessage(data.message, "success");
+    if (!data.ok && data.reason) showMessage(data.reason, "error");
+    /* 멤버 구성이 바뀌면 다른 멤버 화면도 함께 갱신되도록 상태 재요청 유도 */
+    if (data.ok && data.message && socket && socketConnected) socket.emit("guild:info");
+  });
+  socket.on("guild:notice", (data) => {
+    const text = String(data?.text || "").trim();
+    if (!text) return;
+    showMessage(text, "info");
+    const panel = $("#accountPanel");
+    if (panel && !panel.classList.contains("hidden")) socket.emit("guild:info");
+  });
+
   /* -- 커스텀 사전 (단어 신청) — 상점 탭에서만 사용 ------------------------- */
   socket.on("word:requestResult", (data) => {
     if (!data) return;
@@ -3256,7 +3274,7 @@ function openAccountPanel(force) {
   panel.classList.toggle("hidden", !open);
   if (open) {
     renderAccountInfo($("#nickInput")?.value.trim() || myNickname || "");
-    if (socket && socketConnected) { socket.emit("referral:status"); socket.emit("mail:list"); }
+    if (socket && socketConnected) { socket.emit("referral:status"); socket.emit("mail:list"); socket.emit("guild:info"); }
     setTimeout(() => $("#accNickInput")?.focus(), 60);
   }
 }
@@ -3298,6 +3316,86 @@ function renderMailList(list, unread) {
     btn.addEventListener("click", () => {
       if (socket && socketConnected) socket.emit("mail:claim", { id: btn.dataset.mailClaim });
     });
+  });
+}
+
+function showGuildMsg(text, ok) {
+  const el = $("#guildMsg");
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.toggle("ok", !!ok);
+}
+
+function renderGuildState(data) {
+  const body = $("#guildBody");
+  if (!body) return;
+  if (!data || data.ok === false) {
+    if (data && data.reason) showGuildMsg(data.reason, false);
+    return;
+  }
+  if (data.message) showGuildMsg(data.message, true);
+
+  const g = data.guild;
+  if (!g) {
+    body.innerHTML = `
+      <div class="acc-referral-status">길드가 없나요? <b>생성</b>(10,000코인)하거나 이름으로 <b>가입</b>하세요. 최대 30명.</div>
+      <div class="account-row ref-row">
+        <input id="guildNameInput" maxlength="12" placeholder="새 길드 이름" autocomplete="off">
+        <button id="guildCreateBtn">생성</button>
+      </div>
+      <div class="account-row ref-row">
+        <input id="guildFindInput" maxlength="12" placeholder="가입할 길드 이름" autocomplete="off">
+        <button id="guildJoinBtn">가입</button>
+      </div>`;
+    $("#guildCreateBtn")?.addEventListener("click", () => {
+      const v = $("#guildNameInput")?.value.trim() || "";
+      if (v.length < 2) { showGuildMsg("길드 이름은 2자 이상 입력해주세요.", false); return; }
+      if (socket && socketConnected) socket.emit("guild:create", { name: v });
+    });
+    $("#guildJoinBtn")?.addEventListener("click", () => {
+      const v = $("#guildFindInput")?.value.trim() || "";
+      if (!v) { showGuildMsg("가입할 길드 이름을 입력해주세요.", false); return; }
+      if (socket && socketConnected) socket.emit("guild:join", { name: v });
+    });
+    $("#guildNameInput")?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); $("#guildCreateBtn")?.click(); }
+    });
+    $("#guildFindInput")?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); $("#guildJoinBtn")?.click(); }
+    });
+    return;
+  }
+
+  const members = (g.members || []).map(m => `
+    <li class="guild-member${m.online ? " online" : ""}">
+      <span class="guild-dot" title="${m.online ? "온라인" : "오프라인"}"></span>
+      <span class="guild-member-nick">${escapeHtml(m.nick)}${m.leader ? " 👑" : ""}</span>
+      ${g.isLeader && !m.leader ? `<button type="button" class="guild-kick" data-guild-kick="${escapeHtml(m.nick)}">추방</button>` : ""}
+    </li>`).join("");
+  body.innerHTML = `
+    <div class="guild-head">
+      <b>${escapeHtml(g.name)}</b>
+      <span class="guild-sub">${g.memberCount}/${g.maxMembers}명 · 리더 ${escapeHtml(g.leader || "-")}</span>
+    </div>
+    <ul class="guild-members">${members}</ul>
+    <div class="guild-actions">
+      <button type="button" id="guildLeaveBtn" class="guild-leave">나가기</button>
+      ${g.isLeader ? `<button type="button" id="guildDisbandBtn" class="guild-disband">길드 해산</button>` : ""}
+    </div>`;
+  body.querySelectorAll("[data-guild-kick]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const t = btn.dataset.guildKick;
+      if (!window.confirm(`'${t}' 님을 추방하시겠습니까?`)) return;
+      if (socket && socketConnected) socket.emit("guild:kick", { nickname: t });
+    });
+  });
+  $("#guildLeaveBtn")?.addEventListener("click", () => {
+    if (!window.confirm("정말 길드에서 나가시겠습니까?")) return;
+    if (socket && socketConnected) socket.emit("guild:leave");
+  });
+  $("#guildDisbandBtn")?.addEventListener("click", () => {
+    if (!window.confirm("길드를 정말 해산하시겠습니까? (복구 불가)")) return;
+    if (socket && socketConnected) socket.emit("guild:disband");
   });
 }
 
