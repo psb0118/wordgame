@@ -44,6 +44,8 @@ function context(extra = {}) {
     ROOMS: new Map(),
     bannedMap: new Map(), mutedMap: new Map(),
     guildCache: null, guildsPath: "guilds.json",
+    seasonStore: null,
+    process: { env: {} },
     writeStoreFile() {}, loadStoreJSON: async () => null,
     dbMode: "json", dbPool: null,
     firebaseReady: false, firebaseAuth: null,
@@ -69,7 +71,7 @@ function context(extra = {}) {
   });
   for (const name of ["normKey", "MODE_DEFAULT", "SEASON_DEFAULT", "REACT_EMOJIS", "REACT_COOLDOWN_MS",
     "REFERRAL_JOIN_COIN", "REFERRAL_INVITE_COIN", "MAIL_MAX", "MAIL_COIN_MAX", "PLAYER_COLUMN_KEYS",
-    "GUILD_MAX_MEMBERS", "GUILD_CREATE_COIN"]) {
+    "GUILD_MAX_MEMBERS", "GUILD_CREATE_COIN", "SEA_TITLE"]) {
     const declaration = new RegExp(`^const ${name} = .*;$`, "m").exec(source);
     assert.ok(declaration, `missing constant: ${name}`);
     vm.runInContext(declaration[0], c);
@@ -94,6 +96,8 @@ function context(extra = {}) {
     "playerExtras",
     "applyGuilds", "loadGuilds", "saveGuilds", "guildOf",
     "buildGuildState", "notifyGuildMembers",
+    "seasonRewardFor", "buildSeasonInfo", "nowForSeason", "seasonKeyOf",
+    "seasonEndMs", "currentSeasonKey", "getSeasonStore",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions };
 }
@@ -1299,4 +1303,35 @@ test("only the guild leader can kick and disband", async () => {
   msg = sk.emissions.at(-1);
   assert.equal(msg[1].ok, true);
   assert.equal(msg[1].guild, null);
+});
+
+/* =========================================================
+   시즌 — 보상 안내 문구가 실제 지급 로직과 일치해야 한다
+========================================================= */
+test("season reward guide matches actual payouts", () => {
+  const { c } = context();
+  const rf = c.seasonRewardFor;
+  assert.equal(rf(1).amount, 1000000);
+  assert.equal(rf(3).amount, 500000);
+  assert.equal(rf(4).amount, 150000);
+  assert.equal(rf(10).amount, 150000);
+  assert.equal(rf(11).amount, 30000);
+  assert.equal(rf(50).amount, 30000);
+  assert.equal(rf(51).amount, 2000);
+  assert.ok(rf(1).title && rf(1).title.id === "t_season", "1위는 챔피언 칭호를 받는다");
+
+  const info = c.buildSeasonInfo();
+  assert.equal(info.ok, true);
+  const rewards = info.rewards;
+  assert.equal(rewards.length, 5);
+  assert.match(rewards[0].value, /^1,000,000코인/, "1위 안내는 실제 1,000,000코인과 일치한다");
+  assert.match(rewards[0].value, /챔피언/);
+  assert.match(rewards[1].value, /^500,000코인/);
+  assert.match(rewards[2].value, /^150,000코인/);
+  assert.match(rewards[3].value, /^30,000코인/);
+  assert.match(rewards[4].value, /^2,000코인/);
+  for (const r of rewards) {
+    assert.ok(!/원/.test(r.value), "게임 화폐는 '원'이 아니라 '코인'으로 표기한다");
+  }
+  assert.match(info.key, /^\d{4}-\d{2}$/, "시즌 키는 YYYY-MM 형식");
 });

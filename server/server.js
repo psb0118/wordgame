@@ -1870,6 +1870,7 @@ function buildSeasonInfo() {
   const key = currentSeasonKey();
   const store = getSeasonStore();
   const hist = store.history.length ? store.history[store.history.length - 1] : null;
+  const coin = (rank) => `${seasonRewardFor(rank).amount.toLocaleString("en-US")}코인`;
   return {
     ok: true,
     key,
@@ -1877,12 +1878,13 @@ function buildSeasonInfo() {
     now: nowForSeason(),
     daysLeft: Math.max(0, Math.ceil((seasonEndMs(key) - nowForSeason()) / 86400000)),
     previous: hist ? { season: hist.season, champion: hist.champion, participants: hist.participants } : null,
+    /* 실제 지급 로직(seasonRewardFor)에서 값을 뽑아 표기 — 안내와 실제 보상이 어긋나지 않는다 */
     rewards: [
-      { rank: "1위", value: "500,000원 + 🏆 시즌 챔피언 칭호" },
-      { rank: "2~3위", value: "200,000원" },
-      { rank: "4~10위", value: "50,000원" },
-      { rank: "11~50위", value: "10,000원" },
-      { rank: "참가", value: "1,000원" }
+      { rank: "1위", value: `${coin(1)} + 🏆 시즌 챔피언 칭호` },
+      { rank: "2~3위", value: coin(2) },
+      { rank: "4~10위", value: coin(4) },
+      { rank: "11~50위", value: coin(11) },
+      { rank: "참가", value: coin(999) }
     ]
   };
 }
