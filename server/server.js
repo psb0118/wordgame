@@ -1470,6 +1470,59 @@ const MONTHLY_MISSIONS = [
 ];
 const DAILY_TITLE = DAILY_MISSIONS.find(m => m.title);
 
+/* =========================================================
+   업적 — 계정 단위 누적 기록으로 해금. 해금 즉시 코인 지급,
+   한 번 해금된 항목은 유지된다(achievements: { id: 해금시각 })
+========================================================= */
+function achievementDefs() {
+  return [
+    { id: "first_win", name: "첫 승리", desc: "첫 승리를 거둔다", coin: 1000 },
+    { id: "win10", name: "단단한 실력", desc: "누적 10승 달성", coin: 3000 },
+    { id: "win50", name: "끝말잇기 고수", desc: "누적 50승 달성", coin: 10000 },
+    { id: "games50", name: "단련된 혀", desc: "누적 50판 플레이", coin: 4000 },
+    { id: "word100", name: "말이 술술", desc: "누적 단어 100개 입력", coin: 2000 },
+    { id: "word500", name: "수다의 달인", desc: "누적 단어 500개 입력", coin: 8000 },
+    { id: "long8", name: "긴 말", desc: "8글자 이상 단어 입력", coin: 1500 },
+    { id: "oneshot5", name: "한방 명수", desc: "한방 단어 5회 성공", coin: 3000 },
+    { id: "oneshot20", name: "한방 전문가", desc: "한방 단어 20회 성공", coin: 10000 },
+    { id: "streak5", name: "5연승", desc: "어떤 모드에서든 5연승 달성", coin: 5000 },
+    { id: "party1", name: "팀 플레이어", desc: "2v2 파티에서 승리", coin: 2500 }
+  ];
+}
+
+/* 누적 카운터 보장(없으면 생성+정규화) — pd.ach */
+function achievementStats(pd) {
+  if (!pd.ach || typeof pd.ach !== "object") pd.ach = {};
+  const a = pd.ach;
+  for (const k of ["games", "wins", "words", "oneshots", "longest", "partyWins", "streak"]) {
+    a[k] = Math.max(0, Math.floor(Number(a[k]) || 0));
+  }
+  if (!pd.achievements || typeof pd.achievements !== "object") pd.achievements = {};
+  return a;
+}
+
+/* 해금 조건 평가 — 새로 해금된 항목 목록을 반환(코인은 여기서 지급) */
+function evaluateAchievements(pd) {
+  const a = achievementStats(pd);
+  a.streak = Math.max(a.streak, Number(pd.multi && pd.multi.bestStreak) || 0, Number(pd.ranked && pd.ranked.bestStreak) || 0);
+  const cond = {
+    first_win: a.wins >= 1, win10: a.wins >= 10, win50: a.wins >= 50,
+    games50: a.games >= 50, word100: a.words >= 100, word500: a.words >= 500,
+    long8: a.longest >= 8, oneshot5: a.oneshots >= 5, oneshot20: a.oneshots >= 20,
+    streak5: a.streak >= 5, party1: a.partyWins >= 1
+  };
+  const unlocked = [];
+  for (const def of achievementDefs()) {
+    if (pd.achievements[def.id]) continue;
+    if (!cond[def.id]) continue;
+    pd.achievements[def.id] = new Date().toISOString();
+    pd.money = Math.max(0, (Number(pd.money) || 0) + def.coin);
+    unlocked.push(def);
+  }
+  return unlocked;
+}
+
+
 function missionKeyOf(group) { return group === "weekly" ? getKstWeek() : (group === "monthly" ? getKstMonth() : getKstDate()); }
 function missionListOf(group) { return group === "weekly" ? WEEKLY_MISSIONS : (group === "monthly" ? MONTHLY_MISSIONS : DAILY_MISSIONS); }
 
@@ -1719,6 +1772,18 @@ async function recordMatchHistory(room, winnerIndex, loserIndex) {
       const result = winnerIndex === null ? "draw"
         : (winTeam !== null && winTeam !== undefined) ? (p.teamOf === winTeam ? "win" : "lose")
         : (p.playerIndex === winnerIndex ? "win" : "lose");
+      /* 업적 — 판/승/단어/한방/장문/파티 승수를 누적하고 해금 조건 평가 */
+      const a = achievementStats(pd);
+      a.games += 1;
+      if (result === "win") a.wins += 1;
+      if (isParty && result === "win") a.partyWins += 1;
+      a.words += wordCount;
+      a.oneshots += mine.filter(h => h && h.oneShot).length;
+      for (const h of mine) {
+        const len = h && typeof h.word === "string" ? h.word.length : 0;
+        if (len > a.longest) a.longest = len;
+      }
+      const newAch = evaluateAchievements(pd);
       const list = Array.isArray(pd.recentGames) ? pd.recentGames : [];
       list.push({
         date: new Date().toISOString(),
@@ -1730,6 +1795,13 @@ async function recordMatchHistory(room, winnerIndex, loserIndex) {
       });
       pd.recentGames = list.slice(-10);
       await savePlayerData(accountId, pd);
+      if (newAch.length) {
+        const as = p.socketId ? io.sockets.sockets.get(p.socketId) : null;
+        if (as) as.emit("achievements:unlocked", {
+          list: newAch.map(d => ({ id: d.id, name: d.name, coin: d.coin })),
+          money: Math.max(0, Math.floor(Number(pd.money) || 0))
+        });
+      }
     } catch (e) { console.error("전적 기록 오류:", e.message); }
   }
 }
@@ -2483,6 +2555,10 @@ function playWord(room, player, rawWord, gameSessionId) {
       hearts: loserPlayer.hearts, eliminated: loserPlayer.eliminated,
       mode: room.mode, roomId: room.id
     });
+
+    /* 이번 단어가 한방이었다는 사실을 전적/업적 집계용으로 남긴다 */
+    const lastIdx = room.history.length - 1;
+    if (room.history[lastIdx] && room.history[lastIdx].word === word) room.history[lastIdx].oneShot = true;
 
     /* 일일 미션 — '한방 단어' 성공 횟수 누적 */
     if (!player.isBot) {
@@ -3801,6 +3877,25 @@ io.on("connection", (socket) => {
       socket.emit("player:ranking", await getRankingPayload(socket.id));
       broadcastRoomState(getPlayerRoom(socket));
     } catch (err) { console.error("칭호 해제 오류:", err); }
+  });
+
+  /* -- 업적 목록 (해금 상태 + 총계) --------------------- */
+  socket.on("achievements:list", async () => {
+    try {
+      const nickname = socketNicks.get(socket.id);
+      if (!nickname) { socket.emit("achievements:list", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
+      const accountId = normKey(nickname);
+      const pd = await getPlayerData(accountId);
+      achievementStats(pd);
+      evaluateAchievements(pd);   /* 로그인 중 미션/승수 변화로 해금이 밀린 경우 보완 */
+      await savePlayerData(accountId, pd);
+      socket.emit("achievements:list", {
+        ok: true,
+        list: achievementDefs().map(d => ({ ...d, unlockedAt: pd.achievements[d.id] || null })),
+        totals: { ...pd.ach },
+        unlockedCount: Object.keys(pd.achievements).length
+      });
+    } catch (error) { console.error("achievements:list 오류:", error); }
   });
 
   socket.on("missions:status", async () => {

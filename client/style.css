@@ -2271,6 +2271,66 @@ button:active:not(:disabled) {
   font-size: 0.85rem;
   padding: 6px 0;
 }
+
+/* 업적 */
+.ach-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ach-summary {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+.ach-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+.ach-card {
+  background: var(--card-soft);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  opacity: 0.72;
+  transition: border-color 0.15s, opacity 0.15s;
+}
+.ach-card.unlocked {
+  opacity: 1;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.ach-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.ach-name {
+  font-weight: 800;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+.ach-card.unlocked .ach-name { color: var(--accent); }
+.ach-coin {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--purple);
+  white-space: nowrap;
+}
+.ach-card.unlocked .ach-coin { color: #059669; }
+.ach-desc {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.ach-when {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+}
 /* 랭크 자동 계속매칭 토글 */
 .autoqueue-label {
   display: flex;

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=21">
+  <link rel="stylesheet" href="style.css?v=22">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -25,6 +25,7 @@
       <button data-mode="online">온라인 멀티</button>
       <button data-mode="ranked">랭크 매칭</button>
       <button data-mode="season">시즌</button>
+      <button data-mode="achievements">업적</button>
       <button data-mode="items">칭호·아이템</button>
       <button data-mode="shop">상점</button>
     </nav>
@@ -363,6 +364,18 @@
         <div id="missionListMonthly" class="acc-mission-list"></div>
       </div>
     </section>
+
+    <!-- 업적 -->
+    <section id="achievements" class="panel hidden">
+      <div class="season-panel-head">
+        <div class="rule-notice">게임을 하다 보면 업적이 차근차근 해금돼요. 해금 즉시 코인이 지급되며, 한 번 해금된 업적은 사라지지 않습니다.</div>
+        <div class="ach-head">
+          <span id="achSummary" class="ach-summary">해금 0/0</span>
+          <button id="achRefresh" class="secondary">새로고침</button>
+        </div>
+      </div>
+      <div id="achGrid" class="ach-grid"></div>
+    </section>
   </main>
 
   <!-- 항상 표시되는 실시간 랭킹 패널 (우측 상단) -->
@@ -583,7 +596,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="script.js?v=22"></script>
+  <script src="script.js?v=23"></script>
   <script src="firebase-auth.js?v=1"></script>
 </body>
 </html>

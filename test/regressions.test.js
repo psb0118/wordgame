@@ -84,6 +84,7 @@ function context(extra = {}) {
     "listModeration", "addModeration", "removeModeration",
     "roomCapacity", "partyAliveTeams", "checkPartyEnd",
     "partyReadyError", "partyResultPairs", "addPlayer",
+    "achievementStats", "evaluateAchievements", "achievementDefs",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions };
 }
@@ -288,8 +289,10 @@ test("ranked finish uses stable account keys after disconnect and room cleanup",
   await c.finishGame(r, 0, 1);
   assert.equal(c.playerCache.get("p1").ranked.losses, 11);
   assert.equal(c.playerCache.get("p1").ranked.wins, 50);
-  assert.equal(c.playerCache.get("p1").money, 90000);
-  assert.equal(c.playerCache.get("p0").money, 95000);
+  /* 시드 기본값(bestStreak 7)이면 업적 '5연승'이 함께 해금되어 +5000이 붙는다 */
+  assert.equal(c.playerCache.get("p1").money, 95000);
+  /* 승자: 랭크 승리 보상 5000 + 업적 '5연승' 5000 + '첫 승리' 1000 */
+  assert.equal(c.playerCache.get("p0").money, 101000);
   assert.equal(c.playerCache.get("p0").recentGames.length, 1);
   assert.equal(c.ROOMS.has(r.id), false);
   assert.equal(errors.length, 0);
@@ -743,4 +746,78 @@ test("party win rates up both teammates and down both opponents", async () => {
   const histB = c.playerCache.get("pb2").recentGames;
   assert.equal(histB[0].result, "lose");
   assert.equal(errors.length, 0, "오류 없이 처리되어야 합니다");
+});
+
+/* =========================================================
+   업적 — 해금/보상/전적 집계
+========================================================= */
+test("achievement unlocks once, pays its coin, and never repeats", () => {
+  const { c } = context();
+  const pd = c.migratePlayerData({ nickname: "ach", money: 100 });
+  assert.equal(c.evaluateAchievements(pd).length, 0, "조건 미충족이면 해금 없음");
+
+  c.achievementStats(pd).wins = 1;
+  const got = c.evaluateAchievements(pd);
+  assert.equal(got.length, 1, "첫 승리 업적이 해금되어야 합니다");
+  assert.equal(got[0].id, "first_win");
+  assert.equal(pd.money, 1100, "보상 코인이 지급되어야 합니다");
+  assert.ok(pd.achievements.first_win);
+
+  assert.equal(c.evaluateAchievements(pd).length, 0, "이미 해금된 업적은 다시 해금되지 않습니다");
+  assert.equal(pd.money, 1100, "보상도 중복 지급되지 않습니다");
+});
+
+test("game end feeds achievement counters (wins, words, longest, oneshots)", async () => {
+  const { c, errors } = context();
+  const pd = c.migratePlayerData({ nickname: "hong", money: 0 });
+  c.playerCache.set("hong", pd);
+  const room = {
+    id: "R1", mode: "online", hostSocketId: "s1",
+    players: [
+      { id: "s1", socketId: "s1", playerIndex: 0, nickname: "hong", isBot: false, hearts: 3, eliminated: false, waiting: false, connected: true },
+      { id: "s2", socketId: "s2", playerIndex: 1, nickname: "kim", isBot: false, hearts: 0, eliminated: true, waiting: false, connected: true }
+    ],
+    history: [
+      { word: "시작음절", player: -1, nickname: "시작", depth: null, turn: 0 },
+      { word: "사랑해요한글단어", player: 0, nickname: "hong", depth: null, turn: 1 },
+      { word: "한방단어다", player: 0, nickname: "hong", depth: null, turn: 2, oneShot: true },
+      { word: "이어지는말", player: 1, nickname: "kim", depth: null, turn: 3 }
+    ]
+  };
+  await c.recordMatchHistory(room, 0, 1);
+  await new Promise(r => setImmediate(r));
+
+  const after = c.playerCache.get("hong");
+  assert.equal(after.ach.games, 1, "판 수 1회 누적");
+  assert.equal(after.ach.wins, 1, "승리 1회 누적");
+  assert.equal(after.ach.words, 2, "본인 단어 수만 누적");
+  assert.equal(after.ach.oneshots, 1, "한방 성공 누적");
+  assert.equal(after.ach.longest, 8, "최장 단어 길이 갱신");
+  assert.ok(after.achievements.first_win, "첫 승리 업적 해금");
+  assert.ok(after.achievements.long8, "8글자 단어 업적 해금");
+  assert.equal(after.recentGames[0].result, "win");
+  assert.equal(after.recentGames[0].mode, "online");
+  assert.equal(errors.length, 0, "오류 없이 처리되어야 합니다");
+});
+
+test("achievements list reports unlocked and locked state", async () => {
+  const { c } = context();
+  const s = socket("s-ach");
+  c.socketNicks.set(s.id, "hong");
+  seed(c, "hong", {
+    achievements: { first_win: "2026-10-01T00:00:00.000Z" },
+    ach: { games: 3, wins: 1, words: 5, oneshots: 0, longest: 4, partyWins: 0, streak: 0 }
+  });
+  installHandler(c, "achievements:list", s);
+  await s.handlers.get("achievements:list")();
+  const msg = s.emissions.at(-1);
+  assert.equal(msg[0], "achievements:list");
+  const body = msg[1];
+  assert.equal(body.ok, true);
+  const fw = body.list.find(d => d.id === "first_win");
+  assert.ok(fw && fw.unlockedAt, "해금된 업적은 시각과 함께 반환");
+  const w10 = body.list.find(d => d.id === "win10");
+  assert.ok(w10 && !w10.unlockedAt, "미해금 업적은 unlockedAt 없음");
+  assert.ok(body.unlockedCount >= 1);
+  assert.equal(body.totals.wins, 1);
 });

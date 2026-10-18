@@ -1221,6 +1221,20 @@ function initSocket() {
     renderRoomList();
   });
 
+  /* -- 업적 ------------------------------------------------ */
+  socket.on("achievements:list", (data) => renderAchievements(data));
+  socket.on("achievements:unlocked", (data) => {
+    const list = data && Array.isArray(data.list) ? data.list : [];
+    if (!list.length) return;
+    if (typeof data.money === "number") { moneyBalance = data.money; renderMoneyBar(); }
+    const total = list.reduce((s, d) => s + (Number(d.coin) || 0), 0);
+    showMessage(list.length === 1
+      ? `업적 달성: ${list[0].name} (+${Number(list[0].coin) || 0}코인)`
+      : `업적 ${list.length}개 달성! (+${total}코인)`, "success");
+    playSound("win");
+    if (currentMode === "achievements") fetchAchievements();
+  });
+
   /* -- 커스텀 사전 (단어 신청) — 상점 탭에서만 사용 ------------------------- */
   socket.on("word:requestResult", (data) => {
     if (!data) return;
@@ -2002,6 +2016,44 @@ function randomJoinRoom() {
   const rooms = roomListRooms.filter(r => r && r.roomId !== roomId);
   if (rooms.length === 0) { roomListStatus("입장할 수 있는 방이 없습니다.", "error"); return; }
   joinRoomFromList(rooms[Math.floor(Math.random() * rooms.length)].roomId);
+}
+
+/* -- 업적 렌더링 ------------------------------------------ */
+function fetchAchievements() {
+  if (socket && socketConnected) socket.emit("achievements:list");
+}
+
+function renderAchievements(data) {
+  const grid = $("#achGrid");
+  const sum = $("#achSummary");
+  if (!grid) return;
+  if (!data || !data.ok) {
+    grid.innerHTML = `<div class="room-list-status error">${escapeHtml((data && data.reason) || "업적을 불러오지 못했습니다.")}</div>`;
+    return;
+  }
+  const list = Array.isArray(data.list) ? data.list : [];
+  const done = list.filter(d => d && d.unlockedAt).length;
+  if (sum) sum.textContent = `해금 ${done}/${list.length}`;
+  if (list.length === 0) {
+    grid.innerHTML = `<div class="room-list-status">등록된 업적이 없습니다.</div>`;
+    return;
+  }
+  grid.innerHTML = list.map(d => {
+    const on = !!d.unlockedAt;
+    let when = "미해금";
+    if (on) {
+      const t = new Date(d.unlockedAt);
+      when = Number.isNaN(t.getTime()) ? "해금됨" : `${t.toLocaleDateString("ko-KR")} 해금`;
+    }
+    return `<div class="ach-card${on ? " unlocked" : ""}">
+      <div class="ach-top">
+        <span class="ach-name">${escapeHtml(String(d.name || ""))}</span>
+        <span class="ach-coin">${on ? "✓ 해금" : `+${Number(d.coin) || 0}코인`}</span>
+      </div>
+      <div class="ach-desc">${escapeHtml(String(d.desc || ""))}</div>
+      <div class="ach-when">${when}</div>
+    </div>`;
+  }).join("");
 }
 
 /* -- 커스텀 사전 (단어 신청) --------------------------- */
@@ -3579,6 +3631,8 @@ document.addEventListener("DOMContentLoaded", () => {
       } else if (currentMode === "season") {
         refreshSeasonBar();
         if (socket && socketConnected) socket.emit("missions:status");
+      } else if (currentMode === "achievements") {
+        fetchAchievements();
       }
       loadSideRanking(sideRankMode, true);
     });
@@ -3632,6 +3686,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#join")?.addEventListener("click", joinOnlineRoom);
   $("#roomListBtn")?.addEventListener("click", openRoomList);
   $("#roomListRefresh")?.addEventListener("click", fetchRoomList);
+  $("#achRefresh")?.addEventListener("click", fetchAchievements);
   $("#roomListRandom")?.addEventListener("click", randomJoinRoom);
   $("#roomListClose")?.addEventListener("click", closeRoomList);
   $("#shopWordReqSend")?.addEventListener("click", () => submitWordRequestFrom("#shopWordReqInput", "#shopWordReqStatus"));
