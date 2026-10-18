@@ -1431,6 +1431,38 @@ button:disabled {
   font-size: 0.85rem;
 }
 
+/* 제재(밴/뮤트) 목록 행 */
+.admin-mod-nick {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.admin-mod-meta {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  opacity: 0.75;
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-mod-when {
+  color: var(--text);
+  opacity: 0.6;
+  font-size: 0.75rem;
+}
+
+/* 위험 구역 (계정 삭제) */
+.admin-danger {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.08);
+  border-radius: 10px;
+}
+
 /* 추방 버튼 */
 .kick-btn {
   margin-left: auto;
@@ -2555,6 +2587,176 @@ button:active:not(:disabled) {
 }
 
 /* 게임 방법 버튼 (우하단) */
+/* 실시간 채팅 (좌측 하단 플로팅) */
+.chat-wrap {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 96;
+}
+
+.chat-btn {
+  position: relative;
+  padding: 9px 14px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #60a5fa, #6366f1);
+  box-shadow: var(--shadow);
+  font-size: 0.9rem;
+}
+
+.chat-unread {
+  position: absolute;
+  top: -6px;
+  right: -4px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-panel {
+  position: absolute;
+  bottom: 46px;
+  left: 0;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 700;
+  color: var(--text);
+  font-size: 0.92rem;
+}
+
+.chat-close,
+.chat-report {
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: var(--card-soft, rgba(0, 0, 0, 0.05));
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.78rem;
+}
+
+.chat-list {
+  height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 4px;
+}
+
+.chat-empty {
+  color: var(--text);
+  opacity: 0.6;
+  font-size: 0.82rem;
+  text-align: center;
+  margin-top: 40px;
+}
+
+.chat-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  background: var(--card-soft, rgba(0, 0, 0, 0.04));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px 8px;
+  font-size: 0.83rem;
+}
+
+.chat-line.self {
+  background: rgba(99, 102, 241, 0.14);
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
+.chat-line .chat-line-nick {
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.chat-line .chat-line-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.chat-line .chat-flag {
+  flex: none;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  opacity: 0.35;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.chat-line:hover .chat-flag {
+  opacity: 1;
+}
+
+.chat-msg-line {
+  font-size: 0.8rem;
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.chat-msg-line.ok {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 6px;
+}
+
+.chat-input-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.86rem;
+}
+
+.chat-input-row button {
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #60a5fa, #6366f1);
+  color: #fff;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
 .how-wrap {
   position: fixed;
   bottom: 16px;

@@ -42,6 +42,8 @@ function context(extra = {}) {
     adminAuthed: new Map(), disconnectedPlayers: new Map(), REMATCHES: new Map(),
     socketFirebaseUid: new Map(), socketFirebaseEmail: new Map(),
     ROOMS: new Map(),
+    bannedMap: new Map(), mutedMap: new Map(),
+    writeStoreFile() {}, loadStoreJSON: async () => null,
     dbMode: "json", dbPool: null,
     firebaseReady: false, firebaseAuth: null,
     saveJsonDb() {},
@@ -76,6 +78,9 @@ function context(extra = {}) {
     "stopTurnTimer", "startTurnTimer", "removePlayer",
     "bumpMission", "bumpDaily", "playWord", "runAI", "startNewGame",
     "pushRatingHistory", "applyWelcomeReward",
+    "getBan", "getMute", "banGuard", "banGuardByUid", "readModEntries",
+    "applyModeration", "saveModeration", "loadModeration",
+    "listModeration", "addModeration", "removeModeration",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions };
 }

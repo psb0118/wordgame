@@ -151,6 +151,220 @@ async function loadAdminConfig() {
 }
 
 /* =========================================================
+   운영 제재 — 밴(접속 차단) / 뮤트(채팅 차단)
+   kv_store 'moderation': { banned: {key:{nick,by,at,reason}}, muted: {...} }
+========================================================= */
+const moderationPath = path.join(RUNTIME_DATA_DIR, "moderation.json");
+let bannedMap = new Map();   /* normKey -> {nick, by, at, reason} */
+let mutedMap = new Map();    /* normKey -> {nick, by, at, reason} */
+
+function readModEntries(raw) {
+  const out = new Map();
+  if (!raw || typeof raw !== "object") return out;
+  for (const [k, v] of Object.entries(raw)) {
+    const key = normKey(k);
+    if (!key) continue;
+    out.set(key, {
+      nick: String((v && v.nick) || k),
+      by: String((v && v.by) || ""),
+      at: String((v && v.at) || ""),
+      reason: String((v && v.reason) || ""),
+      uid: String((v && v.uid) || "")
+    });
+  }
+  return out;
+}
+
+function applyModeration(data) {
+  if (!data || typeof data !== "object") return;
+  bannedMap = readModEntries(data.banned);
+  mutedMap = readModEntries(data.muted);
+}
+
+function saveModeration() {
+  try {
+    const obj = { banned: {}, muted: {} };
+    for (const [k, v] of bannedMap) obj.banned[k] = v;
+    for (const [k, v] of mutedMap) obj.muted[k] = v;
+    writeStoreFile(moderationPath, obj, "moderation");
+  } catch (e) { console.warn("제재 정보 저장 실패:", e.message); }
+}
+
+async function loadModeration() {
+  try {
+    const data = await loadStoreJSON("moderation", moderationPath, null);
+    if (data) {
+      applyModeration(data);
+      console.log(`제재 목록 로드 완료(${dbMode === "pg" ? "DB" : "파일"}): 밴 ${bannedMap.size}명 / 뮤트 ${mutedMap.size}명`);
+    }
+  } catch (e) { console.warn("제재 목록 로드 실패:", e.message); }
+}
+
+/* 반환: 제재 정보 또는 null */
+function getBan(nickname) { return bannedMap.get(normKey(nickname)) || null; }
+function getMute(nickname) { return mutedMap.get(normKey(nickname)) || null; }
+
+/* 밴 여부 검사 — 제재당했으면 사유가 붙은 차단 메시지, 아니면 null */
+function banGuard(nickname) {
+  const b = getBan(nickname);
+  if (!b) return null;
+  return `이 계정은 이용이 정지되었습니다${b.reason ? ` (사유: ${b.reason})` : ""}. 자세한 내용은 관리자에게 문의하세요.`;
+}
+
+/* Firebase UID 기준 밴 검사 — 닉네임을 바꿔도 같은 계정은 막힌다 */
+function banGuardByUid(uid) {
+  const u = String(uid || "");
+  if (!u) return null;
+  for (const b of bannedMap.values()) {
+    if (b.uid && b.uid === u) {
+      return `이 계정은 이용이 정지되었습니다${b.reason ? ` (사유: ${b.reason})` : ""}. 자세한 내용은 관리자에게 문의하세요.`;
+    }
+  }
+  return null;
+}
+
+function listModeration() {
+  const conv = (m) => [...m.values()].sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  return { banned: conv(bannedMap), muted: conv(mutedMap) };
+}
+
+function addModeration(kind, nickname, meta) {
+  const key = normKey(nickname);
+  if (!key) return { ok: false, reason: "닉네임을 입력해주세요." };
+  const store = kind === "banned" ? bannedMap : mutedMap;
+  const entry = {
+    nick: String(nickname).trim(),
+    by: String(meta.by || ""),
+    at: new Date().toISOString(),
+    reason: String(meta.reason || ""),
+    uid: String(meta.uid || "")
+  };
+  store.set(key, entry);
+  saveModeration();
+  return { ok: true, key, entry };
+}
+
+function removeModeration(kind, nickname) {
+  const key = normKey(nickname);
+  const store = kind === "banned" ? bannedMap : mutedMap;
+  const existed = store.delete(key);
+  if (existed) saveModeration();
+  return existed;
+}
+
+/* =========================================================
+   채팅 필터 — 비속어·도배·스팸 차단 (방 단위 채팅에 사용)
+========================================================= */
+const CHAT_MAX_LEN = 100;
+const CHAT_COOLDOWN_MS = 1200;
+const CHAT_WINDOW_MS = 10000;
+const CHAT_WINDOW_MAX = 6;
+const PROFANITY_WORDS = [
+  "시발", "씨발", "씨바", "쇼발", "병신", "븅신", "지랄", "저랄",
+  "좆", "닥쳐", "닥치", "느금마", "개새끼", "새끼", "ㅗㅗ", "┻┻"
+];
+
+/* 필터용 정규화: 소문자 + 공백·문장부호 제거 (띄어쓰기 우회 차단) */
+function normalizeForFilter(s) {
+  return String(s || "").toLowerCase().replace(/[\s\p{P}\p{S}]/gu, "");
+}
+
+/* 반환: { ok, reason, clean } — ok면 clean에 통과한 텍스트 */
+function chatFilter(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return { ok: false, reason: "메시지를 입력해주세요." };
+  if (text.length > CHAT_MAX_LEN) {
+    return { ok: false, reason: `메시지는 ${CHAT_MAX_LEN}자 이내로 입력해주세요.` };
+  }
+  const flat = normalizeForFilter(text);
+  if (!flat) return { ok: false, reason: "메시지를 입력해주세요." };
+  /* 한 글자·두 글자만 반복하는 도배 */
+  if (flat.length >= 6 && new Set(flat).size <= 2) {
+    return { ok: false, reason: "반복되는 문자가 너무 많아 전송할 수 없습니다." };
+  }
+  /* 같은 문자 6회 이상 연속 */
+  if (/(.)\1{5,}/u.test(flat)) {
+    return { ok: false, reason: "반복되는 문자가 너무 많아 전송할 수 없습니다." };
+  }
+  /* 비속어 */
+  for (const w of PROFANITY_WORDS) {
+    if (flat.includes(normalizeForFilter(w))) {
+      return { ok: false, reason: "비속어가 포함되어 있어 전송할 수 없습니다." };
+    }
+  }
+  return { ok: true, clean: text };
+}
+
+/* =========================================================
+   관리자: 플레이어 계정 삭제 — 닉네임(정규화) 기준 전체 제거
+   players 테이블/캐시 + 감시목록·친구 참조 + 온라인 접속까지 정리
+========================================================= */
+async function deletePlayerAccount(nickname) {
+  const key = normKey(nickname);
+  if (!key) return { ok: false, reason: "닉네임을 입력해주세요." };
+
+  const removed = new Set();
+
+  if (dbMode === "pg" && dbPool) {
+    try {
+      const r = await dbPool.query(
+        `SELECT id, firebase_uid FROM players
+         WHERE id = $1 OR regexp_replace(lower(trim(nickname)), '\\s+', '', 'g') = $1`,
+        [key]
+      );
+      const uids = [...new Set(r.rows.map(x => String(x.firebase_uid || "")).filter(Boolean))];
+      const all = new Set(r.rows.map(x => x.id));
+      if (uids.length) {
+        const r2 = await dbPool.query(`SELECT id FROM players WHERE firebase_uid = ANY($1)`, [uids]);
+        for (const row of r2.rows) all.add(row.id);
+      }
+      if (all.size) {
+        await dbPool.query(`DELETE FROM players WHERE id = ANY($1)`, [all]);
+        for (const id of all) { playerCache.delete(id); removed.add(id); }
+      }
+    } catch (err) {
+      console.error("계정 삭제(DB) 오류:", err.message);
+      return { ok: false, reason: "계정 삭제에 실패했습니다." };
+    }
+  } else {
+    for (const [id, p] of [...playerCache]) {
+      if (id === key || normKey(p && p.nickname) === key) { playerCache.delete(id); removed.add(id); }
+    }
+    if (removed.size) {
+      try { saveJsonDb(); } catch (e) { console.warn("계정 삭제 저장 실패:", e.message); }
+    }
+  }
+
+  /* 감시목록에서 제거 */
+  if (watchNicks.some(w => normKey(w) === key)) {
+    watchNicks = watchNicks.filter(w => normKey(w) !== key);
+    saveAdminConfig();
+  }
+
+  /* 친구 목록·친구 신청에서 제거 */
+  let friendsTouched = false;
+  if (friendsMap.delete(key)) friendsTouched = true;
+  for (const set of friendsMap.values()) { if (set.delete(key)) friendsTouched = true; }
+  if (friendRequests.delete(key)) friendsTouched = true;
+  for (const set of friendRequests.values()) { if (set.delete(key)) friendsTouched = true; }
+  if (friendsTouched) saveFriends();
+
+  /* 온라인 접속이면 방에서 빼고 끊는다 */
+  const tId = onlineNicks.get(key);
+  const ts = tId ? io.sockets.sockets.get(tId) : null;
+  if (ts) {
+    try {
+      removeFromRankedQueue(tId);
+      leaveRoomForSocket(ts, "deleted");
+      ts.emit("player:deleted", { ok: false, reason: "관리자에 의해 계정이 삭제되었습니다." });
+      setTimeout(() => { try { ts.disconnect(true); } catch (e) { /* 무시 */ } }, 400);
+    } catch (e) { console.warn("삭제 대상 접속 정리 실패:", e.message); }
+  }
+
+  return { ok: true, removed: removed.size, ids: [...removed] };
+}
+
+/* =========================================================
    데이터 로드
 ========================================================= */
 
@@ -2603,6 +2817,8 @@ io.on("connection", (socket) => {
       const mode = data?.mode === "ai" ? "ai" : "online";
       /* 싱글 난이도 — 잘못된 값이면 보통으로 폴백 */
       const difficulty = ["easy", "normal", "hard"].includes(data?.difficulty) ? data.difficulty : "normal";
+      const banMsg = banGuard(nickname);
+      if (banMsg) { socket.emit("room:error", { ok: false, reason: banMsg, banned: true }); return; }
       leaveRoomForSocket(socket, "recreate");
 
       const room = createRoom(socket.id, nickname, mode, { difficulty });
@@ -2632,6 +2848,8 @@ io.on("connection", (socket) => {
       const roomId = String(data?.roomId || "").trim().toUpperCase();
       const nickname = normalizeWord(data?.nickname) || "플레이어";
       if (!roomId) { socket.emit("room:error", { ok: false, reason: "방 코드를 입력해주세요." }); return; }
+      const banMsg = banGuard(nickname);
+      if (banMsg) { socket.emit("room:error", { ok: false, reason: banMsg, banned: true }); return; }
 
       const room = ROOMS.get(roomId);
       if (!room) { socket.emit("room:error", { ok: false, reason: "방을 찾을 수 없습니다." }); return; }
@@ -3210,6 +3428,8 @@ io.on("connection", (socket) => {
       const pd = await getPlayerData(socket.id);
       const nickname = String(pd.nickname || "플레이어").trim();
       if (!nickname) { socket.emit("ranked:queueStatus", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
+      const banMsg = banGuard(nickname);
+      if (banMsg) { socket.emit("ranked:queueStatus", { ok: false, reason: banMsg, banned: true }); return; }
       /* 매칭 대기 중 이전 방 게임이 계속 돌아가는 것을 막기 위해 현재 방에서 분리 */
       leaveRoomForSocket(socket, "leave");
       socket.emit("room:left", { ok: true });
@@ -4062,6 +4282,215 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("감시 목록 오류:", err); }
   });
 
+  /* -- 운영 제재: 밴(접속 차단) / 뮤트(채팅 차단) (최고 관리자) ---- */
+  const emitModeration = (message) => socket.emit("admin:moderation", {
+    ok: true, ...listModeration(), message: message || ""
+  });
+
+  const moderationAction = async (data, kind, action) => {
+    const reg = await requireNickname(socket);
+    if (!reg.ok) return { ok: false, reason: reg.reason };
+    if (reg.role !== "super") return { ok: false, reason: "최고 관리자만 제재를 관리할 수 있습니다." };
+    const nickname = String(data?.nickname || "").trim();
+    if (!nickname) return { ok: false, reason: "닉네임을 입력해주세요." };
+    const reason = String(data?.reason || "").trim().slice(0, 100);
+    const label = kind === "banned" ? "차단" : "음소거";
+
+    if (action === "add") {
+      /* 같은 계정(uid)이 다른 이름으로 이미 제재돼 있으면 중복 방지 */
+      let uid = "";
+      try {
+        const id = await findPlayerIdByNickname(nickname);
+        if (id) { const pd = await getPlayerData(id); uid = String(pd.firebaseUid || ""); }
+      } catch (e) { /* 조회 실패는 계속 진행 */ }
+      const r = addModeration(kind, nickname, { by: reg.nickname, reason, uid });
+      if (!r.ok) return r;
+
+      if (kind === "banned") {
+        /* 접속 중인 대상은 방에서 제거하고 연결을 끊는다 */
+        const tId = onlineNicks.get(r.key);
+        const ts = tId ? io.sockets.sockets.get(tId) : null;
+        if (ts) {
+          try {
+            removeFromRankedQueue(ts.id);
+            leaveRoomForSocket(ts, "ban");
+            ts.emit("player:banned", {
+              ok: false,
+              reason: `이 계정은 이용이 정지되었습니다${reason ? ` (사유: ${reason})` : ""}.`
+            });
+            setTimeout(() => { try { ts.disconnect(true); } catch (e) { /* 무시 */ } }, 400);
+          } catch (e) { console.warn("밴 대상 정리 실패:", e.message); }
+        }
+        /* 같은 uid의 다른 온라인 소켓도 함께 차단 */
+        if (uid) {
+          for (const [sid, nickKey] of onlineNicks) {
+            if (sid === r.key || normKey(nickKey) === r.key) continue;
+            const other = io.sockets.sockets.get(sid);
+            if (!other) continue;
+            try { leaveRoomForSocket(other, "ban"); other.disconnect(true); } catch (e) { /* 무시 */ }
+          }
+        }
+        console.log(`[ADMIN] 밴: '${r.entry.nick}' by ${reg.nickname}${reason ? ` (${reason})` : ""}`);
+        return { ok: true, message: `'${r.entry.nick}' 닉네임을 차단했습니다.` };
+      }
+
+      const tId = onlineNicks.get(r.key);
+      const ts = tId ? io.sockets.sockets.get(tId) : null;
+      if (ts) ts.emit("player:muted", { ok: true, reason: reason || "관리자 조치" });
+      console.log(`[ADMIN] 뮤트: '${r.entry.nick}' by ${reg.nickname}${reason ? ` (${reason})` : ""}`);
+      return { ok: true, message: `'${r.entry.nick}' 닉네임을 음소거했습니다.` };
+    }
+
+    const existed = removeModeration(kind, nickname);
+    if (!existed) return { ok: false, reason: `'${nickname}' 항목이 ${label} 목록에 없습니다.` };
+    if (kind === "banned") {
+      const tId = onlineNicks.get(normKey(nickname));
+      const ts = tId ? io.sockets.sockets.get(tId) : null;
+      if (ts) ts.emit("player:unbanned", { ok: true });
+    } else {
+      const tId = onlineNicks.get(normKey(nickname));
+      const ts = tId ? io.sockets.sockets.get(tId) : null;
+      if (ts) ts.emit("player:unmuted", { ok: true });
+    }
+    console.log(`[ADMIN] ${label} 해제: '${nickname}' by ${reg.nickname}`);
+    return { ok: true, message: `'${nickname}' ${label}을 해제했습니다.` };
+  };
+
+  socket.on("admin:moderationList", async () => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:moderation", { ok: false, reason: reg.reason }); return; }
+      emitModeration();
+    } catch (err) { console.error("제재 목록 오류:", err); }
+  });
+
+  socket.on("admin:ban", async (data) => {
+    try {
+      const r = await moderationAction(data, "banned", "add");
+      if (!r.ok) socket.emit("admin:moderation", r);
+      else emitModeration(r.message);
+    } catch (err) { console.error("밴 오류:", err); socket.emit("admin:moderation", { ok: false, reason: "차단 처리에 실패했습니다." }); }
+  });
+
+  socket.on("admin:unban", async (data) => {
+    try {
+      const r = await moderationAction(data, "banned", "remove");
+      if (!r.ok) socket.emit("admin:moderation", r);
+      else emitModeration(r.message);
+    } catch (err) { console.error("밴 해제 오류:", err); socket.emit("admin:moderation", { ok: false, reason: "해제에 실패했습니다." }); }
+  });
+
+  socket.on("admin:mute", async (data) => {
+    try {
+      const r = await moderationAction(data, "muted", "add");
+      if (!r.ok) socket.emit("admin:moderation", r);
+      else emitModeration(r.message);
+    } catch (err) { console.error("뮤트 오류:", err); socket.emit("admin:moderation", { ok: false, reason: "음소거 처리에 실패했습니다." }); }
+  });
+
+  socket.on("admin:unmute", async (data) => {
+    try {
+      const r = await moderationAction(data, "muted", "remove");
+      if (!r.ok) socket.emit("admin:moderation", r);
+      else emitModeration(r.message);
+    } catch (err) { console.error("뮤트 해제 오류:", err); socket.emit("admin:moderation", { ok: false, reason: "해제에 실패했습니다." }); }
+  });
+
+  /* 관리자: 계정 전체 삭제 (최고 관리자) — 전적·돈·칭호 등 영구 삭제 */
+  socket.on("admin:deletePlayer", async (data) => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:deletePlayerResult", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") {
+        socket.emit("admin:deletePlayerResult", { ok: false, reason: "최고 관리자만 계정을 삭제할 수 있습니다." });
+        return;
+      }
+      const nickname = String(data?.nickname || "").trim();
+      if (!nickname) { socket.emit("admin:deletePlayerResult", { ok: false, reason: "삭제할 닉네임을 입력해주세요." }); return; }
+      const r = await deletePlayerAccount(nickname);
+      if (!r.ok) { socket.emit("admin:deletePlayerResult", r); return; }
+      socket.emit("admin:deletePlayerResult", {
+        ok: true,
+        message: r.removed > 0
+          ? `'${nickname}' 계정 ${r.removed}건을 삭제했습니다.`
+          : `'${nickname}'에 해당하는 계정이 없습니다.`
+      });
+      console.log(`[ADMIN] 계정 삭제: '${nickname}' → ${r.removed}건 by ${reg.nickname}`);
+    } catch (err) {
+      console.error("계정 삭제 오류:", err);
+      socket.emit("admin:deletePlayerResult", { ok: false, reason: "계정 삭제에 실패했습니다." });
+    }
+  });
+
+  /* -- 실시간 채팅 (방 단위) ---------------------------- */
+  socket.on("chat:send", (data) => {
+    try {
+      const room = getPlayerRoom(socket);
+      if (!room) { socket.emit("chat:error", { reason: "방에 들어와 있을 때만 채팅할 수 있습니다." }); return; }
+
+      const me = getPlayerBySocket(room, socket.id);
+      const nickname = (me && me.nickname) || socketNicks.get(socket.id) || "플레이어";
+
+      /* 뮤트 여부 */
+      const mute = getMute(nickname);
+      if (mute) {
+        socket.emit("chat:error", { reason: `채팅이 차단되었습니다${mute.reason ? ` (${mute.reason})` : ""}. 관리자에게 문의하세요.` });
+        return;
+      }
+
+      /* 필터 (비속어·도배) */
+      const verdict = chatFilter(data?.text);
+      if (!verdict.ok) { socket.emit("chat:error", { reason: verdict.reason }); return; }
+
+      /* 속도 제한: 최소 간격 + 시간창 내 최대 횟수 */
+      const now = Date.now();
+      const sd = socket.data || (socket.data = {});
+      const last = Number(sd.chatLastAt || 0);
+      if (now - last < CHAT_COOLDOWN_MS) {
+        socket.emit("chat:error", { reason: "조금 천천히 보내주세요." });
+        return;
+      }
+      const win = (Array.isArray(sd.chatWin) ? sd.chatWin : []).filter(t => now - t < CHAT_WINDOW_MS);
+      if (win.length >= CHAT_WINDOW_MAX) {
+        socket.emit("chat:error", { reason: "짧은 시간에 메시지가 너무 많습니다." });
+        return;
+      }
+      sd.chatLastAt = now;
+      win.push(now);
+      sd.chatWin = win;
+
+      io.to(room.id).emit("chat:message", {
+        from: nickname,
+        text: verdict.clean,
+        at: new Date().toISOString(),
+        id: `${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+      });
+    } catch (err) { console.error("채팅 오류:", err); }
+  });
+
+  /* 채팅 메시지 신고 → 버그 제보함에 '채팅 신고'로 접수 */
+  socket.on("chat:report", (data) => {
+    try {
+      const room = getPlayerRoom(socket);
+      const target = String(data?.nickname || "").trim();
+      const text = String(data?.text || "").trim().slice(0, 200);
+      if (!target) { socket.emit("chat:reportResult", { ok: false, reason: "신고할 대상이 없습니다." }); return; }
+      const reporter = socketNicks.get(socket.id) || "익명";
+      bugReports.unshift({
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        nickname: reporter,
+        category: "채팅 신고",
+        message: `[대상: ${target}]${room ? ` (방 ${room.id})` : ""} ${text || "(내용 없음)"}`,
+        createdAt: new Date().toISOString()
+      });
+      if (bugReports.length > 200) bugReports.length = 200;
+      saveBugReports();
+      socket.emit("chat:reportResult", { ok: true, reason: `'${target}' 님을 신고했습니다. 검토 후 조치하겠습니다.` });
+      notifySuperAdmins({ nickname: reporter, at: new Date().toISOString(), reason: "chat-report", target });
+      console.log(`[CHAT REPORT] '${reporter}' → '${target}': ${text.slice(0, 60)}`);
+    } catch (err) { console.error("채팅 신고 오류:", err); socket.emit("chat:reportResult", { ok: false, reason: "신고 접수에 실패했습니다." }); }
+  });
+
   /* 표시 이름 설정 — Google 로그인 세션이 있는 소켓만 가능하다.
      이름은 정규화(공백 제거·소문자) 후 대소문자 무시로 고유해야 하며,
      서버/DB에서 원자적으로 선점한다. 기존 기록(돈/랭킹/연승)은 이름 키 계정에 그대로 보존된다 */
@@ -4074,6 +4503,12 @@ io.on("connection", (socket) => {
       }
       if (nickname.length > 12) {
         socket.emit("player:nameUpdated", { ok: false, reason: "이름은 12자 이내로 입력해주세요." });
+        return;
+      }
+      /* 운영 제재 — 밴 계정은 이름을 설정할 수 없다 */
+      const banMsg = banGuard(nickname);
+      if (banMsg) {
+        socket.emit("player:nameUpdated", { ok: false, reason: banMsg, banned: true });
         return;
       }
       const uid = socketFirebaseUid.get(socket.id) || "";
@@ -4150,6 +4585,12 @@ io.on("connection", (socket) => {
       const email = String(decoded.email || "");
       if (!uid) {
         socket.emit("player:firebaseAuthResult", { ok: false, reason: "토큰에서 사용자 ID를 확인하지 못했습니다." });
+        return;
+      }
+      /* 운영 제재 — 밴된 계정(Google UID)은 로그인 자체를 차단 */
+      const uidBanMsg = banGuardByUid(uid);
+      if (uidBanMsg) {
+        socket.emit("player:firebaseAuthResult", { ok: false, reason: uidBanMsg, banned: true });
         return;
       }
       socketFirebaseUid.set(socket.id, uid);
@@ -4395,6 +4836,7 @@ initDatabase().then(async () => {
   /* PG 모드에서는 파일이 남아있지 않아도 DB(kv_store)에서 보조 저장소를 복구한다 */
   await Promise.all([
     loadAdminConfig(),
+    loadModeration(),
     loadFriends(),
     loadBugReports(),
     loadCustomDict(),

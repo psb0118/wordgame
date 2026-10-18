@@ -922,6 +922,53 @@ function initSocket() {
     renderAdminBugs(data.reports || []);
   });
 
+  /* -- 제재 목록(밴/뮤트) 결과 -------------------------- */
+  socket.on("admin:moderation", (data) => {
+    if (!data) return;
+    renderAdminModeration(data);
+  });
+
+  /* -- 계정 삭제 결과 ------------------------------------ */
+  socket.on("admin:deletePlayerResult", (data) => {
+    if (!data) return;
+    if (data.ok) {
+      setAdminStatus(data.message || "삭제했습니다.", "ok");
+      socket.emit("admin:moderationList");
+    } else {
+      setAdminStatus(data.reason || "삭제에 실패했습니다.", "error");
+    }
+  });
+
+  /* -- 내 계정이 삭제/제재당했을 때 안내 ----------------- */
+  socket.on("player:deleted", (data) => {
+    const msg = (data && data.reason) || "관리자에 의해 계정이 삭제되었습니다.";
+    showMessage(msg, "error");
+    accountMsg(msg, "error");
+  });
+
+  /* -- 내 계정이 제재당했을 때 안내 -------------------- */
+  socket.on("player:banned", (data) => {
+    const msg = (data && data.reason) || "이 계정은 이용이 정지되었습니다.";
+    showMessage(msg, "error");
+    accountMsg(msg, "error");
+    const nickMsg = $("#nickMsg");
+    if (nickMsg) { nickMsg.textContent = msg; nickMsg.dataset.type = "error"; }
+  });
+
+  socket.on("player:muted", (data) => {
+    showMessage((data && data.reason) || "채팅이 차단되었습니다.", "error");
+  });
+
+  socket.on("player:unbanned", () => showMessage("이제 다시 이용할 수 있습니다.", "success"));
+  socket.on("player:unmuted", () => showMessage("채팅 차단이 해제되었습니다.", "success"));
+
+  /* -- 실시간 채팅 -------------------------------------- */
+  socket.on("chat:message", (data) => appendChatLine(data));
+  socket.on("chat:error", (data) => chatNotice((data && data.reason) || "전송하지 못했습니다.", false));
+  socket.on("chat:reportResult", (data) => {
+    chatNotice((data && data.reason) || (data && data.ok ? "접수되었습니다." : "신고에 실패했습니다."), !!(data && data.ok));
+  });
+
   /* -- 닉네임 ----------------------------------------- */
   socket.on("player:nameUpdated", (data) => {
     if (!data) return;
@@ -963,6 +1010,8 @@ function initSocket() {
        경량 결과로 패널이 초기화되어 반영이 안 보이는 문제 방지 */
     if ("role" in data) {
       renderAdminBody(data);
+      /* 패널이 열릴 때 제재 목록도 함께 최신화 */
+      socket.emit("admin:moderationList");
     }
     if (data.ok === false && data.reason) {
       setAdminStatus(data.reason, "error");
@@ -1045,6 +1094,7 @@ function initSocket() {
     roomId = data.roomId;
     playerIndex = data.playerIndex;
     spectating = false;
+    clearChat();
     gameSessionId++;
     gameState = data.state;
     renderGameState(gameState);
@@ -1146,6 +1196,7 @@ function initSocket() {
     roomId = null;
     playerIndex = null;
     gameState = null;
+    clearChat();
     showMessage("방을 나갔습니다.", "info");
     hideRoomInfo();
     resetOnlineBoard();
@@ -2471,6 +2522,112 @@ function renderAdminBugs(reports) {
   });
 }
 
+/* 제재 목록(밴/뮤트) 렌더 — 패널 전체를 지우지 않고 목록 영역만 갱신 */
+function renderAdminModeration(data) {
+  if (!data.ok) { setAdminStatus(data.reason || "제재 목록을 불러오지 못했습니다.", "error"); return; }
+  const fill = (listId, countId, items, kind) => {
+    const ul = document.getElementById(listId);
+    const cnt = document.getElementById(countId);
+    if (cnt) cnt.textContent = `(${(items || []).length}명)`;
+    if (!ul) return;
+    if (!items || items.length === 0) {
+      ul.innerHTML = `<li class="admin-info">해당 제재가 없습니다.</li>`;
+      return;
+    }
+    ul.innerHTML = items.map(it => `
+      <li class="admin-sub-row">
+        <span class="admin-mod-nick">${escapeHtml(it.nick)}</span>
+        <span class="admin-mod-meta">${escapeHtml(it.reason || "사유 없음")}</span>
+        <span class="admin-mod-when">${escapeHtml(String(it.at || "").slice(0, 10))}</span>
+        <button type="button" class="admin-apply" data-mod-del="${kind}" data-mod-nick="${escapeHtml(it.nick)}">해제</button>
+      </li>`).join("");
+    ul.querySelectorAll("[data-mod-del]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const nick = btn.dataset.modNick;
+        socket.emit(btn.dataset.modDel === "banned" ? "admin:unban" : "admin:unmute", { nickname: nick });
+      });
+    });
+  };
+  fill("adminBanList", "adminBanCount", data.banned, "banned");
+  fill("adminMuteList", "adminMuteCount", data.muted, "muted");
+  if (data.message) setAdminStatus(data.message, "ok");
+}
+
+/* ---------------------------------------------------------
+   실시간 채팅 UI (방 단위)
+--------------------------------------------------------- */
+let chatUnread = 0;
+let chatNoticeTimer = null;
+
+function renderChatUnread() {
+  const badge = $("#chatUnread");
+  if (!badge) return;
+  if (chatUnread > 0) {
+    badge.textContent = chatUnread > 99 ? "99+" : String(chatUnread);
+    badge.classList.remove("hidden");
+  } else {
+    badge.classList.add("hidden");
+  }
+}
+
+function appendChatLine(data) {
+  const list = $("#chatList");
+  if (!list || !data) return;
+  const empty = list.querySelector(".chat-empty");
+  if (empty) empty.remove();
+
+  const line = document.createElement("div");
+  line.className = "chat-line" + (data.from && data.from === myNickname ? " self" : "");
+
+  const nick = document.createElement("span");
+  nick.className = "chat-line-nick";
+  nick.textContent = data.from || "??";
+
+  const text = document.createElement("span");
+  text.className = "chat-line-text";
+  text.textContent = data.text || "";
+
+  const flag = document.createElement("button");
+  flag.type = "button";
+  flag.className = "chat-flag";
+  flag.title = "이 메시지 신고";
+  flag.textContent = "🚩";
+  flag.addEventListener("click", () => {
+    const target = data.from || "";
+    if (!target) return;
+    if (!window.confirm(`'${target}' 님의 메시지를 신고하시겠습니까?`)) return;
+    socket.emit("chat:report", { nickname: target, text: data.text });
+  });
+
+  line.append(nick, text, flag);
+  list.appendChild(line);
+  while (list.children.length > 100) list.removeChild(list.firstChild);
+
+  const panel = $("#chatPanel");
+  const opened = panel && !panel.classList.contains("hidden");
+  if (opened) list.scrollTop = list.scrollHeight;
+  else { chatUnread += 1; renderChatUnread(); }
+}
+
+function chatNotice(text, ok) {
+  const el = $("#chatMsg");
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.toggle("ok", !!ok);
+  el.classList.remove("hidden");
+  if (chatNoticeTimer) clearTimeout(chatNoticeTimer);
+  chatNoticeTimer = setTimeout(() => el.classList.add("hidden"), 4000);
+}
+
+function clearChat() {
+  const list = $("#chatList");
+  if (list) {
+    list.innerHTML = `<div class="chat-empty">아직 메시지가 없습니다.<br>방에 들어와 있으면 채팅할 수 있어요.</div>`;
+  }
+  chatUnread = 0;
+  renderChatUnread();
+}
+
 /* ---------------------------------------------------------
    관리자 패널 (서버 검증 Google 관리자 계정에만 보이는 버튼)
 --------------------------------------------------------- */
@@ -2593,9 +2750,35 @@ function renderAdminBody(data) {
   /* 관리자: 버그 제보 (최고 관리자 전용) */
   const bugCard = isSuper ? `
     <div class="admin-card">
-      <h4>버그 제보 목록 (최고 관리자만 열람)</h4>
+      <h4>버그 제보 목록 (최고 관리자 전용)</h4>
       <button type="button" class="admin-apply" id="adminBugLoad">버그 제보 불러오기</button>
       <div id="adminBugList"></div>
+    </div>
+  ` : "";
+
+  /* 관리자: 제재 관리 — 밴/뮤트 (최고 관리자 전용) */
+  const modCard = isSuper ? `
+    <div class="admin-card">
+      <h4>제재 관리 — 차단(밴) / 음소거(뮤트)</h4>
+      <div class="admin-info"><b>차단</b>은 로그인·방 참가를 막고 <b>음소거</b>는 채팅 작성을 막습니다.
+        온라인 중인 대상은 즉시 퇴장 처리되며, Google 계정 기준으로 닉네임을 바꿔도 계속 차단됩니다.</div>
+      <div class="admin-row">
+        <input type="text" id="adminModNick" class="admin-text" maxlength="12" placeholder="닉네임" autocomplete="off" data-admin-enter="[data-mod-ban]">
+        <input type="text" id="adminModReason" class="admin-text" maxlength="100" placeholder="사유 (선택)" autocomplete="off">
+      </div>
+      <div class="admin-row">
+        <button type="button" class="admin-apply admin-reject" data-mod-ban="1">⛔ 차단</button>
+        <button type="button" class="admin-apply admin-reject" data-mod-mute="1">🔇 음소거</button>
+        <button type="button" class="admin-apply" id="adminModLoad">목록 불러오기</button>
+      </div>
+      <div class="admin-danger">
+        <div class="admin-info">⚠ <b>계정 삭제</b> — 해당 닉네임의 전적·돈·칭호 등 모든 데이터가 영구 삭제됩니다. (복구 불가)</div>
+        <button type="button" class="admin-apply admin-reject" data-mod-delete="1">🗑 계정 전체 삭제</button>
+      </div>
+      <div class="admin-info" style="margin-top:8px;">⛔ 차단 목록 <span id="adminBanCount"></span></div>
+      <ul class="admin-sub-list" id="adminBanList"></ul>
+      <div class="admin-info" style="margin-top:8px;">🔇 음소거 목록 <span id="adminMuteCount"></span></div>
+      <ul class="admin-sub-list" id="adminMuteList"></ul>
     </div>
   ` : "";
 
@@ -2620,6 +2803,7 @@ function renderAdminBody(data) {
     ${moneyCard}
     ${wordCard}
     ${bugCard}
+    ${modCard}
     <div class="admin-status" id="adminStatus"></div>
   `;
   bindAdminBody();
@@ -2637,6 +2821,33 @@ function renderAdminBody(data) {
 
   const bugLoad = $("#adminBugLoad");
   if (bugLoad) bugLoad.addEventListener("click", () => socket.emit("admin:getBugs"));
+
+  /* 제재 관리 — 밴/뮤트 실행 및 목록 조회 */
+  const modLoad = $("#adminModLoad");
+  if (modLoad) modLoad.addEventListener("click", () => socket.emit("admin:moderationList"));
+  const modTarget = () => {
+    const nick = modal.querySelector("#adminModNick")?.value.trim() || "";
+    if (!nick) { setAdminStatus("제재할 닉네임을 입력해주세요.", "error"); return null; }
+    const reason = modal.querySelector("#adminModReason")?.value.trim() || "";
+    return { nickname: nick, reason };
+  };
+  const modBan = modal.querySelector("[data-mod-ban]");
+  if (modBan) modBan.addEventListener("click", () => {
+    const payload = modTarget();
+    if (payload) socket.emit("admin:ban", payload);
+  });
+  const modMute = modal.querySelector("[data-mod-mute]");
+  if (modMute) modMute.addEventListener("click", () => {
+    const payload = modTarget();
+    if (payload) socket.emit("admin:mute", payload);
+  });
+  const modDelete = modal.querySelector("[data-mod-delete]");
+  if (modDelete) modDelete.addEventListener("click", () => {
+    const payload = modTarget();
+    if (!payload) return;
+    if (!window.confirm(`'${payload.nickname}' 계정을 정말 삭제하시겠습니까?\n\n전적·돈·칭호 등 모든 데이터가 영구 삭제되며 복구할 수 없습니다.`)) return;
+    socket.emit("admin:deletePlayer", { nickname: payload.nickname });
+  });
 }
 
 function renderAdminWords(data) {
@@ -3567,8 +3778,39 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.key === "Escape") {
       closeAdminPanel();
       $("#howModal")?.classList.add("hidden");
+      $("#chatPanel")?.classList.add("hidden");
     }
   });
+
+  /* 실시간 채팅 (좌측 하단) */
+  const chatPanel = $("#chatPanel");
+  $("#chatBtn")?.addEventListener("click", () => {
+    if (!chatPanel) return;
+    const opening = chatPanel.classList.contains("hidden");
+    chatPanel.classList.toggle("hidden", !opening);
+    if (opening) {
+      chatUnread = 0;
+      renderChatUnread();
+      const list = $("#chatList");
+      if (list) list.scrollTop = list.scrollHeight;
+      $("#chatInput")?.focus();
+    }
+  });
+  $("#chatClose")?.addEventListener("click", () => chatPanel?.classList.add("hidden"));
+  const sendChat = () => {
+    const inp = $("#chatInput");
+    if (!inp) return;
+    const text = inp.value.trim();
+    if (!text) return;
+    socket.emit("chat:send", { text });
+    inp.value = "";
+    inp.focus();
+  };
+  $("#chatSend")?.addEventListener("click", sendChat);
+  $("#chatInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); sendChat(); }
+  });
+  clearChat();
 
   /* 닉네임 */
   $("#nickSave")?.addEventListener("click", saveNickname);

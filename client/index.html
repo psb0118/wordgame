@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=19">
+  <link rel="stylesheet" href="style.css?v=20">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -558,11 +558,28 @@
     </div>
   </div>
 
+  <!-- 실시간 채팅 (방 단위) -->
+  <div id="chatWrap" class="chat-wrap">
+    <button id="chatBtn" class="chat-btn" title="방 채팅 열기">💬 채팅<span id="chatUnread" class="chat-unread hidden">0</span></button>
+    <div id="chatPanel" class="chat-panel hidden">
+      <div class="chat-head">
+        <span>💬 방 채팅</span>
+        <button id="chatClose" class="chat-close" title="채팅 닫기">✕</button>
+      </div>
+      <div id="chatList" class="chat-list"></div>
+      <div id="chatMsg" class="chat-msg-line hidden"></div>
+      <div class="chat-input-row">
+        <input id="chatInput" maxlength="100" placeholder="메시지 입력" autocomplete="off">
+        <button id="chatSend">전송</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="script.js?v=20"></script>
+  <script src="script.js?v=21"></script>
   <script src="firebase-auth.js?v=1"></script>
 </body>
 </html>
