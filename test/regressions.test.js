@@ -64,7 +64,8 @@ function context(extra = {}) {
       sockets: { sockets: new Map() } },
     ...extra,
   });
-  for (const name of ["normKey", "MODE_DEFAULT", "SEASON_DEFAULT", "REACT_EMOJIS", "REACT_COOLDOWN_MS"]) {
+  for (const name of ["normKey", "MODE_DEFAULT", "SEASON_DEFAULT", "REACT_EMOJIS", "REACT_COOLDOWN_MS",
+    "REFERRAL_JOIN_COIN", "REFERRAL_INVITE_COIN"]) {
     const declaration = new RegExp(`^const ${name} = .*;$`, "m").exec(source);
     assert.ok(declaration, `missing constant: ${name}`);
     vm.runInContext(declaration[0], c);
@@ -85,6 +86,7 @@ function context(extra = {}) {
     "roomCapacity", "partyAliveTeams", "checkPartyEnd",
     "partyReadyError", "partyResultPairs", "addPlayer",
     "achievementStats", "evaluateAchievements", "achievementDefs",
+    "findPlayerIdByNickname", "findAllPlayerIdsByNickname",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions };
 }
@@ -876,4 +878,101 @@ test("reactions are rate limited per socket", () => {
   s.handlers.get("game:react")({ emoji: "🔥" });
   assert.equal(emissions.length, 1, "연속 요청은 조용히 무시되어야 합니다");
   assert.equal(s.emissions.length, 0, "속도 제한은 오류가 아니라 무시로 처리");
+});
+
+/* =========================================================
+   레퍼럴(추천인) — 등록 / 중복 / 본인 / 존재하지 않는 닉네임
+========================================================= */
+test("referral registration rewards both sides once", async () => {
+  const { c, errors } = context();
+  const joinCoin = vm.runInContext("REFERRAL_JOIN_COIN", c);
+  const inviteCoin = vm.runInContext("REFERRAL_INVITE_COIN", c);
+  seed(c, "kate");
+  seed(c, "tom");
+  const s = socket("s-ref1");
+  c.socketNicks.set(s.id, "tom");
+  installHandler(c, "referral:register", s);
+  await s.handlers.get("referral:register")({ nickname: "kate" });
+
+  const tomPd = c.playerCache.get("tom");
+  const katePd = c.playerCache.get("kate");
+  assert.equal(tomPd.referredBy, "kate", "피추천인에게 추천인이 기록됩니다");
+  assert.ok(tomPd.referredAt, "등록 시각이 기록됩니다");
+  assert.equal(tomPd.money, 90000 + joinCoin, "피추천인은 즉시 코인을 받습니다");
+  assert.equal(katePd.referralCount, 1, "추천인은 누적 횟수가 오릅니다");
+  assert.equal(katePd.money, 90000 + inviteCoin, "추천인도 코인을 받습니다");
+
+  const msg = s.emissions.at(-1);
+  assert.equal(msg[0], "referral:result");
+  assert.equal(msg[1].ok, true);
+  assert.equal(msg[1].referredBy, "kate");
+  assert.equal(msg[1].coin, joinCoin);
+  assert.equal(msg[1].money, tomPd.money);
+  assert.equal(errors.length, 0, "오류 없이 처리되어야 합니다");
+});
+
+test("referral registration is rejected when already registered", async () => {
+  const { c } = context();
+  seed(c, "kate");
+  seed(c, "tom", { referredBy: "kate", money: 91000 });
+  const s = socket("s-ref2");
+  c.socketNicks.set(s.id, "tom");
+  installHandler(c, "referral:register", s);
+  await s.handlers.get("referral:register")({ nickname: "kate" });
+
+  const tomPd = c.playerCache.get("tom");
+  assert.equal(tomPd.referredBy, "kate", "기존 추천인이 유지됩니다");
+  assert.equal(tomPd.money, 91000, "중복 등록 시 추가 보상이 없습니다");
+  const msg = s.emissions.at(-1);
+  assert.equal(msg[0], "referral:result");
+  assert.equal(msg[1].ok, false);
+  assert.match(String(msg[1].reason), /이미/);
+});
+
+test("referral registration rejects self as referrer", async () => {
+  const { c } = context();
+  seed(c, "hong");
+  const s = socket("s-ref3");
+  c.socketNicks.set(s.id, "hong");
+  installHandler(c, "referral:register", s);
+  await s.handlers.get("referral:register")({ nickname: "hong" });
+
+  const pd = c.playerCache.get("hong");
+  assert.equal(pd.referredBy, undefined, "본인 추천은 기록되지 않습니다");
+  assert.equal(pd.money, 90000, "보상이 지급되지 않습니다");
+  const msg = s.emissions.at(-1);
+  assert.equal(msg[1].ok, false);
+  assert.match(String(msg[1].reason), /자기 자신/);
+});
+
+test("referral registration rejects unknown referrer nickname", async () => {
+  const { c } = context();
+  seed(c, "tom");
+  const s = socket("s-ref4");
+  c.socketNicks.set(s.id, "tom");
+  installHandler(c, "referral:register", s);
+  await s.handlers.get("referral:register")({ nickname: "없는사람" });
+
+  const pd = c.playerCache.get("tom");
+  assert.equal(pd.referredBy, undefined, "존재하지 않는 추천인은 기록되지 않습니다");
+  assert.equal(pd.money, 90000, "보상이 지급되지 않습니다");
+  const msg = s.emissions.at(-1);
+  assert.equal(msg[1].ok, false);
+  assert.match(String(msg[1].reason), /존재하지/);
+});
+
+test("referral status reports current registration state", async () => {
+  const { c } = context();
+  seed(c, "tom", { referredBy: "kate", referralCount: 3 });
+  const s = socket("s-ref5");
+  c.socketNicks.set(s.id, "tom");
+  installHandler(c, "referral:status", s);
+  await s.handlers.get("referral:status")();
+
+  const msg = s.emissions.at(-1);
+  assert.equal(msg[0], "referral:status");
+  assert.equal(msg[1].ok, true);
+  assert.equal(msg[1].referredBy, "kate");
+  assert.equal(msg[1].count, 3);
+  assert.ok(msg[1].joinCoin > 0 && msg[1].inviteCoin > 0);
 });

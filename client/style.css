@@ -1926,6 +1926,36 @@ button:disabled {
   font-size: 0.85rem;
 }
 
+/* 추천인(레퍼럴) */
+.acc-referral {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.acc-referral-title {
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.acc-referral-status {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  line-height: 1.45;
+}
+.acc-referral-status b { color: var(--accent); }
+.account-row.ref-row { display: flex; gap: 6px; }
+.account-row.ref-row input { flex: 1; min-width: 0; }
+.acc-referral-msg {
+  font-size: 0.78rem;
+  color: var(--red);
+  margin-top: 6px;
+  min-height: 1em;
+  line-height: 1.4;
+}
+.acc-referral-msg.ok { color: #059669; }
+
 /* =========================================================
    초대 토스트 (가운데 위)
 ========================================================= */

@@ -1493,6 +1493,10 @@ function achievementDefs() {
   ];
 }
 
+/* 레퍼럴(추천인) — 계정당 1회 등록, 양쪽 모두 코인 보상 */
+const REFERRAL_JOIN_COIN = 3000;
+const REFERRAL_INVITE_COIN = 5000;
+
 /* 누적 카운터 보장(없으면 생성+정규화) — pd.ach */
 function achievementStats(pd) {
   if (!pd.ach || typeof pd.ach !== "object") pd.ach = {};
@@ -2977,6 +2981,34 @@ app.get("/api/season", async (req, res) => {
   }
 });
 
+/* 닉네임으로 플레이어 조회 (JSON DB / PostgreSQL 공통) — 소켓 핸들러·레퍼럴 공용 */
+async function findPlayerIdByNickname(nickname) {
+  if (dbMode === "pg") {
+    const result = await dbPool.query("SELECT id FROM players WHERE nickname = $1 LIMIT 1", [nickname]);
+    return result.rows.length ? result.rows[0].id : null;
+  }
+  for (const [id, p] of playerCache) {
+    if (String(p?.nickname || "").trim() === nickname) return id;
+  }
+  return null;
+}
+
+/* 같은 닉네임의 모든 레코드 조회 — 소켓 ID는 재접속마다 바뀌므로 좀비 레코드가 여러 개
+   남아 랭킹에 같은 유저가 중복 표시되는 것을 막는다 */
+async function findAllPlayerIdsByNickname(nickname) {
+  if (dbMode === "pg") {
+    try {
+      const result = await dbPool.query("SELECT id FROM players WHERE nickname = $1", [nickname]);
+      return result.rows.map(r => r.id);
+    } catch (err) { console.error("닉네임 레코드 조회 오류:", err.message); return []; }
+  }
+  const ids = [];
+  for (const [id, p] of playerCache) {
+    if (String(p?.nickname || "").trim() === nickname) ids.push(id);
+  }
+  return ids;
+}
+
 /* =========================================================
    Socket.IO 이벤트
 ========================================================= */
@@ -4204,34 +4236,6 @@ io.on("connection", (socket) => {
     return { ok: true, nickname: String(pd.nickname || "").trim(), role: "super", subAdmin: null };
   };
 
-  /* 닉네임으로 플레이어 조회 (JSON DB / PostgreSQL 공통) */
-  const findPlayerIdByNickname = async (nickname) => {
-    if (dbMode === "pg") {
-      const result = await dbPool.query("SELECT id FROM players WHERE nickname = $1 LIMIT 1", [nickname]);
-      return result.rows.length ? result.rows[0].id : null;
-    }
-    for (const [id, p] of playerCache) {
-      if (String(p?.nickname || "").trim() === nickname) return id;
-    }
-    return null;
-  };
-
-  /* 같은 닉네임의 모든 레코드 조회 — 소켓 ID는 재접속마다 바뀌므로 좀비 레코드가 여러 개
-     남아 랭킹에 같은 유저가 중복 표시되는 것을 막기 위해 전부 찾는다 */
-  const findAllPlayerIdsByNickname = async (nickname) => {
-    if (dbMode === "pg") {
-      try {
-        const result = await dbPool.query("SELECT id FROM players WHERE nickname = $1", [nickname]);
-        return result.rows.map(r => r.id);
-      } catch (err) { console.error("닉네임 레코드 조회 오류:", err.message); return []; }
-    }
-    const ids = [];
-    for (const [id, p] of playerCache) {
-      if (String(p?.nickname || "").trim() === nickname) ids.push(id);
-    }
-    return ids;
-  };
-
   socket.on("admin:getPanel", async () => {
     try {
       const reg = await requireNickname(socket);
@@ -4706,6 +4710,87 @@ io.on("connection", (socket) => {
       sd.reactLastAt = now;
       io.to(room.id).emit("game:react", { from: nickname, emoji, at: now, roomId: room.id });
     } catch (err) { console.error("리액션 오류:", err); }
+  });
+
+  /* -- 추천인 등록(레퍼럴) — 계정당 1회, 등록 즉시 양쪽 코인 지급 ---------- */
+  socket.on("referral:register", async (data) => {
+    try {
+      const myNick = socketNicks.get(socket.id) || "";
+      if (!myNick) { socket.emit("referral:result", { ok: false, reason: "먼저 닉네임을 설정해주세요." }); return; }
+      const refNick = normalizeWord(String(data?.nickname || ""));
+      if (!refNick) { socket.emit("referral:result", { ok: false, reason: "추천인 닉네임을 입력해주세요." }); return; }
+
+      const myId = normKey(myNick);
+      const myPd = await getPlayerData(myId);
+      if (myPd.referredBy) {
+        socket.emit("referral:result", { ok: false, reason: "이미 추천인이 등록되어 있습니다.", referredBy: myPd.referredBy });
+        return;
+      }
+      if (normKey(refNick) === myId) {
+        socket.emit("referral:result", { ok: false, reason: "자기 자신을 추천인으로 등록할 수 없습니다." });
+        return;
+      }
+      let refId = await findPlayerIdByNickname(refNick);
+      if (!refId) refId = await findPlayerIdByNickname(normalizeWord(refNick));
+      if (!refId) {
+        socket.emit("referral:result", { ok: false, reason: "존재하지 않는 닉네임입니다. 정확히 입력해주세요." });
+        return;
+      }
+      if (normKey(String(refId)) === myId || normKey(String(refId.nickname || "")) === myId) {
+        socket.emit("referral:result", { ok: false, reason: "자기 자신을 추천인으로 등록할 수 없습니다." });
+        return;
+      }
+
+      const refPd = await getPlayerData(refId);
+      if (myPd.referredBy) {
+        socket.emit("referral:result", { ok: false, reason: "이미 추천인이 등록되어 있습니다.", referredBy: myPd.referredBy });
+        return;
+      }
+      myPd.referredBy = refNick;
+      myPd.referredAt = new Date().toISOString();
+      myPd.money = Math.max(0, (Number(myPd.money) || 0) + REFERRAL_JOIN_COIN);
+      refPd.referralCount = Math.max(0, Math.floor(Number(refPd.referralCount) || 0)) + 1;
+      refPd.money = Math.max(0, (Number(refPd.money) || 0) + REFERRAL_INVITE_COIN);
+      await Promise.all([savePlayerData(myId, myPd), savePlayerData(refId, refPd)]);
+
+      /* 추천인이 지금 온라인이면 보상 알림을 바로 보낸다 */
+      const refSid = onlineNicks.get(normKey(refNick));
+      const refSocket = refSid ? io.sockets.sockets.get(refSid) : null;
+      if (refSocket) {
+        refSocket.emit("referral:reward", {
+          from: myNick,
+          count: refPd.referralCount,
+          coin: REFERRAL_INVITE_COIN,
+          money: Math.max(0, Math.floor(Number(refPd.money) || 0))
+        });
+      }
+
+      socket.emit("referral:result", {
+        ok: true, referredBy: refNick, coin: REFERRAL_JOIN_COIN,
+        money: Math.max(0, Math.floor(Number(myPd.money) || 0)),
+        message: `'${refNick}' 님을 추천인으로 등록했습니다. +${REFERRAL_JOIN_COIN}코인 지급!`
+      });
+      console.log(`[REFERRAL] '${myNick}' ← '${refNick}' (누적 ${refPd.referralCount}회)`);
+    } catch (err) {
+      console.error("추천인 등록 오류:", err);
+      socket.emit("referral:result", { ok: false, reason: "추천인 등록에 실패했습니다." });
+    }
+  });
+
+  /* 추천인 등록 상태 */
+  socket.on("referral:status", async () => {
+    try {
+      const myNick = socketNicks.get(socket.id) || "";
+      if (!myNick) { socket.emit("referral:status", { ok: false, reason: "먼저 닉네임을 설정해주세요." }); return; }
+      const myPd = await getPlayerData(normKey(myNick));
+      socket.emit("referral:status", {
+        ok: true,
+        referredBy: myPd.referredBy || null,
+        count: Math.max(0, Math.floor(Number(myPd.referralCount) || 0)),
+        joinCoin: REFERRAL_JOIN_COIN,
+        inviteCoin: REFERRAL_INVITE_COIN
+      });
+    } catch (err) { console.error("추천인 상태 오류:", err); }
   });
 
   /* 표시 이름 설정 — Google 로그인 세션이 있는 소켓만 가능하다.

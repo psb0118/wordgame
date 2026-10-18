@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=23">
+  <link rel="stylesheet" href="style.css?v=24">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -483,6 +483,15 @@
         <div class="acc-row"><span>소지금</span><strong id="accMoney">0</strong></div>
         <div class="acc-row"><span>칭호</span><strong id="accTitle">없음</strong></div>
       </div>
+      <div class="acc-referral">
+        <div class="acc-referral-title">🎁 추천인 등록</div>
+        <div id="refStatus" class="acc-referral-status">추천인을 등록하면 <b>둘 다 코인</b>을 받아요. (나 +3,000 · 상대 +5,000)</div>
+        <div class="account-row ref-row">
+          <input id="refNickInput" maxlength="12" placeholder="추천인 닉네임" autocomplete="off">
+          <button id="refApply">등록</button>
+        </div>
+        <div id="refMsg" class="acc-referral-msg"></div>
+      </div>
     </div>
   </div>
 
@@ -603,7 +612,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="script.js?v=24"></script>
+  <script src="script.js?v=25"></script>
   <script src="firebase-auth.js?v=1"></script>
 </body>
 </html>

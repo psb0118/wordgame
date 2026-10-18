@@ -1243,6 +1243,52 @@ function initSocket() {
     if (currentMode === "achievements") fetchAchievements();
   });
 
+  /* -- 레퍼럴(추천인) ---------------------------------- */
+  socket.on("referral:result", (data) => {
+    if (!data) return;
+    const el = $("#refMsg");
+    if (el) {
+      el.textContent = data.message || data.reason || "";
+      el.classList.toggle("ok", !!data.ok);
+    }
+    if (data.ok) {
+      if (typeof data.money === "number") { moneyBalance = data.money; renderMoneyBar(); }
+      const apply = $("#refApply");
+      if (apply) apply.disabled = true;
+      const inp = $("#refNickInput");
+      if (inp) { inp.disabled = true; inp.value = ""; }
+      const st = $("#refStatus");
+      if (st && data.referredBy) st.innerHTML = `추천인 <b>${escapeHtml(String(data.referredBy))}</b> 님 등록 완료 · <b>+${Number(data.coin) || 0}</b>코인 지급!`;
+      showMessage(data.message || "추천인이 등록되었습니다.", "success");
+    } else {
+      showMessage(data.reason || "추천인 등록에 실패했습니다.", "error");
+    }
+  });
+  socket.on("referral:status", (data) => {
+    if (!data || !data.ok) return;
+    const st = $("#refStatus");
+    const apply = $("#refApply");
+    const inp = $("#refNickInput");
+    if (data.referredBy) {
+      if (st) st.innerHTML = `추천인 <b>${escapeHtml(String(data.referredBy))}</b> 님 등록 완료${data.count ? ` · 받은 추천 <b>${data.count}명</b>` : ""}`;
+      if (apply) apply.disabled = true;
+      if (inp) inp.disabled = true;
+      const el = $("#refMsg");
+      if (el) { el.textContent = ""; el.classList.remove("ok"); }
+    } else {
+      if (st) st.innerHTML = `추천인을 등록하면 <b>둘 다 코인</b>을 받아요. (나 +${Number(data.joinCoin) || 3000} · 상대 +${Number(data.inviteCoin) || 5000})`;
+      if (apply) apply.disabled = false;
+      if (inp) inp.disabled = false;
+    }
+  });
+  socket.on("referral:reward", (data) => {
+    if (!data) return;
+    if (typeof data.money === "number") { moneyBalance = data.money; renderMoneyBar(); }
+    const text = `${data.from || "친구"} 님이 당신을 추천인으로 등록! +${Number(data.coin) || 0}코인 (누적 ${Number(data.count) || 0}회)`;
+    showMessage(text, "success");
+    chatNotice(text, true);
+  });
+
   /* -- 커스텀 사전 (단어 신청) — 상점 탭에서만 사용 ------------------------- */
   socket.on("word:requestResult", (data) => {
     if (!data) return;
@@ -3129,6 +3175,7 @@ function openAccountPanel(force) {
   panel.classList.toggle("hidden", !open);
   if (open) {
     renderAccountInfo($("#nickInput")?.value.trim() || myNickname || "");
+    if (socket && socketConnected) socket.emit("referral:status");
     setTimeout(() => $("#accNickInput")?.focus(), 60);
   }
 }
@@ -3961,6 +4008,23 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#accountBtn")?.addEventListener("click", () => openAccountPanel());
   $("#accountClose")?.addEventListener("click", () => openAccountPanel(false));
   $("#accApply")?.addEventListener("click", saveAccount);
+
+  /* 레퍼럴(추천인) 등록 */
+  const registerReferral = () => {
+    if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+    const inp = $("#refNickInput");
+    const nick = normalizeWord(inp?.value || "");
+    if (!nick) {
+      const el = $("#refMsg");
+      if (el) { el.textContent = "추천인 닉네임을 입력해주세요."; el.classList.remove("ok"); }
+      return;
+    }
+    socket.emit("referral:register", { nickname: nick });
+  };
+  $("#refApply")?.addEventListener("click", registerReferral);
+  $("#refNickInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); registerReferral(); }
+  });
   $("#accNickInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); saveAccount(); }
   });
