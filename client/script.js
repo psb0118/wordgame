@@ -1827,19 +1827,13 @@ function renderRoomInfo(state) {
   const isHost = state.hostSocketId === socket?.id;
   const statusText = state.finished ? "게임 종료" : state.started ? "게임 진행 중" : "대기 중";
   const isRanked = currentMode === "ranked";
-  const isParty = state.mode === "party";
-  const modeLabel = isRanked ? "랭크 매칭" : isParty ? "2v2 파티" : "온라인 멀티";
-
-  const teamSplit = isParty && Array.isArray(state.players)
-    ? ` · A${state.players.filter(p => p.team === 0).length} : B${state.players.filter(p => p.team === 1).length}`
-    : "";
 
   el.innerHTML = `
     <div class="room-header">
-      <div>${isRanked ? "🎮" : "방 코드: "}<strong>${isRanked ? escapeHtml(modeLabel) : `<span class="room-code" title="클릭하면 복사됩니다">${state.roomId}</span>`}${isParty ? ` <span class="rl-badge">2v2</span>` : ""}</strong></div>
+      <div>${isRanked ? "🎮" : "방 코드: "}<strong>${isRanked ? "랭크 매칭" : `<span class="room-code" title="클릭하면 복사됩니다">${state.roomId}</span>`}</strong></div>
       <div class="room-status">${statusText}</div>
     </div>
-    <div>인원: ${state.playerCount}/${state.maxPlayers}${teamSplit}${isHost && !isRanked ? " (방장)" : ""}</div>
+    <div>인원: ${state.playerCount}/${state.maxPlayers}${isHost && !isRanked ? " (방장)" : ""}</div>
   `;
 
   const codeEl = el.querySelector(".room-code");
@@ -2013,11 +2007,8 @@ function submitSingleWord() {
 function createOnlineRoom() {
   if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
   if (!requireNickname()) return;
-  const modeSel = $("#roomModeSel");
-  const wantParty = !!modeSel && modeSel.value === "party";
-  try { localStorage.setItem("kkRoomMode", wantParty ? "party" : "online"); } catch (_) {}
-  socket.emit("room:create", { nickname: makeNickname(), mode: wantParty ? "party" : "online" });
-  showMessage(wantParty ? "2v2 파티 방을 만드는 중..." : "방을 만드는 중...", "waiting");
+  socket.emit("room:create", { nickname: makeNickname(), mode: "online" });
+  showMessage("방을 만드는 중...", "waiting");
 }
 
 function joinOnlineRoom() {
@@ -2069,11 +2060,11 @@ function renderRoomList() {
     return;
   }
   const rows = rooms.map(r => `
-    <button class="room-list-row${r.party ? " party" : ""}" data-id="${escapeHtml(String(r.roomId))}">
-      <span class="rl-code">${escapeHtml(String(r.roomId))}${r.party ? ` <span class="rl-badge">2v2</span>` : ""}</span>
+    <button class="room-list-row" data-id="${escapeHtml(String(r.roomId))}">
+      <span class="rl-code">${escapeHtml(String(r.roomId))}</span>
       <span class="rl-host">${escapeHtml(String(r.host || "플레이어"))}</span>
       <span class="rl-count">${Number(r.playerCount) || 0}/${Number(r.maxPlayers) || 0}</span>
-      <span class="rl-status">${r.started ? "진행 중" : r.party && r.teams ? `A${r.teams[0] ?? 0} : B${r.teams[1] ?? 0}` : "대기 중"}</span>
+      <span class="rl-status">${r.started ? "진행 중" : "대기 중"}</span>
       <span class="rl-watch" data-watch="${escapeHtml(String(r.roomId))}" title="구경만 하기">관전</span>
       <span class="rl-join">입장 →</span>
     </button>`).join("");
@@ -4072,12 +4063,6 @@ document.addEventListener("DOMContentLoaded", () => {
       aiDifficulty = diffSel.value || "normal";
       localStorage.setItem("kkAiDiff", aiDifficulty);
     });
-  }
-
-  /* 방 종류 선택 (일반 / 2v2 파티) — 마지막 선택을 기억 */
-  const roomModeSel = $("#roomModeSel");
-  if (roomModeSel) {
-    roomModeSel.value = localStorage.getItem("kkRoomMode") === "party" ? "party" : "online";
   }
 
   $("#singleSend")?.addEventListener("click", submitSingleWord);

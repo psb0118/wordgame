@@ -1726,6 +1726,7 @@ button:disabled {
   left: 0;
   width: 280px;
   max-height: calc(100vh - 58px);
+  overflow-x: hidden;
   overflow-y: auto;
   background: var(--card);
   border: 1px solid var(--border);
@@ -3679,7 +3680,7 @@ button:focus-visible {
   padding: 8px 12px;
 }
 
-.account-panel { border-radius: 20px; overflow: hidden; }
+.account-panel { border-radius: 20px; }
 .account-panel .account-head { margin: -14px -14px 12px; padding: 12px 14px; }
 
 /* --- 상점 아이템 행 그라데이션 + 호버 --- */

@@ -752,6 +752,23 @@ test("party capacity is 4 regardless of MAX_PLAYERS", () => {
   assert.equal(c.roomCapacity(null), c.MAX_PLAYERS);
 });
 
+test("ranked rooms cap at 2 and party rooms are no longer creatable", async () => {
+  const { c } = context();
+  assert.equal(c.roomCapacity({ mode: "ranked" }), 2, "랭크 방 정원은 2명(1:1 고정)");
+  assert.equal(c.roomCapacity({ mode: "online" }), c.MAX_PLAYERS, "일반 방은 MAX_PLAYERS 유지");
+
+  const { c: c2, errors } = context();
+  const s = socket("party-gone");
+  installHandler(c2, "room:create", s);
+  await s.handlers.get("room:create")({ nickname: "파티러버", mode: "party" });
+  const created = s.emissions.find(([event]) => event === "room:created");
+  assert.ok(created);
+  const made = c2.ROOMS.get(created[1].roomId);
+  assert.equal(made.mode, "online", "2v2 파티 요청도 일반 방으로 생성된다");
+  assert.equal(c2.roomCapacity(made), c2.MAX_PLAYERS);
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
 test("party ends only when an entire team is eliminated", async () => {
   const { c, errors } = context();
   const room = partyRoom();

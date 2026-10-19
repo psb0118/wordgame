@@ -2071,9 +2071,12 @@ function createRoomId() {
   return id;
 }
 
-/* 방 정원 — 파티(2v2)는 4명 고정, 그 외는 관리자 설정값(MAX_PLAYERS) */
+/* 방 정원 — 랭크는 항상 2명(1:1 고정), 그 외는 관리자 설정값(MAX_PLAYERS).
+   2v2 파티는 UI에서 제거되어 더 이상 생성되지 않는다(레거시 party 방 방어용 코드만 유지). */
 function roomCapacity(room) {
-  return room && room.mode === "party" ? PARTY_PLAYERS : MAX_PLAYERS;
+  if (!room) return MAX_PLAYERS;
+  if (room.mode === "ranked") return 2;
+  return room.mode === "party" ? PARTY_PLAYERS : MAX_PLAYERS;
 }
 
 function createRoom(socketId, nickname, mode, opts = {}) {
@@ -3197,7 +3200,8 @@ io.on("connection", (socket) => {
   socket.on("room:create", async (data) => {
     try {
       const nickname = normalizeWord(data?.nickname) || "플레이어";
-      const mode = data?.mode === "ai" ? "ai" : (data?.mode === "party" ? "party" : "online");
+      /* 2v2 파티 모드 제거 — ai(싱글/실습) 또는 일반 방만 생성된다 */
+      const mode = data?.mode === "ai" ? "ai" : "online";
       /* 싱글 난이도 — 잘못된 값이면 보통으로 폴백 */
       const difficulty = ["easy", "normal", "hard"].includes(data?.difficulty) ? data.difficulty : "normal";
       const banMsg = banGuard(nickname);
