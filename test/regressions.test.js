@@ -76,6 +76,9 @@ function context(extra = {}) {
     customWordsPath: "custom-words.json", customDictPath: "legacy-custom-words.json",
     writeStoreFile() {}, loadStoreJSON: async () => null,
     chatHistoryPath: "chat-history.json", chatSaveTimer: null, scheduleSaveChatHistory() {},
+    chatReportCounts: new Map(), saveModeration() {}, saveFriends() {}, saveGuilds() {},
+    PUBLIC_URL: "", setInterval: (fn, ms) => ({ unref() {} }),
+    fetch: () => Promise.resolve({ body: { cancel() {} } }), AbortSignal: { timeout: () => null },
     saveBugReports() {}, notifySuperAdmins() {},
     dbMode: "json", dbPool: null,
     firebaseReady: false, firebaseAuth: null,
@@ -104,6 +107,7 @@ function context(extra = {}) {
     "REFERRAL_JOIN_COIN", "REFERRAL_INVITE_COIN", "MAIL_MAX", "MAIL_COIN_MAX", "PLAYER_COLUMN_KEYS",
     "GUILD_MAX_MEMBERS", "GUILD_CREATE_COIN", "SEA_TITLE", "RENAME_PRICE",
     "CHAT_MAX_LEN", "CHAT_COOLDOWN_MS", "CHAT_WINDOW_MS", "CHAT_WINDOW_MAX",
+    "CHAT_AUTO_MUTE_REPORTS", "CHAT_AUTO_MUTE_MINUTES",
     "GLOBAL_CHAT_HISTORY", "GLOBAL_CHAT_MAX",
     "ATTENDANCE_REWARD", "SHOP_POTION_PRICE", "SHOP_SHIELD_PRICE",
     "DAILY_MISSIONS", "WEEKLY_MISSIONS", "MONTHLY_MISSIONS",
@@ -118,7 +122,7 @@ function context(extra = {}) {
     "recordMatchHistory", "finishGame", "migrateJsonPlayersToPg",
     "getPlayerBySocket", "getPlayerByIndex", "getAlivePlayers", "findNextAlivePlayer",
     "stopTurnTimer", "startTurnTimer", "removePlayer",
-    "loadChatHistory", "saveChatHistoryNow",
+    "loadChatHistory", "saveChatHistoryNow", "renameAccountRefs", "startKeepAlivePing",
     "bumpMission", "bumpDaily", "playWord", "runAI",
     "pushRatingHistory", "applyWelcomeReward",
     "getBan", "getMute", "banGuard", "banGuardByUid", "readModEntries",
@@ -2062,4 +2066,107 @@ test("global chat history survives restarts via kv store", async () => {
   assert.equal(saved[0].key, "chatHistory");
   assert.equal(saved[0].value.length, 1);
   assert.equal(saved[0].value[0].text, "새 메시지");
+});
+
+test("chat:history returns room backlog when roomId is provided", async () => {
+  const { c } = context();
+  const s = socket("room-reader");
+  const room = { id: "ROOM-H", mode: "online", chat: [{ from: "a", text: "이전 방 대화", scope: "room", id: "1" }] };
+  c.ROOMS.set("ROOM-H", room);
+  installHandler(c, "chat:history", s);
+  await s.handlers.get("chat:history")({ roomId: "ROOM-H" });
+  const hit = s.emissions.find(([event]) => event === "chat:history");
+  assert.equal(hit[1].scope, "room");
+  assert.equal(hit[1].roomId, "ROOM-H");
+  assert.equal(hit[1].messages.length, 1);
+  assert.equal(hit[1].messages[0].text, "이전 방 대화");
+
+  /* roomId가 없거나 없는 방이면 전체 이력으로 폴백 */
+  const s2 = socket("global-reader");
+  installHandler(c, "chat:history", s2);
+  await s2.handlers.get("chat:history")({ roomId: "GONE" });
+  const hit2 = s2.emissions.find(([event]) => event === "chat:history");
+  assert.equal(hit2[1].scope, "global");
+});
+
+test("chat send stores messages into room.chat while room is alive", async () => {
+  const { c } = context();
+  const s = socket("room-writer");
+  c.registerOnline(s.id, "말쟁이");
+  c.socketFirebaseUid.set(s.id, "uid-rw");
+  const room = { id: "ROOM-W", mode: "online", players: [{ socketId: s.id, nickname: "말쟁이", playerIndex: 0, isBot: false }], chat: [] };
+  c.getPlayerRoom = () => room;
+  installHandler(c, "chat:send", s);
+  await s.handlers.get("chat:send")({ text: "방 메시지 하나" });
+  assert.equal(room.chat.length, 1, "room.chat에 쌓인다");
+  assert.equal(room.chat[0].text, "방 메시지 하나");
+  assert.equal(room.chat[0].scope, "room");
+  assert.equal(vm.runInContext("GLOBAL_CHAT_HISTORY", c).length, 0, "전역 이력에는 안 쌓인다");
+});
+
+test("three distinct reporters auto-mute the target for 10 minutes", async () => {
+  const { c } = context();
+  const target = "도배쟁이";
+  /* 서로 다른 세 신고자 */
+  for (const rid of ["r1", "r2", "r3"]) {
+    const s = socket(rid);
+    c.socketFirebaseUid.set(s.id, `uid-${rid}`);
+    c.registerOnline(s.id, `신고자${rid}`);
+    installHandler(c, "chat:report", s);
+    await s.handlers.get("chat:report")({ nickname: target, text: "욕설" });
+  }
+  const normKey = vm.runInContext("normKey", c);
+  const mute = c.mutedMap.get(normKey(target));
+  assert.ok(mute, "3명 누적 시 자동 뮤트가 걸린다");
+  assert.match(String(mute.reason || ""), /반복/);
+  assert.ok(mute.until, "기간제(10분) 뮤트");
+  assert.equal(mute.by, "auto-reports");
+});
+
+test("renameAccountRefs migrates friend/guild keys from old to new nick", () => {
+  const { c } = context();
+  const friendsMap = new Map();
+  friendsMap.set("alice", new Set(["bob", "oldname"]));
+  friendsMap.set("bob", new Set(["alice", "oldname"]));
+  friendsMap.set("oldname", new Set(["alice", "bob"]));
+  c.friendsMap = friendsMap;
+  c.friendRequests = new Map([["oldname", new Set(["carol"])]]);
+  c.guildCache = { g1: { key: "g1", name: "길드", leader: "oldname", leaderNick: "구명", members: [{ key: "oldname", nick: "구명" }, { key: "bob", nick: "bob" }] } };
+
+  c.renameAccountRefs("oldname", "newname", "새명");
+
+  assert.ok(!friendsMap.has("oldname"), "옛 키는 제거된다");
+  assert.ok(friendsMap.get("newname").has("alice"), "새 키로 옮겨진다");
+  assert.ok(friendsMap.get("alice").has("newname"), "상대 목록도 갱신된다");
+  assert.ok(friendsMap.get("bob").has("newname"), "또 다른 친구 목록도 갱신된다");
+  assert.ok(c.friendRequests.get("newname").has("carol"), "신청 대기열도 갱신된다");
+  assert.equal(c.guildCache.g1.leader, "newname");
+  assert.equal(c.guildCache.g1.leaderNick, "새명");
+  assert.equal(c.guildCache.g1.members[0].key, "newname");
+});
+
+test("admin:chatClear wipes global history and emits chat:cleared", async () => {
+  const { c, emissions } = context();
+  const s = socket("admin-cc");
+  vm.runInContext(`GLOBAL_CHAT_HISTORY.push({ from: "a", text: "지워질 대화", scope: "global", id: "1" })`, c);
+  installHandler(c, "admin:chatClear", s);
+  await s.handlers.get("admin:chatClear")();
+  const result = s.emissions.find(([event]) => event === "admin:chatClearResult");
+  assert.equal(result[1].ok, true);
+  assert.equal(vm.runInContext("GLOBAL_CHAT_HISTORY", c).length, 0, "이력이 비워진다");
+  const cleared = emissions.find(([event]) => event === "chat:cleared");
+  assert.ok(cleared, "모든 유저에게 chat:cleared 브로드캐스트");
+});
+
+test("startKeepAlivePing schedules fetch when PUBLIC_URL is set", () => {
+  const { c } = context({ fetchCalls: [] });
+  /* PUBLIC_URL이 없는 환경에서는 ping을 설치하지 않는다 */
+  c.PUBLIC_URL = "";
+  assert.equal(typeof c.startKeepAlivePing, "function");
+  /* PUBLIC_URL이 있으면 setInterval로 핑을 예약한다 */
+  let intervalSet = false;
+  c.setInterval = (fn, ms) => { intervalSet = true; assert.ok(ms >= 60000); return { unref() {} }; };
+  c.PUBLIC_URL = "https://example.onrender.com";
+  c.startKeepAlivePing();
+  assert.ok(intervalSet, "PUBLIC_URL이 있으면 setInterval이 호출된다");
 });

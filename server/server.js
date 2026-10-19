@@ -314,6 +314,12 @@ function scheduleSaveChatHistory() {
   chatSaveTimer = setTimeout(() => { chatSaveTimer = null; saveChatHistoryNow(); }, 3000);
   if (chatSaveTimer && typeof chatSaveTimer.unref === "function") chatSaveTimer.unref();
 }
+
+/* 반복 채팅 신고 자동 뮤트 — 24시간 내 서로 다른 신고자 3명이 같은 대상을 신고하면
+   10분 자동 뮤트. 단일 악성 유저의 도배 신고로는 발동하지 않도록 '서로 다른 신고자' 기준 */
+const CHAT_AUTO_MUTE_REPORTS = 3;
+const CHAT_AUTO_MUTE_MINUTES = 10;
+const chatReportCounts = new Map();   /* 대상 정규화 키 -> { firstAt, reporters: Set<신고자 키> } */
 /* 이모지 리액션 — 허용 목록 밖은 거부, 소켓당 최소 간격 제한 */
 const REACT_EMOJIS = ["👍", "👏", "🔥", "😮", "😅", "😢", "❤️", "😂", "💪", "🎉", "🤔", "😡"];
 const REACT_COOLDOWN_MS = 600;
@@ -752,6 +758,47 @@ function saveFriends() {
     if (reqs.length) obj["_requests"] = reqs;
     writeStoreFile(friendsJsonPath, obj, "friends");
   } catch (e) { console.warn("친구 데이터 저장 실패:", e.message); }
+}
+
+/* 개명 반영 — 친구/신청/길드에 남은 옛 계정 키를 새 키로 치환한다.
+   friendsMap은 표시명이 아니라 정규화 키만 저장하므로, 키를 갱신하지 않으면
+   목록 조회 시옛 행이 사라져 친구/길드가 튕겨 나간다 */
+function renameAccountRefs(prevKey, newKey, newNick) {
+  try {
+    const from = normKey(prevKey), to = normKey(newKey);
+    if (!from || !to || from === to) return;
+    if (friendsMap.has(from)) {
+      const set = friendsMap.get(from);
+      friendsMap.delete(from);
+      const merged = friendsMap.get(to) || new Set();
+      for (const k of set) merged.add(k);
+      merged.delete(to);
+      friendsMap.set(to, merged);
+    }
+    for (const set of friendsMap.values()) {
+      if (set.has(from)) { set.delete(from); set.add(to); }
+    }
+    if (friendRequests.has(from)) {
+      const s = friendRequests.get(from);
+      friendRequests.delete(from);
+      const m = friendRequests.get(to) || new Set();
+      for (const x of s) m.add(x);
+      friendRequests.set(to, m);
+    }
+    for (const set of friendRequests.values()) {
+      if (set.has(from)) { set.delete(from); set.add(to); }
+    }
+    saveFriends();
+    if (guildCache) {
+      let changed = false;
+      for (const g of Object.values(guildCache)) {
+        const m = (g.members || []).find(x => x.key === from);
+        if (m) { m.key = to; m.nick = String(newNick || m.nick); changed = true; }
+        if (g.leader === from) { g.leader = to; g.leaderNick = String(newNick || g.leaderNick); changed = true; }
+      }
+      if (changed) saveGuilds();
+    }
+  } catch (e) { console.warn("개명 참조 갱신 실패:", e.message); }
 }
 
 /* =========================================================
@@ -4809,6 +4856,23 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("뮤트 해제 오류:", err); socket.emit("admin:moderation", { ok: false, reason: "해제에 실패했습니다." }); }
   });
 
+  /* 관리자: 전체 채팅 이력 비우기 — 저장소(kv_store/파일)까지 즉시 비운다 */
+  socket.on("admin:chatClear", async () => {
+    try {
+      const reg = await requireNickname(socket);
+      if (!reg.ok) { socket.emit("admin:chatClearResult", { ok: false, reason: reg.reason }); return; }
+      if (reg.role !== "super") {
+        socket.emit("admin:chatClearResult", { ok: false, reason: "최고 관리자만 채팅 이력을 비울 수 있습니다." });
+        return;
+      }
+      GLOBAL_CHAT_HISTORY.length = 0;
+      saveChatHistoryNow();
+      io.emit("chat:cleared");
+      socket.emit("admin:chatClearResult", { ok: true, reason: "전체 채팅 이력을 비웠습니다." });
+      console.log(`[ADMIN] 전체 채팅 이력 비움 by ${reg.nickname}`);
+    } catch (err) { console.error("채팅 비우기 오류:", err); socket.emit("admin:chatClearResult", { ok: false, reason: "채팅 이력 비우기에 실패했습니다." }); }
+  });
+
   /* 관리자: 계정 전체 삭제 (최고 관리자) — 전적·돈·칭호 등 영구 삭제 */
   socket.on("admin:deletePlayer", async (data) => {
     try {
@@ -4958,6 +5022,11 @@ io.on("connection", (socket) => {
       /* 온라인/파티/랭크 방이면 방 단위, 그 외(싱글·대기실·로비)는 전체 채팅 */
       if (room && room.mode !== "ai") {
         payload.scope = "room";
+        /* 방 단위 이력 — 방이 살아 있는 동안 유지 (재접속·패널 재개 시 복원).
+           방이 사라지면 함께 사라진다 (전역 이력에는 쌓이지 않음) */
+        if (!Array.isArray(room.chat)) room.chat = [];
+        room.chat.push(payload);
+        if (room.chat.length > GLOBAL_CHAT_MAX) room.chat.shift();
         io.to(room.id).emit("chat:message", payload);
       } else {
         payload.scope = "global";
@@ -4969,11 +5038,19 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("채팅 오류:", err); }
   });
 
-  /* 전체 채팅 이력 — 패널을 열 때 최근 대화를 돌려준다 (서버 메모리 유지).
+  /* 채팅 이력 — roomId를 주면 그 방의 이력, 없으면 전체 이력을 돌려준다.
      읽기는 로그인 없이도 허용한다(보이는 채팅), 쓰기·신고만 Google 로그인 게이트 */
-  socket.on("chat:history", () => {
+  socket.on("chat:history", (data) => {
     try {
-      socket.emit("chat:history", { ok: true, messages: GLOBAL_CHAT_HISTORY.slice(-30) });
+      const roomId = String(data?.roomId || "");
+      if (roomId) {
+        const room = ROOMS.get(roomId);
+        if (room) {
+          socket.emit("chat:history", { ok: true, scope: "room", roomId, messages: (room.chat || []).slice(-30) });
+          return;
+        }
+      }
+      socket.emit("chat:history", { ok: true, scope: "global", messages: GLOBAL_CHAT_HISTORY.slice(-30) });
     } catch (err) { console.error("채팅 이력 오류:", err); }
   });
 
@@ -4998,6 +5075,39 @@ io.on("connection", (socket) => {
       });
       if (bugReports.length > 200) bugReports.length = 200;
       saveBugReports();
+      /* 반복 신고 자동 뮤트 — 24시간 내 다른 신고자 3명 누적 시 10분 채팅정지 */
+      try {
+        const targetKey = normKey(target);
+        const reporterKey = normKey(reporter);
+        if (targetKey && reporterKey && targetKey !== reporterKey) {
+          const now = Date.now();
+          let rec = chatReportCounts.get(targetKey);
+          if (!rec || now - rec.firstAt > 24 * 3600000) {
+            rec = { firstAt: now, reporters: new Set() };
+            chatReportCounts.set(targetKey, rec);
+          }
+          if (!rec.reporters.has(reporterKey)) {
+            rec.reporters.add(reporterKey);
+            if (rec.reporters.size >= CHAT_AUTO_MUTE_REPORTS) {
+              chatReportCounts.delete(targetKey);
+              mutedMap.set(targetKey, {
+                nick: target,
+                by: "auto-reports",
+                at: new Date().toISOString(),
+                reason: `반복 채팅 신고 ${CHAT_AUTO_MUTE_REPORTS}건 누적 (자동)`,
+                uid: "",
+                until: new Date(now + CHAT_AUTO_MUTE_MINUTES * 60000).toISOString()
+              });
+              saveModeration();
+              console.log(`[CHAT AUTO-MUTE] '${target}' — 신고 ${CHAT_AUTO_MUTE_REPORTS}명 누적 → ${CHAT_AUTO_MUTE_MINUTES}분 뮤트`);
+              const tId = onlineNicks.get(targetKey);
+              if (tId && io.sockets.sockets.has(tId)) {
+                io.to(tId).emit("player:muted", { reason: `반복 신고로 ${CHAT_AUTO_MUTE_MINUTES}분간 채팅이 차단되었습니다.` });
+              }
+            }
+          }
+        }
+      } catch (e) { console.warn("자동 뮤트 처리 오류:", e.message); }
       socket.emit("chat:reportResult", { ok: true, reason: `'${target}' 님을 신고했습니다. 검토 후 조치하겠습니다.` });
       notifySuperAdmins({ nickname: reporter, at: new Date().toISOString(), reason: "chat-report", target });
       console.log(`[CHAT REPORT] '${reporter}' → '${target}': ${text.slice(0, 60)}`);
@@ -5411,6 +5521,9 @@ io.on("connection", (socket) => {
             saveJsonDb();
           }
         } catch (e) { console.error("이름 변경 옛 계정 정리 오류:", e.message); }
+        /* 친구/초대/길드에 남은 옛 키를 새 계정 키로 치환 — 키를 갱신하지 않으면
+           목록 조회 시 옛 행을 못 찾아 친구·길드가 사라진다 */
+        renameAccountRefs(prevKey, claim.key, nickname);
       }
       registerOnline(socket.id, nickname);
       socket.emit("player:nameUpdated", { ok: true, nickname, renamed: isRename && prevOwned, nameChanges: Number(playerData.nameChanges || 0) });
@@ -5732,6 +5845,7 @@ initDatabase().then(async () => {
       console.log("  DATABASE_URL(PostgreSQL) 또는 KK_DATA_DIR(영속 디스크) 설정을 권장합니다.");
     }
     console.log("========================================");
+    startKeepAlivePing();
   });
 }).catch(err => {
   console.error("서버 시작 실패:", err);
@@ -5740,6 +5854,26 @@ initDatabase().then(async () => {
   });
 });
 
+/* =========================================================
+   무료 플랜 슬립 방지 — PUBLIC_URL(RENDER_EXTERNAL_URL)로 주기적 셀프 핑.
+   Render는 라우터를 통해 들어온 요청이 없으면 약 15분 후 인스턴스를 재우고,
+   첫 방문자가 콜드워크 대기를 겪는다. 같은 인스턴스라도 PUBLIC 경로로
+   되돌아 오는 요청은 외부 트래픽으로 집계되어 슬립을 막아준다.
+========================================================= */
+const PUBLIC_URL = String(process.env.RENDER_EXTERNAL_URL || process.env.KK_PUBLIC_URL || "").replace(/\/+$/, "");
+function startKeepAlivePing() {
+  if (!PUBLIC_URL || typeof fetch !== "function") {
+    if (!PUBLIC_URL) console.log("스립 방지 핑: 미설정 (RENDER_EXTERNAL_URL 또는 KK_PUBLIC_URL 설정 시 활성화)");
+    return;
+  }
+  setInterval(() => {
+    fetch(`${PUBLIC_URL}/`, { signal: AbortSignal.timeout ? AbortSignal.timeout(10000) : undefined })
+      .then(r => { if (r.body && typeof r.body.cancel === "function") r.body.cancel(); })
+      .catch(() => {});
+  }, 10 * 60 * 1000).unref?.();
+  console.log(`스립 방지 핑: 10분마다 ${PUBLIC_URL}/`);
+}
+
 function shutdown(signal) {
   for (const room of ROOMS.values()) stopTurnTimer(room);
   if (chatSaveTimer) { clearTimeout(chatSaveTimer); chatSaveTimer = null; saveChatHistoryNow(); }
@@ -5747,4 +5881,3 @@ function shutdown(signal) {
 }
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGTERM", () => { for (const room of ROOMS.values()) stopTurnTimer(room); flushFirebaseScores().finally(() => server.close(() => process.exit(0))); });

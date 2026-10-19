@@ -638,6 +638,7 @@ function initSocket() {
     $("#rankedGame")?.classList.remove("hidden");
     clearChat(); /* 방 채팅으로 전환 */
     updateChatScopeLabel();
+    if (socket && socketConnected) socket.emit("chat:history", { roomId: data.roomId }); /* 방 이력 복원 */
     renderGameState(gameState);
     showMessage(`상대를 찾았습니다! ${data.opponent} vs 나 (상대 랭크 ${data.opponentRating})`, "success");
     updateRankedQueueUI();
@@ -902,6 +903,11 @@ function initSocket() {
   });
 
   /* -- 제재 목록(밴/뮤트) 결과 -------------------------- */
+  socket.on("admin:chatClearResult", (data) => {
+    if (data && data.ok) { setAdminStatus(data.reason || "전체 채팅 이력을 비웠습니다.", "ok"); }
+    else { setAdminStatus((data && data.reason) || "채팅 이력 비우기에 실패했습니다.", "error"); }
+  });
+
   socket.on("admin:moderation", (data) => {
     if (!data) return;
     renderAdminModeration(data);
@@ -949,12 +955,20 @@ function initSocket() {
   });
   socket.on("chat:history", (data) => {
     if (!data || !data.ok) return;
-    globalChatCache = (Array.isArray(data.messages) ? data.messages : []).slice(-30);
-    clearChat();
-    globalChatCache.forEach(m => appendChatLine(m, { silent: true }));
+    const msgs = (Array.isArray(data.messages) ? data.messages : []).slice(-30);
+    if (data.scope === "room") {
+      /* 방 이력 — 방이 살아 있는 동안 유지되는 로컬 기록. 전역 캐시는 건드리지 않는다 */
+      clearChat();
+      msgs.forEach(m => appendChatLine(m, { silent: true }));
+    } else {
+      globalChatCache = msgs;
+      clearChat();
+      msgs.forEach(m => appendChatLine(m, { silent: true }));
+    }
     const list = $("#chatList");
     if (list) list.scrollTop = list.scrollHeight;
   });
+  socket.on("chat:cleared", () => { globalChatCache = []; clearChat(); });
 
   socket.on("chat:error", (data) => chatNotice((data && data.reason) || "전송하지 못했습니다.", false));
   socket.on("chat:reportResult", (data) => {
@@ -1088,7 +1102,11 @@ function initSocket() {
     playerIndex = data.playerIndex;
     spectating = false;
     /* 방(온라인/랭크)에 들어가면 방 채팅으로, AI 방이면 전체 채팅 유지 */
-    if (data.state && data.state.mode !== "ai") clearChat();
+    if (data.state && data.state.mode !== "ai") {
+      clearChat();
+      /* 방 이력 복원 — 재접속한 경우에도 남아있던 방 대화를 되살린다 */
+      if (socket && socketConnected) socket.emit("chat:history", { roomId: data.roomId });
+    }
     gameSessionId++;
     gameState = data.state;
     setPracticeBar(!!(data.state && data.state.practice));
@@ -1119,6 +1137,7 @@ function initSocket() {
     renderGameState(gameState);
     clearChat(); /* 관전 중에도 스코프는 방 채팅 */
     updateChatScopeLabel();
+    if (socket && socketConnected) socket.emit("chat:history", { roomId: data.roomId }); /* 방 이력 복원 */
     showMessage("관전 중입니다 — 이 방의 게임을 구경하고 있습니다.", "info");
     updateInputState();
   });
@@ -2816,6 +2835,13 @@ function appendChatLine(data, opts) {
   text.className = "chat-line-text";
   text.textContent = data.text || "";
 
+  /* @내이름 멘션 — 줄을 강조하고 알림음을 울린다 (자기 자신이 쓴 글은 제외) */
+  const mention = myNickname && data.from !== myNickname && (data.text || "").includes(`@${myNickname}`);
+  if (mention) {
+    line.classList.add("mention");
+    if (!opts || !opts.silent) { playSound("word"); vibrate([30, 20, 30]); }
+  }
+
   const flag = document.createElement("button");
   flag.type = "button";
   flag.className = "chat-flag";
@@ -3030,6 +3056,9 @@ function renderAdminBody(data) {
       <ul class="admin-sub-list" id="adminBanList"></ul>
       <div class="admin-info" style="margin-top:8px;">🔇 음소거 목록 <span id="adminMuteCount"></span></div>
       <ul class="admin-sub-list" id="adminMuteList"></ul>
+      <div class="admin-info" style="margin-top:12px;">🧹 전체 채팅</div>
+      <div class="admin-info">저장된 전체 채팅 이력(DB·파일)을 즉시 비웁니다. 방 채팅은 영향을 받지 않습니다.</div>
+      <button type="button" class="admin-apply admin-reject" id="adminChatClear">전체 채팅 이력 비우기</button>
     </div>
   ` : "";
 
@@ -3096,6 +3125,13 @@ function renderAdminBody(data) {
   /* 제재 관리 — 밴/뮤트 실행 및 목록 조회 */
   const modLoad = $("#adminModLoad");
   if (modLoad) modLoad.addEventListener("click", () => socket.emit("admin:moderationList"));
+  /* 전체 채팅 이력 비우기 — 확인 후 서버에 요청 */
+  const chatClear = $("#adminChatClear");
+  if (chatClear) chatClear.addEventListener("click", () => {
+    if (!window.confirm("저장된 전체 채팅 이력을 모두 비우시겠습니까?\n(이 작업은 되돌릴 수 없습니다)")) return;
+    socket.emit("admin:chatClear");
+    setAdminStatus("채팅 이력을 비우는 중...", "");
+  });
   const modTarget = () => {
     const nick = modal.querySelector("#adminModNick")?.value.trim() || "";
     if (!nick) { setAdminStatus("제재할 닉네임을 입력해주세요.", "error"); return null; }
@@ -4304,8 +4340,8 @@ document.addEventListener("DOMContentLoaded", () => {
       chatUnread = 0;
       renderChatUnread();
       updateChatScopeLabel();
-      /* 전체 채팅을 열면 서버의 최근 이력을 받아온다 */
-      if (chatScopeNow() === "global" && socket && socketConnected) socket.emit("chat:history");
+      /* 이력 요청 — 방에 있으면 방 이력, 없으면 전체 이력 */
+      if (socket && socketConnected) socket.emit("chat:history", (roomId && chatScopeNow() === "room") ? { roomId } : {});
       const list = $("#chatList");
       if (list) list.scrollTop = list.scrollHeight;
       $("#chatInput")?.focus();

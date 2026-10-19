@@ -2990,6 +2990,12 @@ html.dark .practice-bar button { background: #b45309; }
   border-color: rgba(99, 102, 241, 0.4);
 }
 
+/* @내이름 멘션 — 줄 배경을 강조해 눈에 띄게 한다 */
+.chat-line.mention {
+  background: rgba(255, 200, 60, 0.18);
+  border-left: 3px solid #ffc83c;
+}
+
 .chat-line .chat-line-nick {
   font-weight: 700;
   color: var(--text);
