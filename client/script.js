@@ -636,6 +636,8 @@ function initSocket() {
     if (tab && currentMode !== "ranked") tab.click();
     $("#rankedLobby")?.classList.add("hidden");
     $("#rankedGame")?.classList.remove("hidden");
+    clearChat(); /* 방 채팅으로 전환 */
+    updateChatScopeLabel();
     renderGameState(gameState);
     showMessage(`상대를 찾았습니다! ${data.opponent} vs 나 (상대 랭크 ${data.opponentRating})`, "success");
     updateRankedQueueUI();
@@ -1115,6 +1117,8 @@ function initSocket() {
       $("#rankedGame")?.classList.toggle("hidden", !(data.state && data.state.started));
     }
     renderGameState(gameState);
+    clearChat(); /* 관전 중에도 스코프는 방 채팅 */
+    updateChatScopeLabel();
     showMessage("관전 중입니다 — 이 방의 게임을 구경하고 있습니다.", "info");
     updateInputState();
   });
