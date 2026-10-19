@@ -75,6 +75,7 @@ function context(extra = {}) {
     customWords: { nextId: 1, pending: [], approved: [], rejected: [] },
     customWordsPath: "custom-words.json", customDictPath: "legacy-custom-words.json",
     writeStoreFile() {}, loadStoreJSON: async () => null,
+    chatHistoryPath: "chat-history.json", chatSaveTimer: null, scheduleSaveChatHistory() {},
     saveBugReports() {}, notifySuperAdmins() {},
     dbMode: "json", dbPool: null,
     firebaseReady: false, firebaseAuth: null,
@@ -117,6 +118,7 @@ function context(extra = {}) {
     "recordMatchHistory", "finishGame", "migrateJsonPlayersToPg",
     "getPlayerBySocket", "getPlayerByIndex", "getAlivePlayers", "findNextAlivePlayer",
     "stopTurnTimer", "startTurnTimer", "removePlayer",
+    "loadChatHistory", "saveChatHistoryNow",
     "bumpMission", "bumpDaily", "playWord", "runAI",
     "pushRatingHistory", "applyWelcomeReward",
     "getBan", "getMute", "banGuard", "banGuardByUid", "readModEntries",
@@ -2034,4 +2036,30 @@ test("ranking payload carries nameChanges for rename pricing", async () => {
   c.playerCache.set("newbie", fresh);
   const p2 = await c.getRankingPayload("newbie");
   assert.equal(p2.nameChanges, 0);
+});
+
+test("global chat history survives restarts via kv store", async () => {
+  /* 부팅 로드: 저장소의 정상 형식 메시지만 이력으로 복원 */
+  const { c } = context({
+    loadStoreJSON: async () => [
+      { from: "a", text: "지난 메시지", scope: "global", id: "1" },
+      { junk: true },
+      { from: "b", text: 123 }
+    ]
+  });
+  await c.loadChatHistory();
+  const hist = vm.runInContext("GLOBAL_CHAT_HISTORY", c);
+  assert.equal(hist.length, 1, "정상 형식만 복원");
+  assert.equal(hist[0].text, "지난 메시지");
+  assert.equal(hist[0].scope, "global");
+
+  /* 저장: 현재 이력이 저장소 키 chatHistory로 기록된다 */
+  const saved = [];
+  const { c: c2 } = context({ writeStoreFile: (fp, value, key) => saved.push({ fp, key, value }) });
+  vm.runInContext(`GLOBAL_CHAT_HISTORY.push({ from: "x", text: "새 메시지", scope: "global", id: "9" })`, c2);
+  c2.saveChatHistoryNow();
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].key, "chatHistory");
+  assert.equal(saved[0].value.length, 1);
+  assert.equal(saved[0].value[0].text, "새 메시지");
 });

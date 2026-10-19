@@ -284,9 +284,36 @@ const CHAT_MAX_LEN = 100;
 const CHAT_COOLDOWN_MS = 1200;
 const CHAT_WINDOW_MS = 10000;
 const CHAT_WINDOW_MAX = 6;
-/* 전체 채팅(대기실·로비) 최근 이력 — 서버 메모리에만 유지, 최대 50건 */
+/* 전체 채팅(대기실·로비) 최근 이력 — 최대 50건.
+   kv_store('chatHistory') + 파일 미러에 영속화해 재시작·콜드워크에도 유지된다 */
 const GLOBAL_CHAT_HISTORY = [];
 const GLOBAL_CHAT_MAX = 50;
+const chatHistoryPath = path.join(RUNTIME_DATA_DIR, "chat-history.json");
+let chatSaveTimer = null;
+
+async function loadChatHistory() {
+  try {
+    const data = await loadStoreJSON("chatHistory", chatHistoryPath, []);
+    const keep = (Array.isArray(data) ? data : [])
+      .filter(m => m && typeof m === "object" && typeof m.text === "string" && typeof m.from === "string")
+      .slice(-GLOBAL_CHAT_MAX)
+      .map(m => ({ from: String(m.from), text: String(m.text), at: String(m.at || ""), id: String(m.id || ""), scope: "global" }));
+    GLOBAL_CHAT_HISTORY.length = 0;
+    for (const m of keep) GLOBAL_CHAT_HISTORY.push(m);
+  } catch (e) { console.warn("채팅 이력 로드 실패:", e.message); }
+}
+
+function saveChatHistoryNow() {
+  try { writeStoreFile(chatHistoryPath, GLOBAL_CHAT_HISTORY.slice(-GLOBAL_CHAT_MAX), "chatHistory"); }
+  catch (e) { console.warn("채팅 이력 저장 실패:", e.message); }
+}
+
+/* 메시지마다 DB를 때리지 않도록 3초 디바운스 — 서버 종료 시에는 즉시 플러시된다 */
+function scheduleSaveChatHistory() {
+  if (chatSaveTimer) return;
+  chatSaveTimer = setTimeout(() => { chatSaveTimer = null; saveChatHistoryNow(); }, 3000);
+  if (chatSaveTimer && typeof chatSaveTimer.unref === "function") chatSaveTimer.unref();
+}
 /* 이모지 리액션 — 허용 목록 밖은 거부, 소켓당 최소 간격 제한 */
 const REACT_EMOJIS = ["👍", "👏", "🔥", "😮", "😅", "😢", "❤️", "😂", "💪", "🎉", "🤔", "😡"];
 const REACT_COOLDOWN_MS = 600;
@@ -4936,6 +4963,7 @@ io.on("connection", (socket) => {
         payload.scope = "global";
         GLOBAL_CHAT_HISTORY.push(payload);
         if (GLOBAL_CHAT_HISTORY.length > GLOBAL_CHAT_MAX) GLOBAL_CHAT_HISTORY.shift();
+        scheduleSaveChatHistory();
         io.emit("chat:message", payload);
       }
     } catch (err) { console.error("채팅 오류:", err); }
@@ -5679,6 +5707,7 @@ initDatabase().then(async () => {
     loadFriends(),
     loadGuilds(),
     loadBugReports(),
+    loadChatHistory(),
     hydrateCustomWordsFromPG()
   ]);
   /* 구 커스텀 사전(customDict) 병합은 hydrate 완료 후 순차 실행 — 병렬 실행하면
@@ -5711,5 +5740,11 @@ initDatabase().then(async () => {
   });
 });
 
-process.on("SIGINT", () => { for (const room of ROOMS.values()) stopTurnTimer(room); flushFirebaseScores().finally(() => server.close(() => process.exit(0))); });
+function shutdown(signal) {
+  for (const room of ROOMS.values()) stopTurnTimer(room);
+  if (chatSaveTimer) { clearTimeout(chatSaveTimer); chatSaveTimer = null; saveChatHistoryNow(); }
+  flushFirebaseScores().finally(() => server.close(() => process.exit(0)));
+}
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGTERM", () => { for (const room of ROOMS.values()) stopTurnTimer(room); flushFirebaseScores().finally(() => server.close(() => process.exit(0))); });
