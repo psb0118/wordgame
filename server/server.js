@@ -202,7 +202,21 @@ async function loadModeration() {
 
 /* 반환: 제재 정보 또는 null */
 function getBan(nickname) { return bannedMap.get(normKey(nickname)) || null; }
-function getMute(nickname) { return mutedMap.get(normKey(nickname)) || null; }
+/* 뮤트 — 기간제(until) 지원: 만료되면 자동으로 무시된다.
+   닉네임 키와 계정 UID(개명 우회 방지) 두 기준으로 모두 찾는다 */
+function getMute(nickname, uid) {
+  const now = Date.now();
+  const live = (e) => !!e && (!e.until || Date.parse(e.until) > now);
+  const hit = mutedMap.get(normKey(nickname));
+  if (live(hit)) return hit;
+  const u = String(uid || "");
+  if (u) {
+    for (const e of mutedMap.values()) {
+      if (e && e.uid === u && live(e)) return e;
+    }
+  }
+  return null;
+}
 
 /* 밴 여부 검사 — 제재당했으면 사유가 붙은 차단 메시지, 아니면 null */
 function banGuard(nickname) {
@@ -224,8 +238,11 @@ function banGuardByUid(uid) {
 }
 
 function listModeration() {
-  const conv = (m) => [...m.values()].sort((a, b) => String(b.at).localeCompare(String(a.at)));
-  return { banned: conv(bannedMap), muted: conv(mutedMap) };
+  const now = Date.now();
+  const conv = (m, hideExpired) => [...m.values()]
+    .filter(e => !hideExpired || !e || !e.until || Date.parse(e.until) > now)
+    .sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  return { banned: conv(bannedMap, false), muted: conv(mutedMap, true) };
 }
 
 function addModeration(kind, nickname, meta) {
@@ -237,8 +254,14 @@ function addModeration(kind, nickname, meta) {
     by: String(meta.by || ""),
     at: new Date().toISOString(),
     reason: String(meta.reason || ""),
-    uid: String(meta.uid || "")
+    uid: String(meta.uid || ""),
+    /* 만료 시각 — 없음/NULL = 영구. 기간(일수)은 뮤트(채팅정지)에만 적용 */
+    until: null
   };
+  const days = Number(meta.days);
+  if (kind !== "banned" && Number.isFinite(days) && days > 0) {
+    entry.until = new Date(Date.now() + Math.floor(days) * 86400000).toISOString();
+  }
   store.set(key, entry);
   saveModeration();
   return { ok: true, key, entry };
@@ -253,24 +276,20 @@ function removeModeration(kind, nickname) {
 }
 
 /* =========================================================
-   채팅 필터 — 비속어·도배·스팸 차단 (방 단위 채팅에 사용)
+   채팅 필터 — 길이/빈 내용만 검사한다.
+   (비속어 필터는 운영 정책상 제거 — 신고 기반으로만 단속하고,
+    도배는 아래 속도 제한이 막는다)
 ========================================================= */
 const CHAT_MAX_LEN = 100;
 const CHAT_COOLDOWN_MS = 1200;
 const CHAT_WINDOW_MS = 10000;
 const CHAT_WINDOW_MAX = 6;
+/* 전체 채팅(대기실·로비) 최근 이력 — 서버 메모리에만 유지, 최대 50건 */
+const GLOBAL_CHAT_HISTORY = [];
+const GLOBAL_CHAT_MAX = 50;
 /* 이모지 리액션 — 허용 목록 밖은 거부, 소켓당 최소 간격 제한 */
 const REACT_EMOJIS = ["👍", "👏", "🔥", "😮", "😅", "😢", "❤️", "😂", "💪", "🎉", "🤔", "😡"];
 const REACT_COOLDOWN_MS = 600;
-const PROFANITY_WORDS = [
-  "시발", "씨발", "씨바", "쇼발", "병신", "븅신", "지랄", "저랄",
-  "좆", "닥쳐", "닥치", "느금마", "개새끼", "새끼", "ㅗㅗ", "┻┻"
-];
-
-/* 필터용 정규화: 소문자 + 공백·문장부호 제거 (띄어쓰기 우회 차단) */
-function normalizeForFilter(s) {
-  return String(s || "").toLowerCase().replace(/[\s\p{P}\p{S}]/gu, "");
-}
 
 /* 반환: { ok, reason, clean } — ok면 clean에 통과한 텍스트 */
 function chatFilter(raw) {
@@ -278,22 +297,6 @@ function chatFilter(raw) {
   if (!text) return { ok: false, reason: "메시지를 입력해주세요." };
   if (text.length > CHAT_MAX_LEN) {
     return { ok: false, reason: `메시지는 ${CHAT_MAX_LEN}자 이내로 입력해주세요.` };
-  }
-  const flat = normalizeForFilter(text);
-  if (!flat) return { ok: false, reason: "메시지를 입력해주세요." };
-  /* 한 글자·두 글자만 반복하는 도배 */
-  if (flat.length >= 6 && new Set(flat).size <= 2) {
-    return { ok: false, reason: "반복되는 문자가 너무 많아 전송할 수 없습니다." };
-  }
-  /* 같은 문자 6회 이상 연속 */
-  if (/(.)\1{5,}/u.test(flat)) {
-    return { ok: false, reason: "반복되는 문자가 너무 많아 전송할 수 없습니다." };
-  }
-  /* 비속어 */
-  for (const w of PROFANITY_WORDS) {
-    if (flat.includes(normalizeForFilter(w))) {
-      return { ok: false, reason: "비속어가 포함되어 있어 전송할 수 없습니다." };
-    }
   }
   return { ok: true, clean: text };
 }
@@ -1084,6 +1087,9 @@ function migratePlayerData(p) {
   p.moneyMultiplier = Math.min(99, Math.floor(p.moneyMultiplier));
   if (!Number.isFinite(p.ratingBoostGames) || p.ratingBoostGames < 0) p.ratingBoostGames = 0;
   p.ratingBoostGames = Math.floor(p.ratingBoostGames);
+  /* 이름 변경 횟수 — 0회=무료, 1회차 이후부터 회당 RENAME_PRICE */
+  if (!Number.isFinite(p.nameChanges) || p.nameChanges < 0) p.nameChanges = 0;
+  p.nameChanges = Math.floor(p.nameChanges);
   if (!Array.isArray(p.titles)) p.titles = [];
   p.currentTitle = typeof p.currentTitle === "string" ? p.currentTitle : "";
   p.lastCheckDate = typeof p.lastCheckDate === "string" ? p.lastCheckDate : "";
@@ -1453,6 +1459,8 @@ const SHOP_TITLES = [
   { id: "t_legend", name: "전설의 챔피언", price: 30000000 }
 ];
 const SHOP_POTION_PRICE = 1000000;
+/* 이름 변경 비용 — 1회차 무료, 2회차부터 회당 100만 코인 */
+const RENAME_PRICE = 1000000;
 const SHOP_SHIELD_PRICE = 2000000;
 const SHOP_MULTIPLIER_PRICES = [
   { multiplier: 2, price: 5000000 },
@@ -1551,6 +1559,7 @@ async function getRankingPayload(socketId) {
     money: data.money,
     moneyMultiplier: data.moneyMultiplier,
     ratingBoostGames: data.ratingBoostGames,
+    nameChanges: Number(data.nameChanges || 0),
     titles: data.titles,
     currentTitle: data.currentTitle,
     attendance: {
@@ -2095,7 +2104,9 @@ function createRoom(socketId, nickname, mode, opts = {}) {
     hintsUsed: 0,
     /* 싱글(AI) 난이도 — easy/normal/hard. AI 생각 시간과 선택 수준이 달라진다 */
     difficulty: opts.difficulty || "normal",
-    aiThinkMs: { easy: 1500, normal: 800, hard: 300 }[opts.difficulty || "normal"] || 800
+    aiThinkMs: { easy: 1500, normal: 800, hard: 300 }[opts.difficulty || "normal"] || 800,
+    /* 튜토리얼 실습 게임 — 진행은 실제와 같지만 전적/미션/연승 등 아무것도 기록하지 않는다 */
+    practice: !!opts.practice
   };
   /* 방장은 파티(2v2)에서 항상 0번 팀(첫 좌석)에 배치된다 */
   addPlayer(room, socketId, nickname, room.mode === "party" ? { teamOf: 0 } : {});
@@ -2226,6 +2237,7 @@ function getPublicRoomState(room) {
     roomId: room.id,
     hostSocketId: room.hostSocketId,
     mode: room.mode,
+    practice: !!room.practice,
     currentWord: room.currentWord,
     startSyllable: room.startSyllable || null,
     turnPlayer: room.turnPlayerIndex,
@@ -2516,6 +2528,9 @@ async function finishGame(room, winnerIndex, loserIndex) {
         await recordMatchHistory(resultRoom, winnerIndex, loserIndex);
       })
       .catch((err) => console.error("레이팅 반영 오류:", err.message));
+  } else if (room.practice) {
+    /* 튜토리얼 실습 — 전적/점수/업적/미션 아무것도 기록하지 않는다 */
+    resultSave = Promise.resolve();
   } else {
     /* 전적과 싱글 점수 저장을 순차 처리해 이전 스냅샷이 새 전적을 덮어쓰지 않는다. */
     resultSave = (async () => {
@@ -2724,8 +2739,8 @@ function playWord(room, player, rawWord, gameSessionId) {
     const lastIdx = room.history.length - 1;
     if (room.history[lastIdx] && room.history[lastIdx].word === word) room.history[lastIdx].oneShot = true;
 
-    /* 일일 미션 — '한방 단어' 성공 횟수 누적 */
-    if (!player.isBot) {
+    /* 일일 미션 — '한방 단어' 성공 횟수 누적 (튜토리얼 실습은 제외) */
+    if (!player.isBot && !room.practice) {
       const accountId = normKey(player.nickname) || player.id;
       room.pendingMissionWrites = (room.pendingMissionWrites || Promise.resolve())
         .then(() => bumpDaily(accountId, "oneShots"));
@@ -3189,7 +3204,10 @@ io.on("connection", (socket) => {
       if (banMsg) { socket.emit("room:error", { ok: false, reason: banMsg, banned: true }); return; }
       leaveRoomForSocket(socket, "recreate");
 
-      const room = createRoom(socket.id, nickname, mode, { difficulty });
+      const room = createRoom(socket.id, nickname, mode, {
+        difficulty,
+        practice: mode === "ai" && data?.practice === true
+      });
       socket.join(room.id);
       socket.data.roomId = room.id;
       socket.data.playerIndex = 0;
@@ -3721,6 +3739,8 @@ io.on("connection", (socket) => {
   socket.on("disconnect", (reason) => {
     console.log(`[DISCONNECT] ${socket.id} / ${reason}`);
     adminAuthed.delete(socket.id);
+    socketFirebaseUid.delete(socket.id);
+    socketFirebaseEmail.delete(socket.id);
     REMATCHES.delete(socket.id);
     cancelRankedInvitesFor(socket.id);
     removeFromRankedQueue(socket.id);
@@ -3784,6 +3804,11 @@ io.on("connection", (socket) => {
   /* -- 실시간 랭크 게임 매칭 ----------------------------- */
   socket.on("ranked:queue", async () => {
     try {
+      /* 랭킹 게이트 — Google 로그인 세션 없이는 랭크 매치에 들어올 수 없다 (게스트는 싱글/멀티만) */
+      if (!socketFirebaseUid.get(socket.id)) {
+        socket.emit("ranked:queueStatus", { ok: false, reason: "랭킹은 Google 로그인 후 이용할 수 있습니다." });
+        return;
+      }
       REMATCHES.delete(socket.id);
       cancelRankedInvitesFor(socket.id);
       const pd = await getPlayerData(socket.id);
@@ -3815,6 +3840,10 @@ io.on("connection", (socket) => {
   /* -- 랭크 복수전 (다시 대결) --------------------------- */
   socket.on("ranked:rematch", async () => {
     try {
+      if (!socketFirebaseUid.get(socket.id)) {
+        socket.emit("ranked:rematchStatus", { ok: false, reason: "랭킹은 Google 로그인 후 이용할 수 있습니다." });
+        return;
+      }
       const room = getPlayerRoom(socket);
       if (!room || room.mode !== "ranked" || !room.finished) {
         socket.emit("ranked:rematchStatus", { ok: false, reason: "복수전을 신청할 수 있는 상태가 아닙니다." });
@@ -3855,6 +3884,10 @@ io.on("connection", (socket) => {
      수락하면 기존 랭크 매치와 동일하게 레이팅/돈/일일 미션이 적용된다 ---------- */
   socket.on("ranked:invite", async (data) => {
     try {
+      if (!socketFirebaseUid.get(socket.id)) {
+        socket.emit("ranked:inviteSent", { ok: false, reason: "랭킹은 Google 로그인 후 이용할 수 있습니다." });
+        return;
+      }
       const pd = await getPlayerData(socket.id);
       const myNick = String(pd.nickname || "플레이어").trim();
       const target = String(data?.nickname || "").trim();
@@ -3902,6 +3935,10 @@ io.on("connection", (socket) => {
 
   socket.on("ranked:inviteAccept", async () => {
     try {
+      if (!socketFirebaseUid.get(socket.id)) {
+        socket.emit("ranked:inviteStatus", { ok: false, reason: "랭킹은 Google 로그인 후 이용할 수 있습니다." });
+        return;
+      }
       let found = null;
       for (const [inviter, inv] of RANKED_INVITES) {
         if (inv.targetSocketId === socket.id) { found = { inviter, inv }; break; }
@@ -4641,7 +4678,13 @@ io.on("connection", (socket) => {
         const id = await findPlayerIdByNickname(nickname);
         if (id) { const pd = await getPlayerData(id); uid = String(pd.firebaseUid || ""); }
       } catch (e) { /* 조회 실패는 계속 진행 */ }
-      const r = addModeration(kind, nickname, { by: reg.nickname, reason, uid });
+      /* 채팅정지(뮤트) 기간 — days>0이면 N일 후 만료, 없으면 영구.
+         계정정지(밴)는 항상 영구 */
+      const days = Number(data?.days);
+      const r = addModeration(kind, nickname, {
+        by: reg.nickname, reason, uid,
+        days: (kind !== "banned" && Number.isFinite(days) && days > 0) ? Math.floor(days) : 0
+      });
       if (!r.ok) return r;
 
       if (kind === "banned") {
@@ -4674,9 +4717,10 @@ io.on("connection", (socket) => {
 
       const tId = onlineNicks.get(r.key);
       const ts = tId ? io.sockets.sockets.get(tId) : null;
-      if (ts) ts.emit("player:muted", { ok: true, reason: reason || "관리자 조치" });
-      console.log(`[ADMIN] 뮤트: '${r.entry.nick}' by ${reg.nickname}${reason ? ` (${reason})` : ""}`);
-      return { ok: true, message: `'${r.entry.nick}' 닉네임을 음소거했습니다.` };
+      if (ts) ts.emit("player:muted", { ok: true, reason: reason || "관리자 조치", until: r.entry.until || null });
+      console.log(`[ADMIN] 뮤트: '${r.entry.nick}' by ${reg.nickname}${reason ? ` (${reason})` : ""}${r.entry.until ? ` until=${r.entry.until}` : " (영구)"}`);
+      const span = r.entry.until ? `${Math.round((Date.parse(r.entry.until) - Date.now()) / 86400000) || 1}일간` : "영구적으로";
+      return { ok: true, message: `'${r.entry.nick}' 닉네임을 ${span} 음소거했습니다.` };
     }
 
     const existed = removeModeration(kind, nickname);
@@ -4836,24 +4880,28 @@ io.on("connection", (socket) => {
   /* -- 실시간 채팅 (방 단위) ---------------------------- */
   socket.on("chat:send", (data) => {
     try {
+      /* 채팅은 Google 로그인 세션으로만 가능하다 (게스트는 채팅 불가) */
+      if (!socketFirebaseUid.get(socket.id)) {
+        socket.emit("chat:error", { reason: "채팅은 Google 로그인 후 이용할 수 있습니다." });
+        return;
+      }
       const room = getPlayerRoom(socket);
-      if (!room) { socket.emit("chat:error", { reason: "방에 들어와 있을 때만 채팅할 수 있습니다." }); return; }
+      const me = room ? getPlayerBySocket(room, socket.id) : null;
+      const nickname = (me && me.nickname) || socketNicks.get(socket.id) || "";
+      if (!nickname) { socket.emit("chat:error", { reason: "먼저 이름을 설정해주세요." }); return; }
 
-      const me = getPlayerBySocket(room, socket.id);
-      const nickname = (me && me.nickname) || socketNicks.get(socket.id) || "플레이어";
-
-      /* 뮤트 여부 */
-      const mute = getMute(nickname);
+      /* 뮤트 여부 (닉네임·계정 UID 기준, 기간 만료 자동 해제) */
+      const mute = getMute(nickname, socketFirebaseUid.get(socket.id) || "");
       if (mute) {
-        socket.emit("chat:error", { reason: `채팅이 차단되었습니다${mute.reason ? ` (${mute.reason})` : ""}. 관리자에게 문의하세요.` });
+        const when = mute.until ? ` (${new Date(mute.until).toLocaleString()}까지)` : "";
+        socket.emit("chat:error", { reason: `채팅이 차단되었습니다${mute.reason ? ` (${mute.reason})` : ""}${when}. 관리자에게 문의하세요.` });
         return;
       }
 
-      /* 필터 (비속어·도배) */
+      /* 길이·빈 내용 필터 + 속도 제한: 최소 간격 + 시간창 내 최대 횟수 */
       const verdict = chatFilter(data?.text);
       if (!verdict.ok) { socket.emit("chat:error", { reason: verdict.reason }); return; }
 
-      /* 속도 제한: 최소 간격 + 시간창 내 최대 횟수 */
       const now = Date.now();
       const sd = socket.data || (socket.data = {});
       const last = Number(sd.chatLastAt || 0);
@@ -4870,18 +4918,43 @@ io.on("connection", (socket) => {
       win.push(now);
       sd.chatWin = win;
 
-      io.to(room.id).emit("chat:message", {
+      const payload = {
         from: nickname,
         text: verdict.clean,
         at: new Date().toISOString(),
         id: `${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`
-      });
+      };
+      /* 온라인/파티/랭크 방이면 방 단위, 그 외(싱글·대기실·로비)는 전체 채팅 */
+      if (room && room.mode !== "ai") {
+        payload.scope = "room";
+        io.to(room.id).emit("chat:message", payload);
+      } else {
+        payload.scope = "global";
+        GLOBAL_CHAT_HISTORY.push(payload);
+        if (GLOBAL_CHAT_HISTORY.length > GLOBAL_CHAT_MAX) GLOBAL_CHAT_HISTORY.shift();
+        io.emit("chat:message", payload);
+      }
     } catch (err) { console.error("채팅 오류:", err); }
+  });
+
+  /* 전체 채팅 이력 — 패널을 열 때 최근 대화를 돌려준다 (서버 메모리 유지) */
+  socket.on("chat:history", () => {
+    try {
+      if (!socketFirebaseUid.get(socket.id)) {
+        socket.emit("chat:error", { reason: "채팅은 Google 로그인 후 이용할 수 있습니다." });
+        return;
+      }
+      socket.emit("chat:history", { ok: true, messages: GLOBAL_CHAT_HISTORY.slice(-30) });
+    } catch (err) { console.error("채팅 이력 오류:", err); }
   });
 
   /* 채팅 메시지 신고 → 버그 제보함에 '채팅 신고'로 접수 */
   socket.on("chat:report", (data) => {
     try {
+      if (!socketFirebaseUid.get(socket.id)) {
+        socket.emit("chat:reportResult", { ok: false, reason: "신고는 Google 로그인 후 이용할 수 있습니다." });
+        return;
+      }
       const room = getPlayerRoom(socket);
       const target = String(data?.nickname || "").trim();
       const text = String(data?.text || "").trim().slice(0, 200);
@@ -5199,9 +5272,13 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("길드 조회 오류:", err); socket.emit("guild:state", { ok: false, reason: "길드 정보를 불러오지 못했습니다." }); }
   });
 
-  /* 표시 이름 설정 — Google 로그인 세션이 있는 소켓만 가능하다.
+  /* 표시 이름 설정 — 로그인 여부와 무관하게 가능하다 (게스트 포함).
      이름은 정규화(공백 제거·소문자) 후 대소문자 무시로 고유해야 하며,
-     서버/DB에서 원자적으로 선점한다. 기존 기록(돈/랭킹/연승)은 이름 키 계정에 그대로 보존된다 */
+     서버/DB에서 원자적으로 선점한다.
+     - 최초 설정: 해당 이름의 기존 행(본인 계정)을 그대로 채택한다.
+     - 이름 변경: 기존 계정 전체를 새 이름으로 승계하고 옛 행은 제거한다.
+       같은 계정이 이름만 바꾼 경우에도 능력치·코인·랭킹이 초기화되지 않는다.
+       비용은 1회 무료, 이후 회당 RENAME_PRICE */
   socket.on("player:setName", async (data) => {
     try {
       const nickname = normalizeWord(data?.nickname);
@@ -5219,14 +5296,47 @@ io.on("connection", (socket) => {
         socket.emit("player:nameUpdated", { ok: false, reason: banMsg, banned: true });
         return;
       }
+      /* 로그인 세션의 UID — 게스트(미로그인)는 빈 값으로도 이름을 정할 수 있다 */
       const uid = socketFirebaseUid.get(socket.id) || "";
-      if (!uid) {
-        socket.emit("player:nameUpdated", {
-          ok: false, needGoogleLogin: true,
-          reason: "먼저 Google 로그인을 해주세요. 이름은 로그인 후에 정할 수 있습니다."
-        });
-        return;
+      const prevNick = socketNicks.get(socket.id) || "";
+      const prevKey = prevNick ? normKey(prevNick) : "";
+      const isRename = !!prevKey && prevKey !== normKey(nickname);
+
+      /* 이름 변경 전 검사 — 대상 이름 충돌과 비용을 선점 확인한다 */
+      let renameCost = 0;
+      let prevOwned = false;
+      let prevRow = null;
+      if (isRename) {
+        /* 대상 이름은 미사용이거나 본인 UID 소유 행만 허용한다.
+           남의 계정 행을 덮어쓰거나 빈 행에 승계해 파괴하지 않도록 */
+        let targetUid = null;
+        if (dbMode === "pg") {
+          const r = await dbPool.query("SELECT firebase_uid FROM players WHERE id = $1", [normKey(nickname)]);
+          if (r.rows.length) targetUid = String(r.rows[0].firebase_uid || "");
+        } else {
+          const row = playerCache.get(normKey(nickname));
+          if (row && row.nickname && normKey(row.nickname) === normKey(nickname)) targetUid = String(row.firebaseUid || "");
+        }
+        if (targetUid !== null && !(uid && targetUid === uid)) {
+          socket.emit("player:nameUpdated", { ok: false, reason: "이미 사용 중인 이름입니다." });
+          return;
+        }
+        /* 옛 계정 행 — 본인 소유일 때만 승계한다 */
+        prevRow = await getPlayerData(prevKey);
+        prevOwned = !!prevRow && (!prevRow.firebaseUid || (uid && prevRow.firebaseUid === uid));
+        if (prevOwned) {
+          const done = Number(prevRow.nameChanges || 0);
+          renameCost = done >= 1 ? RENAME_PRICE : 0;
+          if (renameCost > 0 && Number(prevRow.money || 0) < renameCost) {
+            socket.emit("player:nameUpdated", {
+              ok: false,
+              reason: `이름 변경 비용이 부족합니다. (${renameCost.toLocaleString()} 코인 필요, 현재 ${Number(prevRow.money || 0).toLocaleString()} 코인)`
+            });
+            return;
+          }
+        }
       }
+
       const claim = await claimDisplayName(uid, nickname);
       if (!claim.ok) {
         socket.emit("player:nameUpdated", { ok: false, reason: claim.reason });
@@ -5242,29 +5352,39 @@ io.on("connection", (socket) => {
         const me = room.players.find(p => p.socketId === socket.id);
         if (me) me.nickname = nickname;
       }
-      /* 이름 변경 전 행에 묶여 있던 UID 연결을 새 행으로 이전 */
-      const prevKey = resolvePlayerId(socket.id);
-      const playerData = await getPlayerData(claim.key);
+
+      /* 승계(개명)이면 옛 계정 데이터가 곧 새 행의 base, 아니면 대상 행을 채택 */
+      const playerData = (isRename && prevOwned && prevRow) ? prevRow : await getPlayerData(claim.key);
       playerData.nickname = nickname;
-      playerData.firebaseUid = uid;
-      const email = socketFirebaseEmail.get(socket.id) || "";
-      if (email) {
-        playerData.firebaseEmail = email;
-        if (!playerData.email) playerData.email = email;
+      playerData.id = claim.key;
+      if (uid) {
+        playerData.firebaseUid = uid;
+        const email = socketFirebaseEmail.get(socket.id) || "";
+        if (email) {
+          playerData.firebaseEmail = email;
+          if (!playerData.email) playerData.email = email;
+        }
+      }
+      if (isRename && prevOwned) {
+        playerData.nameChanges = Number(prevRow.nameChanges || 0) + 1;
+        if (renameCost > 0) playerData.money = Math.max(0, Number(playerData.money || 0) - renameCost);
       }
       applyWelcomeReward(playerData, socket);
       await savePlayerData(claim.key, playerData);
-      if (prevKey && prevKey !== claim.key) {
+      /* 옛 이름 행 제거 — 랭킹/리더보드에 옛 이름이 남아 초기화·중복의 원인이 되지 않게 한다 */
+      if (isRename && prevOwned && prevKey !== claim.key) {
         try {
-          const prev = await getPlayerData(prevKey);
-          if (String(prev.firebaseUid || "") === String(uid)) {
-            prev.firebaseUid = "";
-            await savePlayerData(prevKey, prev);
+          if (dbMode === "pg") {
+            await dbPool.query("DELETE FROM players WHERE id = $1", [prevKey]);
+            playerCache.delete(prevKey);
+          } else {
+            playerCache.delete(prevKey);
+            saveJsonDb();
           }
-        } catch (e) { /* 이전 행 정리 실패는 무시 (새 행이 정본) */ }
+        } catch (e) { console.error("이름 변경 옛 계정 정리 오류:", e.message); }
       }
       registerOnline(socket.id, nickname);
-      socket.emit("player:nameUpdated", { ok: true, nickname });
+      socket.emit("player:nameUpdated", { ok: true, nickname, renamed: isRename && prevOwned, nameChanges: Number(playerData.nameChanges || 0) });
       if (room) broadcastRoomState(room);
 
       /* 감시 목록(로그인 알림) — 최고 관리자에게 접속 알림 */
@@ -5301,14 +5421,15 @@ io.on("connection", (socket) => {
         socket.emit("player:firebaseAuthResult", { ok: false, reason: uidBanMsg, banned: true });
         return;
       }
+      /* 검증된 UID/이메일은 관리자 여부와 무관하게 세션에 유지한다.
+         (비관리자까지 지웠던 이전 코드 때문에 로그인 후에도 이름 변경이
+          계속 "Google 로그인을 해주세요"로 거부되는 버그가 있었다) */
       socketFirebaseUid.set(socket.id, uid);
       socketFirebaseEmail.set(socket.id, email);
       if (isAdminEmail(email)) {
         adminAuthed.set(socket.id, { role: "super", email });
       } else {
-    adminAuthed.delete(socket.id);
-    socketFirebaseUid.delete(socket.id);
-    socketFirebaseEmail.delete(socket.id);
+        adminAuthed.delete(socket.id);
       }
       const pd = await getPlayerData(socket.id);
       const nick = pd.nickname && normKey(pd.nickname) !== normKey("플레이어") ? pd.nickname : "";
@@ -5380,6 +5501,15 @@ io.on("connection", (socket) => {
     } catch (err) {
       socket.emit("player:firebaseAuthResult", { ok: false, reason: "Firebase 인증 실패: " + err.message });
     }
+  });
+
+  /* 로그아웃 — 클라이언트의 Firebase signOut에 맞춰 소켓 세션의 로그인 정보를 제거한다.
+     채팅·랭킹은 이 세션 상태로 게이트된다 */
+  socket.on("player:firebaseLogout", () => {
+    socketFirebaseUid.delete(socket.id);
+    socketFirebaseEmail.delete(socket.id);
+    adminAuthed.delete(socket.id);
+    socket.emit("player:firebaseAuthResult", { ok: false, loggedOut: true, reason: "로그아웃되었습니다." });
   });
 
   /* =========================================================

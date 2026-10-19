@@ -209,32 +209,41 @@ function bindAdminEnter(selector, fn) {
   });
 }
 
-function initNicknameBar() {
-  const input = $("#nickInput");
-  if (input) input.value = myNickname;
-  updateNicknameUI();
-}
+/* 이름 표시 — name-bar가 없으므로 money-bar 칩과 계정 탭만 갱신한다 */
+let myNameChanges = 0;
+const RENAME_COST = 1000000;
 
 function updateNicknameUI() {
-  const hasName = !!myNickname;
-  const input = $("#nickInput");
-  if (input) {
-    input.classList.toggle("missing", !hasName);
-    input.dataset.hasName = hasName ? "true" : "false";
-  }
-const bar = $(".name-bar");
-  if (bar) bar.classList.toggle("attention", !hasName);
-  const msg = $("#nickMsg");
-  if (msg) {
-    if (hasName) {
-      msg.textContent = `현재 이름: ${myNickname}`;
-      msg.dataset.type = "ok";
-    } else {
-      msg.textContent = "이름을 설정해 주세요. (리더보드에 표시됩니다)";
-      msg.dataset.type = "warn";
-    }
-  }
+  const chip = $("#myNickChip");
+  if (chip) chip.textContent = myNickname || "이름 설정";
+  const input = $("#accNickInput");
+  if (input && document.activeElement !== input) input.value = myNickname || "";
+  updateRenameInfo();
   updateAdminVisibility();
+}
+
+/* 다음 이름 변경 비용 안내 — 첫 1회 무료, 이후 회당 100만 코인 */
+function updateRenameInfo() {
+  const el = $("#accRenameInfo");
+  if (!el) return;
+  const nextCost = myNameChanges >= 1 ? RENAME_COST : 0;
+  el.classList.remove("hidden");
+  el.innerHTML = nextCost > 0
+    ? `다음 이름 변경 비용: <b>${nextCost.toLocaleString()}코인</b> (이전 ${myNameChanges}회 변경)`
+    : `다음 이름 변경: <b>무료</b> (첫 1회 · 이후 1회당 ${RENAME_COST.toLocaleString()}코인)`;
+}
+
+/* 이름이 없으면 계정 탭을 열어 입력으로 유도한다 */
+function requireNickname() {
+  if (myNickname) return true;
+  showMessage("먼저 계정 탭에서 닉네임을 설정해 주세요.", "error");
+  openAccountPanel(true);
+  const bar = $(".money-bar");
+  if (bar) {
+    bar.classList.add("attention");
+    setTimeout(() => bar.classList.remove("attention"), 2000);
+  }
+  return false;
 }
 
 /* 관리자 패널은 서버가 검증한 Google 관리자 계정에만 보임 */
@@ -254,38 +263,6 @@ function openAdminPanel() {
   if (body) body.innerHTML = `<div class="admin-loading">불러오는 중...</div>`;
   if (socket && socketConnected) socket.emit("admin:getPanel");
   else if (body) body.innerHTML = `<div class="admin-msg error">서버에 연결되어 있지 않습니다.</div>`;
-}
-
-function saveNickname() {
-  const raw = normalizeWord($("#nickInput")?.value || "");
-  const msg = $("#nickMsg");
-  if (!raw) {
-    if (msg) { msg.textContent = "이름을 입력해주세요."; msg.dataset.type = "error"; }
-    return;
-  }
-  if (raw.length > 12) {
-    if (msg) { msg.textContent = "이름은 12자 이내로 입력해주세요."; msg.dataset.type = "error"; }
-    return;
-  }
-  if (socket && socketConnected && socket.id) {
-    /* 이름은 Google 로그인 세션이 있어야 정할 수 있다 (서버가 검증) */
-    socket.emit("player:setName", { nickname: raw });
-  } else {
-    myNickname = raw;
-    localStorage.setItem("kkNickname", myNickname);
-    updateNicknameUI();
-  }
-}
-
-function requireNickname() {
-  if (myNickname) return true;
-  showMessage("먼저 닉네임을 설정해 주세요.", "error");
-  const bar = $(".name-bar");
-  if (bar) {
-    bar.classList.add("attention");
-    setTimeout(() => bar.classList.remove("attention"), 2000);
-  }
-  return false;
 }
 
 /* ---------------------------------------------------------
@@ -611,6 +588,7 @@ function initSocket() {
     if (typeof data.money === "number") moneyBalance = data.money;
     moneyMultiplier = data.moneyMultiplier || 1;
     ratingBoostGames = data.ratingBoostGames || 0;
+    if (Number.isFinite(Number(data.nameChanges))) { myNameChanges = Number(data.nameChanges); updateRenameInfo(); }
     if (Array.isArray(data.titles)) ownedTitles = data.titles;
     currentTitle = data.currentTitle || "";
     renderMoneyBar();
@@ -951,8 +929,6 @@ function initSocket() {
     const msg = (data && data.reason) || "이 계정은 이용이 정지되었습니다.";
     showMessage(msg, "error");
     accountMsg(msg, "error");
-    const nickMsg = $("#nickMsg");
-    if (nickMsg) { nickMsg.textContent = msg; nickMsg.dataset.type = "error"; }
   });
 
   socket.on("player:muted", (data) => {
@@ -964,14 +940,14 @@ function initSocket() {
 
   /* -- 실시간 채팅 -------------------------------------- */
   socket.on("chat:message", (data) => appendChatLine(data));
-
-  /* 이모지 리액션 */
-  socket.on("game:react", (data) => spawnReaction(data));
-  socket.on("react:error", (data) => {
-    const reason = (data && data.reason) || "리액션을 보낼 수 없습니다.";
-    showMessage(reason, "error");
-    chatNotice(reason, false);
+  socket.on("chat:history", (data) => {
+    if (!data || !data.ok) return;
+    clearChat();
+    (data.messages || []).forEach(m => appendChatLine(m, { silent: true }));
+    const list = $("#chatList");
+    if (list) list.scrollTop = list.scrollHeight;
   });
+
   socket.on("chat:error", (data) => chatNotice((data && data.reason) || "전송하지 못했습니다.", false));
   socket.on("chat:reportResult", (data) => {
     chatNotice((data && data.reason) || (data && data.ok ? "접수되었습니다." : "신고에 실패했습니다."), !!(data && data.ok));
@@ -981,25 +957,21 @@ function initSocket() {
   socket.on("player:nameUpdated", (data) => {
     if (!data) return;
     if (data.ok && data.nickname) {
+      const renamed = !!data.renamed;
       myNickname = data.nickname;
+      if (Number.isFinite(Number(data.nameChanges))) myNameChanges = Number(data.nameChanges);
       localStorage.setItem("kkNickname", myNickname);
       updateNicknameUI();
       renderAccountInfo();
-      showMessage("이름이 저장되었습니다.", "success");
-      accountMsg("적용되었습니다.", "ok");
+      showMessage(renamed ? "이름이 변경되었습니다. 전적·코인은 그대로 유지됩니다." : "이름이 저장되었습니다.", "success");
+      accountMsg(renamed ? "이름이 변경되었습니다." : "적용되었습니다.", "ok");
       socket.emit("admin:getRole");
       socket.emit("friends:list");
       socket.emit("player:getRanking");
-    } else if (data.needGoogleLogin) {
-      const msg = $("#nickMsg");
-      const hint = data.reason || "먼저 Google 로그인을 해주세요.";
-      if (msg) { msg.textContent = hint; msg.dataset.type = "error"; }
-      else showMessage(hint, "error");
-      openAccountPanel(true);
+      /* 랭킹/리더보드 즉시 갱신 — 이름 변경이 순위표에 바로 반영되도록 */
+      loadSideRanking(sideRankMode, true);
     } else if (data.reason) {
-      const msg = $("#nickMsg");
-      if (msg) { msg.textContent = data.reason; msg.dataset.type = "error"; }
-      else showMessage(data.reason, "error");
+      showMessage(data.reason, "error");
       accountMsg(data.reason, "error");
     }
   });
@@ -1083,6 +1055,8 @@ function initSocket() {
     gameSessionId++;
     gameState = data.state;
     startingGame = false;
+    setPracticeBar(!!(data.state && data.state.practice));
+    updateChatScopeLabel();
     renderGameState(gameState);
     /* 싱글(AI) 방은 재접속 유예 대상이 아니므로 기록하지 않는다 */
     if (data.state && data.state.mode !== "ai") storeLastRoomId(data.roomId);
@@ -1108,6 +1082,8 @@ function initSocket() {
     clearChat();
     gameSessionId++;
     gameState = data.state;
+    setPracticeBar(!!(data.state && data.state.practice));
+    updateChatScopeLabel();
     renderGameState(gameState);
     if (data.waiting) {
       showMessage("게임이 진행 중입니다. 다음 게임부터 참여합니다.", "info");
@@ -1207,6 +1183,8 @@ function initSocket() {
     roomId = null;
     playerIndex = null;
     gameState = null;
+    setPracticeBar(false);
+    updateChatScopeLabel();
     clearChat();
     showMessage("방을 나갔습니다.", "info");
     hideRoomInfo();
@@ -1539,6 +1517,7 @@ function initSocket() {
 
     /* 파티(2v2)는 팀 단위 승패 — 같은 팀이면 승리/패배 메시지를 함께 받는다 */
     const statePlayers = (data.state && Array.isArray(data.state.players)) ? data.state.players : null;
+    const isPractice = !!(data.state && data.state.practice);
     const myStateP = statePlayers ? statePlayers.find(p => p.playerIndex === playerIndex) : null;
     const winnerStateP = (statePlayers && data.winner != null) ? statePlayers.find(p => p.playerIndex === data.winner) : null;
     const loserStateP = (statePlayers && data.loser != null) ? statePlayers.find(p => p.playerIndex === data.loser) : null;
@@ -1549,7 +1528,7 @@ function initSocket() {
     if (iWon) {
       showMessage(myStateP && myStateP.team != null ? "소속 팀이 승리했습니다!" : "게임에서 승리했습니다!", "win");
       playSound("win");
-      if (currentMode === "single") {
+      if (currentMode === "single" && !isPractice) {
         localStats.wins++;
         localStats.games++;
         localStats.totalLength += (gameState?.history?.length || 0);
@@ -1559,7 +1538,7 @@ function initSocket() {
     } else if (iLost) {
       showMessage(myStateP && myStateP.team != null ? "소속 팀이 패배했습니다." : "게임에서 패배했습니다.", "lose");
       playSound("lose");
-      if (currentMode === "single") {
+      if (currentMode === "single" && !isPractice) {
         localStats.losses++;
         localStats.games++;
         localStats.totalLength += (gameState?.history?.length || 0);
@@ -1569,7 +1548,7 @@ function initSocket() {
     } else if (data.winner === null && data.loser === null) {
       showMessage("무승부입니다 — 공동 탈락!", "info");
       playSound("draw");
-      if (currentMode === "single") {
+      if (currentMode === "single" && !isPractice) {
         localStats.games++;
         localStats.totalLength += (gameState?.history?.length || 0);
         saveStats();
@@ -1582,8 +1561,12 @@ function initSocket() {
     gameState = data.state || gameState;
     renderGameState(gameState);
     showReplay(data);
-    socket.emit("player:getRanking");
-    socket.emit("missions:status");
+    if (!isPractice) {
+      socket.emit("player:getRanking");
+      socket.emit("missions:status");
+    } else {
+      onPracticeGameFinished(data);
+    }
 
     if (currentMode === "single") {
       showRestartButton(true);
@@ -2260,6 +2243,8 @@ function leaveRoom() {
   rankedMatchInfo = null;
   localUsedWords.clear();
   startingGame = false;
+  setPracticeBar(false);
+  updateChatScopeLabel();
   stopCountdown();
   if (currentMode === "online") resetOnlineBoard();
   else if (currentMode === "ranked") resetRankedBoard();
@@ -2377,6 +2362,11 @@ function updateRankedInviteUI() {
 
 function sendRankedInvite() {
   if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+  if (!isLoggedIn()) {
+    showMessage("랭킹은 Google 로그인 후 이용할 수 있습니다.", "error");
+    openAccountPanel(true);
+    return;
+  }
   if (!requireNickname()) return;
   if (rankedQueued) { showMessage("매칭 대기 중에는 초대를 보낼 수 없습니다. 매칭을 먼저 취소해주세요.", "warning"); return; }
   const input = $("#rankedInviteInput");
@@ -2393,6 +2383,11 @@ function cancelRankedInvite() {
 
 function acceptRankedInvite() {
   if (!socket || !socketConnected) return;
+  if (!isLoggedIn()) {
+    showMessage("랭킹은 Google 로그인 후 이용할 수 있습니다.", "error");
+    openAccountPanel(true);
+    return;
+  }
   hideRankedInviteBar();
   socket.emit("ranked:inviteAccept");
 }
@@ -2754,7 +2749,38 @@ function renderChatUnread() {
   }
 }
 
-function appendChatLine(data) {
+/* 로그인 여부 — firebase-auth.js의 kk-auth 이벤트로 갱신된다 (서버가 최종 게이트) */
+function isLoggedIn() { return window.kkLoggedIn === true; }
+
+/* 채팅 스코프 — 방(온라인/파티/랭크)이 아니면 전체 채팅 (서버와 동일 규칙) */
+function chatScopeNow() {
+  const mode = gameState && gameState.mode;
+  return (roomId && mode && mode !== "ai") ? "room" : "global";
+}
+
+function updateChatScopeLabel() {
+  const title = $("#chatTitle");
+  if (title) title.textContent = chatScopeNow() === "room" ? "💬 방 채팅" : "💬 전체 채팅";
+  const btn = $("#chatBtn");
+  if (btn) btn.title = chatScopeNow() === "room" ? "방 채팅 열기" : "전체 채팅 열기";
+}
+
+/* 채팅은 로그인한 유저만 쓸 수 있다 — 게스트에게는 위젯 자체를 숨긴다 */
+function updateChatVisibility() {
+  const wrap = $("#chatWrap");
+  if (wrap) wrap.classList.toggle("hidden", !isLoggedIn());
+  updateChatScopeLabel();
+}
+
+/* 튜토리얼 실습 배너 — 실습 게임이 진행 중임을 알린다 */
+let practiceGameActive = false;
+function setPracticeBar(on) {
+  practiceGameActive = !!on;
+  const bar = $("#practiceBar");
+  if (bar) bar.classList.toggle("hidden", !on);
+}
+
+function appendChatLine(data, opts) {
   const list = $("#chatList");
   if (!list || !data) return;
   const empty = list.querySelector(".chat-empty");
@@ -2762,6 +2788,13 @@ function appendChatLine(data) {
 
   const line = document.createElement("div");
   line.className = "chat-line" + (data.from && data.from === myNickname ? " self" : "");
+
+  if (data.scope) {
+    const scope = document.createElement("span");
+    scope.className = `chat-scope-tag ${data.scope}`;
+    scope.textContent = data.scope === "room" ? "방" : "전체";
+    line.append(scope);
+  }
 
   const nick = document.createElement("span");
   nick.className = "chat-line-nick";
@@ -2790,7 +2823,7 @@ function appendChatLine(data) {
   const panel = $("#chatPanel");
   const opened = panel && !panel.classList.contains("hidden");
   if (opened) list.scrollTop = list.scrollHeight;
-  else { chatUnread += 1; renderChatUnread(); }
+  else if (!opts || !opts.silent) { chatUnread += 1; renderChatUnread(); }
 }
 
 function chatNotice(text, ok) {
@@ -2806,51 +2839,10 @@ function chatNotice(text, ok) {
 function clearChat() {
   const list = $("#chatList");
   if (list) {
-    list.innerHTML = `<div class="chat-empty">아직 메시지가 없습니다.<br>방에 들어와 있으면 채팅할 수 있어요.</div>`;
+    list.innerHTML = `<div class="chat-empty">아직 메시지가 없습니다.<br>${chatScopeNow() === "room" ? "방에 들어와 있으면 채팅할 수 있어요." : "로그인하면 전체 채팅에 참여할 수 있어요."}</div>`;
   }
   chatUnread = 0;
   renderChatUnread();
-}
-
-/* ---------------------------------------------------------
-   이모지 리액션 — 서버 REACT_EMOJIS와 순서·구성 동일 유지
---------------------------------------------------------- */
-const REACT_EMOJIS = ["👍", "👏", "🔥", "😮", "😅", "😢", "❤️", "😂", "💪", "🎉", "🤔", "😡"];
-
-function spawnReaction(data) {
-  const layer = $("#reactLayer");
-  if (!layer || !data || !data.emoji) return;
-  const bubble = document.createElement("div");
-  bubble.className = "react-bubble";
-  bubble.textContent = data.emoji;
-  bubble.title = data.from || "";
-  const fromLeft = 18 + Math.random() * 64;
-  bubble.style.left = `${fromLeft}%`;
-  bubble.style.setProperty("--drift", `${Math.round(Math.random() * 60 - 30)}px`);
-  layer.appendChild(bubble);
-  while (layer.children.length > 8) layer.removeChild(layer.firstChild);
-  setTimeout(() => bubble.remove(), 1700);
-}
-
-function buildReactTray() {
-  const tray = $("#reactTray");
-  if (!tray || tray.dataset.built) return;
-  tray.dataset.built = "1";
-  tray.innerHTML = REACT_EMOJIS.map(e => `<button type="button" class="react-emoji" data-e="${e}">${e}</button>`).join("");
-  tray.querySelectorAll(".react-emoji").forEach(btn => {
-    btn.addEventListener("click", () => {
-      if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
-      socket.emit("game:react", { emoji: btn.dataset.e });
-      tray.classList.add("hidden");
-    });
-  });
-}
-
-function toggleReactTray(force) {
-  const tray = $("#reactTray");
-  if (!tray) return;
-  const show = force != null ? force : tray.classList.contains("hidden");
-  tray.classList.toggle("hidden", !show);
 }
 
 /* ---------------------------------------------------------
@@ -3199,7 +3191,7 @@ function bindAdminBody() {
   if (!modal) return;
 
   const gotoNick = modal.querySelector("[data-admin-goto-nick]");
-  if (gotoNick) gotoNick.addEventListener("click", () => { closeAdminPanel(); $("#nickInput")?.focus(); });
+  if (gotoNick) gotoNick.addEventListener("click", () => { closeAdminPanel(); openAccountPanel(true); setTimeout(() => $("#accNickInput")?.focus(), 60); });
 
   const foundBtn = modal.querySelector("[data-admin-find]");
   if (foundBtn) foundBtn.addEventListener("click", () => {
@@ -3273,7 +3265,7 @@ function openAccountPanel(force) {
   const open = typeof force === "boolean" ? force : panel.classList.contains("hidden");
   panel.classList.toggle("hidden", !open);
   if (open) {
-    renderAccountInfo($("#nickInput")?.value.trim() || myNickname || "");
+    renderAccountInfo(myNickname);
     if (socket && socketConnected) { socket.emit("referral:status"); socket.emit("mail:list"); socket.emit("guild:info"); }
     setTimeout(() => $("#accNickInput")?.focus(), 60);
   }
@@ -3825,46 +3817,166 @@ function renderRatingChart() {
 }
 
 /* ---------------------------------------------------------
-   튜토리얼 — 첫 이용자를 위한 3분 플레이 안내 (kkTutorialDone)
+   튜토리얼 — 규칙 3스텝 → 숙련도 질문 2문항 → AI 실습 1판
+   표시 조건: 완료 전이거나 Google 로그인 전(게스트)이면 항상 먼저 띄운다.
+   실습은 practice 플래그 게임이라 전적/미션/연승에 기록되지 않는다.
+   질문 합산 점수 → 쉬움/보통/어려움 3단계 (상위 답변은 최강 AI와 대결)
 --------------------------------------------------------- */
 const TUTORIAL_STEPS = [
   { title: "① 기본 규칙", body: "끝말잇기! <b>끝 글자</b>로 시작하는 단어를 입력창에 쓰고 [입력]을 누르세요. 예) 사과 → 과일 → 일몰... 국어사전에 있는 한글 단어만 인정됩니다." },
   { title: "② 공격과 방어", body: "<b>공격 단어</b>(상대가 막기 어려운 단어)는 라운드 첫 턴에만 사용할 수 없고, 대응이 불가능하면 <b>한방</b>이 되어 상대 하트가 차감됩니다. 위기엔 <b>방어 단어</b>로 버티세요." },
   { title: "③ 하트 · 시간 · 보상", body: "실수 5회 = 하트 1개 차감(게임당 2개). 제한 시간 안에 입력해야 합니다. 랭크 매칭에서 이기면 <b>돈</b>과 레이팅을 얻고, 상점에서 <b>칭호·물약·보호 티켓</b>을 구매할 수 있어요. 기록은 오른쪽 상단 랭킹, 자세한 규칙은 ❓ 게임 방법을 확인하세요!" }
 ];
+const TUTORIAL_QUIZ = [
+  { id: "know", q: "끝말잇기를 얼마나 아나요?", opts: ["처음이에요", "대충 알아요", "잘 알아요"] },
+  { id: "skill", q: "보통 게임을 잘하는 편인가요?", opts: ["처음/하위권이에요", "보통이에요", "자주 이겨요"] }
+];
 let tutorialStep = 0;
+let tutorialActive = false;
+let tutorialPhase = "steps";      /* steps | quiz | done */
+let tutorialPending = true;      /* 표시 여부 결정 전 — 싱글 자동시작을 막는다 */
+let autoStartAllowed = false;
+let tutorialAnswers = { know: 0, skill: 0 };
 
 function renderTutorialStep() {
+  const body = $("#tutorBody");
+  const idx = $("#tutorIndex");
+  const prev = $("#tutorPrev");
+  const next = $("#tutorNext");
+
+  if (tutorialPhase === "quiz") {
+    setText(["#tutorTitle"], "④ 실력 파악");
+    if (body) {
+      body.innerHTML = TUTORIAL_QUIZ.map((q, qi) => `
+        <div class="tutor-quiz">
+          <div class="tutor-quiz-q">${q.q}</div>
+          <div class="tutor-quiz-opts">${q.opts.map((o, oi) => `
+            <label class="tutor-quiz-opt"><input type="radio" name="kk-tq-${qi}" value="${oi}"${tutorialAnswers[q.id] === oi ? " checked" : ""}><span>${o}</span></label>`).join("")}</div>
+        </div>`).join("");
+    }
+    if (idx) idx.textContent = `${TUTORIAL_STEPS.length + 1} / ${TUTORIAL_STEPS.length + 1}`;
+    if (prev) prev.disabled = false;
+    if (next) next.textContent = "AI와 실습하기";
+    return;
+  }
+  if (tutorialPhase === "done") {
+    setText(["#tutorTitle"], "🎓 튜토리얼 완료!");
+    if (body) body.innerHTML = `<p><b>준비 완료!</b> 이제 실제 게임을 시작할 수 있어요.</p><p>실습으로 플레이한 내용은 전적·미션·랭킹에 기록되지 않습니다. 이름 설정은 <b>계정 탭</b>에서 할 수 있어요.</p>`;
+    if (idx) idx.textContent = "완료";
+    if (prev) prev.disabled = true;
+    if (next) next.textContent = "게임 시작하기";
+    return;
+  }
+
   const step = TUTORIAL_STEPS[tutorialStep];
   if (!step) return;
   setText(["#tutorTitle"], step.title);
-  const body = $("#tutorBody");
   if (body) body.innerHTML = step.body;
-  const idx = $("#tutorIndex");
-  if (idx) idx.textContent = `${tutorialStep + 1} / ${TUTORIAL_STEPS.length}`;
-  const prev = $("#tutorPrev");
-  const next = $("#tutorNext");
+  if (idx) idx.textContent = `${tutorialStep + 1} / ${TUTORIAL_STEPS.length + 1}`;
   if (prev) prev.disabled = tutorialStep === 0;
-  if (next) next.textContent = tutorialStep === TUTORIAL_STEPS.length - 1 ? "시작하기" : "다음";
+  if (next) next.textContent = tutorialStep === TUTORIAL_STEPS.length - 1 ? "숙련도 질문" : "다음";
 }
 
 function showTutorial(fromStart = true) {
   const modal = $("#tutorialModal");
   if (!modal) return;
-  if (fromStart) tutorialStep = 0;
+  if (fromStart) { tutorialStep = 0; tutorialPhase = "steps"; }
+  tutorialActive = true;
   renderTutorialStep();
   modal.classList.remove("hidden");
 }
 
-function finishTutorial() {
+function readQuizAnswers() {
+  TUTORIAL_QUIZ.forEach((q, qi) => {
+    const el = document.querySelector(`input[name="kk-tq-${qi}"]:checked`);
+    tutorialAnswers[q.id] = el ? Number(el.value) : 0;
+  });
+}
+
+/* 질문 합산(0~4점) → 난이도 — ≤1 쉬움 / 2~3 보통 / 4 어려움(최강 AI) */
+function tutorialDifficulty() {
+  const score = (Number(tutorialAnswers.know) || 0) + (Number(tutorialAnswers.skill) || 0);
+  if (score <= 1) return "easy";
+  if (score <= 3) return "normal";
+  return "hard";
+}
+
+function startTutorialPractice() {
+  readQuizAnswers();
+  const diff = tutorialDifficulty();
   const modal = $("#tutorialModal");
   if (modal) modal.classList.add("hidden");
+  tutorialPhase = "practice";
+  tutorialActive = true;
+  showMessage(`튜토리얼 실습을 시작합니다! (난이도: ${{ easy: "쉬움", normal: "보통", hard: "어려움" }[diff]}) — 이 게임은 기록되지 않아요.`, "info");
+  switchToModeTab("single", false);
+  leaveRoom();
+  if (submitting || startingGame) return;
+  startingGame = true;
+  localUsedWords.clear();
+  showRestartButton(false);
+  gameState = null;
+  socket.emit("room:create", { nickname: makeNickname(), mode: "ai", difficulty: diff, practice: true });
+}
+
+/* 실습 게임 종료 → 튜토리얼 마무리 + 실제 게임 개시 */
+function onPracticeGameFinished() {
+  if (!tutorialActive || tutorialPhase !== "practice") return;
+  tutorialPhase = "done";
+  showMessage("튜토리얼 실습이 끝났습니다! 이제 실제 게임을 시작할게요.", "success");
+  finishTutorial();
+}
+
+/* 튜토리얼 마무리 — 완료 처리하고 실습이면 방을 정리한 뒤 싱글을 연다 */
+function finishTutorial() {
+  const wasPractice = tutorialPhase === "practice" || practiceGameActive;
+  const modal = $("#tutorialModal");
+  if (modal) modal.classList.add("hidden");
+  tutorialActive = false;
+  tutorialPhase = "steps";
+  tutorialPending = false;
+  autoStartAllowed = true;
+  setPracticeBar(false);
   try { localStorage.setItem("kkTutorialDone", "1"); } catch (e) { /* 무시 */ }
+  if (wasPractice) leaveRoom();
+  if (currentMode === "single" && !roomId) setTimeout(startSingleGame, 250);
+}
+
+/* 실습 배너 나가기 — 튜토리얼을 끝내고 실제 게임으로 */
+function quitTutorialPractice() {
+  if (tutorialPhase !== "practice" && !practiceGameActive) return;
+  tutorialPhase = "done";
+  finishTutorial();
+}
+
+/* 표시 여부 결정 — 한 번만 (게스트는 로그인 전이면 무조건 먼저 표시) */
+function initTutorialFlow() {
+  let decided = false;
+  const decide = (final) => {
+    if (decided || tutorialActive) return;
+    const settled = window.kkLoggedIn !== undefined;
+    if (!settled && !final) return;
+    let seen = false;
+    try { seen = localStorage.getItem("kkTutorialDone") === "1"; } catch (e) { /* 무시 */ }
+    const loggedIn = settled ? window.kkLoggedIn === true : false;
+    decided = true;
+    tutorialPending = false;
+    if (!seen || !loggedIn) {
+      showTutorial(true);
+      return;
+    }
+    autoStartAllowed = true;
+    if (currentMode === "single" && !roomId && !gameState) setTimeout(startSingleGame, 300);
+  };
+  setTimeout(() => decide(false), 1000);
+  setTimeout(() => decide(true), 2600);
+  window.addEventListener("kk-auth", () => { updateChatVisibility(); decide(true); });
 }
 
 document.addEventListener("DOMContentLoaded", () => {
   initSocket();
-  initNicknameBar();
+  updateNicknameUI();
+  updateChatVisibility();
   updateStatsUI();
   initSideRanking();
   renderSoundToggle();
@@ -3887,19 +3999,27 @@ document.addEventListener("DOMContentLoaded", () => {
     playSound("word");
   });
 
-  /* 튜토리얼 — 첫 방문자에게만 자동으로 띄운다 (게임 방법에서 다시 볼 수 있음) */
-  let tutorSeen = false;
-  try { tutorSeen = localStorage.getItem("kkTutorialDone") === "1"; } catch (e) { /* 무시 */ }
-  if (!tutorSeen) setTimeout(() => showTutorial(true), 1200);
+  /* 튜토리얼 — 미완료이거나 로그인 전이면 규칙→질문→AI 실습 흐름을 먼저 띄운다 */
   $("#tutorPrev")?.addEventListener("click", () => {
+    if (tutorialPhase === "quiz") {
+      tutorialPhase = "steps";
+      tutorialStep = TUTORIAL_STEPS.length - 1;
+      renderTutorialStep();
+      return;
+    }
     if (tutorialStep > 0) { tutorialStep--; renderTutorialStep(); }
   });
   $("#tutorNext")?.addEventListener("click", () => {
-    if (tutorialStep < TUTORIAL_STEPS.length - 1) { tutorialStep++; renderTutorialStep(); }
-    else finishTutorial();
+    if (tutorialPhase === "done") { finishTutorial(); return; }
+    if (tutorialPhase === "quiz") { startTutorialPractice(); return; }
+    if (tutorialStep < TUTORIAL_STEPS.length - 1) { tutorialStep++; renderTutorialStep(); return; }
+    readQuizAnswers();
+    tutorialPhase = "quiz";
+    renderTutorialStep();
   });
   $("#tutorSkip")?.addEventListener("click", () => finishTutorial());
   $("#tutorClose")?.addEventListener("click", () => finishTutorial());
+  $("#practiceQuit")?.addEventListener("click", () => quitTutorialPractice());
   $("#tutorialReplayBtn")?.addEventListener("click", () => showTutorial(true));
   $("#replayClose")?.addEventListener("click", () => $("#replayModal")?.classList.add("hidden"));
   $("#wordDefClose")?.addEventListener("click", () => $("#wordDefModal")?.classList.add("hidden"));
@@ -3923,7 +4043,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (target) target.classList.remove("hidden");
 
       if (currentMode === "single") {
-        if (!gameState || !roomId) setTimeout(startSingleGame, 100);
+        if (autoStartAllowed && !tutorialActive && (!gameState || !roomId)) setTimeout(startSingleGame, 100);
       } else if (currentMode === "ranked") {
         if (gameState && roomId && currentMode === "ranked") { /* in game */ }
         else { $("#rankedLobby")?.classList.remove("hidden"); $("#rankedGame")?.classList.add("hidden"); refreshSeasonBar(); }
@@ -3948,16 +4068,18 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  /* 초기 로드 시 싱글플레이 자동 시작 */
-  setTimeout(startSingleGame, 500);
+  /* 초기 로드 — 튜토리얼 표시 여부를 결정한 뒤 싱글플레이를 자동 시작한다 */
+  initTutorialFlow();
 
-  /* 싱글플레이 */
+  /* 싱글플레이 — 튜토리얼 실습 중이면 먼저 튜토리얼을 마친다 */
   $("#newStart")?.addEventListener("click", () => {
+    if (tutorialPhase === "practice" || practiceGameActive) { finishTutorial(); return; }
     leaveRoom();
     setTimeout(startSingleGame, 200);
   });
 
   $("#restart")?.addEventListener("click", () => {
+    if (tutorialPhase === "practice" || practiceGameActive) { finishTutorial(); return; }
     leaveRoom();
     setTimeout(startSingleGame, 200);
   });
@@ -4039,6 +4161,11 @@ document.addEventListener("DOMContentLoaded", () => {
   /* 랭크 매칭 */
   $("#rankedQueueBtn")?.addEventListener("click", () => {
     if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+    if (!isLoggedIn()) {
+      showMessage("랭킹은 Google 로그인 후 이용할 수 있습니다. (싱글·멀티는 게스트도 가능)", "error");
+      openAccountPanel(true);
+      return;
+    }
     if (!requireNickname()) return;
     rankedQueued = true;
     rankedInvitePending = false;
@@ -4145,9 +4272,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   /* 관리자 패널 — 닉네임이 blossomIng_0인 사용자에게만 보이는 버튼 */
   $all(".admin-btn").forEach(btn => btn.addEventListener("click", openAdminPanel));
-  $("#nickInput")?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); saveNickname(); }
-  });
   const adminModal = $("#adminModal");
   if (adminModal) {
     adminModal.addEventListener("click", (e) => {
@@ -4171,11 +4295,10 @@ document.addEventListener("DOMContentLoaded", () => {
       closeAdminPanel();
       $("#howModal")?.classList.add("hidden");
       $("#chatPanel")?.classList.add("hidden");
-      $("#reactTray")?.classList.add("hidden");
     }
   });
 
-  /* 실시간 채팅 (좌측 하단) */
+  /* 실시간 채팅 (좌측 하단 — 방/전체 자동 전환, 로그인자만) */
   const chatPanel = $("#chatPanel");
   $("#chatBtn")?.addEventListener("click", () => {
     if (!chatPanel) return;
@@ -4184,6 +4307,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (opening) {
       chatUnread = 0;
       renderChatUnread();
+      updateChatScopeLabel();
+      /* 전체 채팅을 열면 서버의 최근 이력을 받아온다 */
+      if (chatScopeNow() === "global" && socket && socketConnected) socket.emit("chat:history");
       const list = $("#chatList");
       if (list) list.scrollTop = list.scrollHeight;
       $("#chatInput")?.focus();
@@ -4205,21 +4331,9 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   clearChat();
 
-  /* 이모지 리액션 (우측 하단) */
-  buildReactTray();
-  $("#reactBtn")?.addEventListener("click", () => toggleReactTray());
-
-  /* 닉네임 */
-  $("#nickSave")?.addEventListener("click", saveNickname);
-  $("#nickInput")?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      saveNickname();
-    }
-  });
-
-  /* 계정 탭 (왼쪽 위) */
+  /* 계정 탭 — 이름 설정/변경은 이 탭에서만 한다 */
   $("#accountBtn")?.addEventListener("click", () => openAccountPanel());
+  $("#myNickChip")?.addEventListener("click", () => openAccountPanel(true));
   $("#accountClose")?.addEventListener("click", () => openAccountPanel(false));
   $("#accApply")?.addEventListener("click", saveAccount);
 

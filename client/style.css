@@ -57,7 +57,7 @@ header {
 
 h1 {
   margin: 0;
-  font-size: 3rem;
+  font-size: 1.9rem;
   background: linear-gradient(130deg, #4f46e5 10%, #7c3aed 55%, #db2777 100%);
   -webkit-background-clip: text;
   background-clip: text;
@@ -71,7 +71,7 @@ header p,
   color: var(--text-dim);
 }
 
-header p { margin-top: 4px; }
+header p { margin-top: 2px; }
 
 .hidden {
   display: none;
@@ -123,7 +123,7 @@ button:disabled {
 .tabs {
   display: flex;
   gap: 8px;
-  margin: 16px 0;
+  margin: 10px 0;
 }
 
 .tabs button {
@@ -299,60 +299,27 @@ button:disabled {
   color: var(--accent);
 }
 
-/* 닉네임 바 */
-.name-bar {
-  display: flex;
+/* 머니바 닉네임 칩 (name-bar 대체 — 이름 설정은 계정 탭에서만) */
+.nick-chip {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 10px 14px;
-  margin-bottom: 14px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: var(--shadow-sm);
-}
-
-.name-bar label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.85rem;
-  color: var(--text-dim);
-}
-
-.name-bar input {
-  width: 160px;
-  padding: 8px 10px;
-  background: var(--card-soft);
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  color: var(--text);
-  font-size: 0.9rem;
-}
-
-.name-bar input.missing {
-  border-color: var(--gold);
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.3);
-}
-
-.name-bar #nickMsg {
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #e2e8f0;
   font-size: 0.8rem;
-  color: var(--text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
 }
-
-.name-bar #nickMsg[data-type="ok"] { color: #059669; }
-.name-bar #nickMsg[data-type="warn"] { color: #b45309; }
-.name-bar #nickMsg[data-type="error"] { color: var(--red); }
-
-.name-bar.attention {
-  animation: shakeX 0.4s ease;
-  border-color: var(--red);
+.nick-chip:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.4);
 }
+.nick-chip.guest { color: #fcd34d; }
+.nick-chip.attention { animation: shakeX 0.4s ease; border-color: var(--red); }
 
 /* 온라인 상단 */
 .onlineTop {
@@ -1534,13 +1501,12 @@ button:disabled {
 }
 
 /* =========================================================
-   친구 패널 (오른쪽 위)
+   친구 패널 (머니바 in-flow — 드롭다운)
 ========================================================= */
 .friends-wrap {
-  position: fixed;
-  top: 12px;
-  right: 16px;
+  position: relative;
   z-index: 90;
+  margin-left: auto;
 }
 
 .friends-btn {
@@ -1607,7 +1573,7 @@ button:disabled {
 
 .friends-panel {
   position: absolute;
-  top: 46px;
+  top: calc(100% + 8px);
   right: 0;
   width: 264px;
   background: var(--card);
@@ -1736,12 +1702,10 @@ button:disabled {
 }
 
 /* =========================================================
-   계정 패널 (왼쪽 위)
+   계정 패널 (머니바 in-flow — 드롭다운)
 ========================================================= */
 .account-wrap {
-  position: fixed;
-  top: 12px;
-  left: 12px;
+  position: relative;
   z-index: 90;
 }
 
@@ -1755,10 +1719,10 @@ button:disabled {
 
 .account-panel {
   position: absolute;
-  top: 46px;
+  top: calc(100% + 8px);
   left: 0;
   width: 280px;
-  max-height: calc(100vh - 58px);
+  max-height: calc(100vh - 200px);
   overflow-y: auto;
   background: var(--card);
   border: 1px solid var(--border);
@@ -2249,11 +2213,13 @@ button:active:not(:disabled) {
    신규 UI 스타일 — 랭크 매칭 / 상점 / 돈 / AI 승률
 --------------------------------------------------------- */
 
-/* 돈 바 (상단) */
+/* 돈 바 (상단) — 닉네임 칩·계정·친구를 in-flow로 담는다 */
 .money-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
+  position: relative;
   padding: 6px 10px;
   margin: 6px 0 10px;
   background: linear-gradient(135deg, #1e293b, #334155);
@@ -2263,6 +2229,9 @@ button:active:not(:disabled) {
   font-weight: 600;
   box-shadow: var(--shadow-sm);
 }
+/* 계정/친구 패널은 머니바 오른쪽에 드롭다운으로 붙는다 */
+.money-bar .title-chip { margin-left: auto; }
+.money-bar .friends-wrap { margin-left: 0; }
 .money-chip {
   color: #fbbf24;
 }
@@ -2886,83 +2855,62 @@ button:active:not(:disabled) {
   left: 16px;
   z-index: 96;
 }
+.chat-wrap.hidden { display: none; }
 
-/* 이모지 리액션 (우측 하단 —/how 버튼 위) */
-.react-wrap {
-  position: fixed;
-  right: 16px;
-  bottom: 74px;
-  z-index: 95;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
-}
-
-.react-btn {
-  width: 44px;
-  height: 44px;
+/* 방/전체 채팅 범위 태그 */
+.chat-scope-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
   border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--card);
-  box-shadow: var(--shadow);
-  font-size: 1.2rem;
-  cursor: pointer;
-  transition: transform 0.12s, border-color 0.12s;
+  font-size: 0.7rem;
+  font-weight: 800;
+  vertical-align: middle;
 }
-
-.react-btn:hover { transform: translateY(-2px); border-color: var(--accent); }
-
-.react-tray {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 4px;
-  padding: 8px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: var(--shadow);
+.chat-scope-tag.room {
+  background: var(--blue-soft);
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
 }
+.chat-scope-tag.global {
+  background: var(--purple-soft);
+  color: #7c3aed;
+  border: 1px solid #e9d5ff;
+}
+html.dark .chat-scope-tag.room { background: rgba(59, 130, 246, 0.18); color: #93c5fd; border-color: #1e3a5f; }
+html.dark .chat-scope-tag.global { background: rgba(168, 85, 247, 0.18); color: #d8b4fe; border-color: #3b2a5e; }
 
-.react-emoji {
-  width: 34px;
-  height: 34px;
-  border: none;
+/* 튜토리얼 실습 배너 (머니바 아래) */
+.practice-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 12px;
+  margin-bottom: 10px;
+  background: linear-gradient(135deg, #fef3c7, #fde68a);
+  border: 1px solid #f59e0b;
+  border-radius: 10px;
+  color: #92400e;
+  font-size: 0.85rem;
+  font-weight: 700;
+  box-shadow: var(--shadow-sm);
+}
+.practice-bar.hidden { display: none; }
+.practice-bar button {
+  padding: 5px 12px;
+  font-size: 0.8rem;
   border-radius: 8px;
-  background: transparent;
-  font-size: 1.15rem;
-  cursor: pointer;
-  transition: background 0.12s, transform 0.12s;
+  background: #92400e;
+  color: #fff;
+  box-shadow: none;
 }
-
-.react-emoji:hover { background: var(--accent-soft); transform: scale(1.15); }
-
-/* 떠오르는 리액션 버블 */
-.react-layer {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 26%;
-  height: 200px;
-  pointer-events: none;
-  z-index: 94;
-  overflow: hidden;
+html.dark .practice-bar {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(245, 158, 11, 0.1));
+  border-color: #a16207;
+  color: #fcd34d;
 }
-
-.react-bubble {
-  position: absolute;
-  bottom: 0;
-  font-size: 2rem;
-  animation: reactFloat 1.6s ease-out forwards;
-  will-change: transform, opacity;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.35));
-}
-
-@keyframes reactFloat {
-  0% { transform: translateY(0) translateX(0) scale(0.7); opacity: 0; }
-  15% { opacity: 1; transform: translateY(-20px) translateX(var(--drift, 0)) scale(1.08); }
-  100% { transform: translateY(-150px) translateX(var(--drift, 0)) scale(1); opacity: 0; }
-}
+html.dark .practice-bar button { background: #b45309; }
 
 .chat-btn {
   position: relative;
@@ -3559,8 +3507,6 @@ button:focus-visible {
 
 .wide,
 .primary,
-.nick-save,
-#nickSave,
 #accApply,
 .shop-buy:not([disabled]),
 .mission-claim {
@@ -3572,7 +3518,6 @@ button:focus-visible {
 
 .wide:hover,
 .primary:hover,
-#nickSave:hover,
 #accApply:hover,
 .shop-buy:not([disabled]):hover,
 .mission-claim:hover {
@@ -4000,7 +3945,6 @@ html.dark .lb-tier { border-color: #4653a8; }
 /* 초록 계열: 진한 emerald/blue-green → 밝은 emerald */
 html.dark .message[data-type="success"],
 html.dark .message[data-type="my-turn"],
-html.dark .name-bar #nickMsg[data-type="ok"],
 html.dark .admin-msg.ok,
 html.dark .admin-status[data-type="ok"],
 html.dark .account-msg.ok,
@@ -4021,7 +3965,6 @@ html.dark .last-hint .dueum-tag { border-color: #33507e; }
 /* 앰버/브라운 계열 */
 html.dark .message[data-type="win"],
 html.dark .message[data-type="opponent-turn"],
-html.dark .name-bar #nickMsg[data-type="warn"],
 html.dark .lb-row.top1 .lb-rank,
 html.dark .ai-winrate[data-level="mid"],
 html.dark .ranked-prize span:last-child {
@@ -4049,7 +3992,6 @@ html.dark .rule-notice[data-active="true"] {
 /* 빨강/장밋빛 계열 */
 html.dark .message[data-type="error"],
 html.dark .message[data-type="lose"],
-html.dark .name-bar #nickMsg[data-type="error"],
 html.dark .admin-msg.error,
 html.dark .admin-status[data-type="error"],
 html.dark .account-msg.error,
@@ -4207,6 +4149,44 @@ html.dark .attendance-card { border-color: #0e7490; }
 .tutor-index { font-size: 0.8rem; color: var(--text-faint); font-weight: 700; }
 
 .tutor-actions { display: flex; gap: 8px; }
+
+/* 튜토리얼 숙련도 질문 */
+.tutor-quiz { margin-bottom: 14px; }
+.tutor-quiz-q { font-weight: 800; font-size: 0.95rem; margin-bottom: 8px; }
+.tutor-quiz-opts { display: flex; flex-direction: column; gap: 6px; }
+.tutor-quiz-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--card-soft);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.tutor-quiz-opt:hover { border-color: var(--accent); background: var(--accent-soft); }
+.tutor-quiz-opt input { width: auto; accent-color: var(--accent); cursor: pointer; }
+
+/* 계정 탭 개명 안내 (남은 개명 조건/비용) */
+.acc-rename-info {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--gold-soft);
+  border: 1px solid #fcd34d;
+  color: #92400e;
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1.45;
+}
+.acc-rename-info.hidden { display: none; }
+html.dark .acc-rename-info {
+  background: rgba(245, 158, 11, 0.14);
+  border-color: #a16207;
+  color: #fcd34d;
+}
 
 .rating-chart-box { padding: 6px 0; }
 

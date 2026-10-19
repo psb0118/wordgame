@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=26">
+  <link rel="stylesheet" href="style.css?v=28">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -13,12 +13,6 @@
       <h1>끝말잇기</h1>
       <p>끄글 단어 목록 기반 · AI · 온라인 멀티플레이</p>
     </header>
-
-    <div class="name-bar">
-      <label>닉네임<input id="nickInput" maxlength="12" placeholder="이름을 입력하세요"></label>
-      <button id="nickSave">저장</button>
-      <span id="nickMsg"></span>
-    </div>
 
     <nav class="tabs">
       <button data-mode="single" class="active">싱글플레이</button>
@@ -31,12 +25,82 @@
     </nav>
 
     <div class="money-bar hidden">
+      <button id="myNickChip" class="nick-chip" title="계정 탭에서 이름 설정/변경">이름 설정</button>
       <span class="money-chip">💰 <b id="moneyDisplay">0</b></span>
       <span class="boost-chip hidden" id="boostChip" title="다음 N번 게임 동안 레이팅/승리 보상 2배">물약 <b id="boostCount">0</b>판</span>
       <span class="title-chip hidden" id="titleChip"></span>
       <button id="missionBtn" class="mission-mini hidden" title="일일/주간/월간 미션 보기 (시즌 탭)">📋 미션 <b id="missionMiniCount">0/0</b></button>
       <button id="soundToggle" class="sound-chip" title="소리/진동 켜기·끄기">🔊</button>
       <button id="themeToggle" class="sound-chip" title="다크 모드 전환">🌙</button>
+
+      <div id="friendsWrap" class="friends-wrap">
+        <button id="friendsBtn" class="friends-btn" title="친구 관리">👥 친구<span id="friendsCount" class="friends-count hidden"></span><span id="friendsReqBadge" class="friends-req-badge hidden">!</span></button>
+        <div id="friendsPanel" class="friends-panel hidden">
+          <div class="friends-head">
+            <span>친구 관리</span>
+            <button id="friendsClose" class="friends-close">✕</button>
+          </div>
+          <div class="friends-add">
+            <input id="friendsAddInput" maxlength="12" placeholder="친구 닉네임 입력" autocomplete="off">
+            <button id="friendsAddBtn">추가</button>
+          </div>
+          <div id="friendsList" class="friends-list"></div>
+          <div id="friendsMsg" class="friends-msg"></div>
+        </div>
+      </div>
+
+      <div id="accountWrap" class="account-wrap">
+        <button id="accountBtn" class="account-btn" title="계정">👤 계정</button>
+        <div id="accountPanel" class="account-panel hidden">
+          <div class="account-head">
+            <span>계정</span>
+            <button id="accountClose" class="account-close">✕</button>
+          </div>
+          <div class="account-row">
+            <input id="accNickInput" maxlength="12" placeholder="닉네임" autocomplete="off">
+            <button id="accApply">이름 저장</button>
+          </div>
+          <div class="acc-pw-help">이름은 계정 탭에서만 변경합니다 — <b>첫 1회 무료</b>, 이후 1회당 <b>1,000,000 코인</b>. 변경해도 전적·코인은 그대로 유지됩니다.</div>
+          <div id="accRenameInfo" class="acc-rename-info hidden"></div>
+          <div id="accountMsg"></div>
+          <div id="fbBox" class="acc-fb hidden">
+            <div class="acc-fb-title">🔗 Google 로그인</div>
+            <div class="acc-fb-desc">Google 계정으로 로그인하면 전적이 계정에 안전하게 연결됩니다. (닉네임·전적 그대로 유지)</div>
+            <div class="acc-fb-actions">
+              <button id="fbGoogleBtn" type="button" class="acc-fb-google">Google로 로그인</button>
+              <button id="fbLogoutBtn" type="button" class="acc-fb-logout hidden">로그아웃</button>
+            </div>
+            <div id="fbStatus" class="acc-fb-status"></div>
+            <div id="fbMsg" class="acc-fb-msg"></div>
+          </div>
+          <div class="account-scores">
+            <div class="acc-row"><span>싱글 전적</span><span id="accSingleWL" class="acc-wl"></span></div>
+            <div class="acc-row"><span>멀티 점수</span><strong id="accMultiRating">-</strong><span id="accMultiRank" class="acc-rank"></span><span id="accMultiWL" class="acc-wl"></span></div>
+            <div class="acc-row"><span>랭크 점수</span><strong id="accRankedRating">-</strong><span id="accRankedRank" class="acc-rank"></span><span id="accRankedWL" class="acc-wl"></span></div>
+            <div class="acc-row"><span>랭크 연승</span><strong id="accRankedStreak">-</strong><span id="accRankedBestStreak" class="acc-rank">최대 -</span></div>
+            <div class="acc-row"><span>소지금</span><strong id="accMoney">0</strong></div>
+            <div class="acc-row"><span>칭호</span><strong id="accTitle">없음</strong></div>
+          </div>
+          <div class="acc-referral">
+            <div class="acc-referral-title">🎁 추천인 등록</div>
+            <div id="refStatus" class="acc-referral-status">추천인을 등록하면 <b>둘 다 코인</b>을 받아요. (나 +3,000 · 상대 +5,000)</div>
+            <div class="account-row ref-row">
+              <input id="refNickInput" maxlength="12" placeholder="추천인 닉네임" autocomplete="off">
+              <button id="refApply">등록</button>
+            </div>
+            <div id="refMsg" class="acc-referral-msg"></div>
+          </div>
+          <div class="acc-mail">
+            <div class="acc-mail-head">📬 쪽지함 <span id="mailUnread" class="mail-badge hidden">0</span></div>
+            <div id="mailList" class="acc-mail-list"></div>
+          </div>
+          <div class="acc-guild">
+            <div class="acc-guild-head">🏰 길드</div>
+            <div id="guildBody" class="acc-guild-body"></div>
+            <div id="guildMsg" class="acc-referral-msg"></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 싱글플레이 -->
@@ -199,7 +263,7 @@
 
     <!-- 랭크 매칭 -->
     <section id="ranked" class="panel hidden">
-      <div class="rule-notice">실시간 랭크 매칭 — 온라인 레이팅과 다른 <b>랭크 점수</b>를 사용합니다. 승리하면 돈(코인)을 받을 수 있어요.</div>
+      <div class="rule-notice">실시간 랭크 매칭 — 온라인 레이팅과 다른 <b>랭크 점수</b>를 사용합니다. 승리하면 돈(코인)을 받을 수 있어요. <b>랭킹은 Google 로그인 후 이용할 수 있습니다.</b></div>
 
 <div id="rankedLobby">
           <div class="onlineTop">
@@ -430,78 +494,10 @@
     </div>
   </div>
 
-  <div id="friendsWrap" class="friends-wrap">
-    <button id="friendsBtn" class="friends-btn" title="친구 관리">👥 친구<span id="friendsCount" class="friends-count hidden"></span><span id="friendsReqBadge" class="friends-req-badge hidden">!</span></button>
-    <div id="friendsPanel" class="friends-panel hidden">
-      <div class="friends-head">
-        <span>친구 관리</span>
-        <button id="friendsClose" class="friends-close">✕</button>
-      </div>
-      <div class="friends-add">
-        <input id="friendsAddInput" maxlength="12" placeholder="친구 닉네임 입력" autocomplete="off">
-        <button id="friendsAddBtn">추가</button>
-      </div>
-      <div id="friendsList" class="friends-list"></div>
-      <div id="friendsMsg" class="friends-msg"></div>
-    </div>
-  </div>
-
   <div id="inviteToast" class="invite-toast hidden">
     <span id="inviteText">초대받음</span>
     <button id="inviteAccept">수락</button>
     <button id="inviteDecline" class="secondary">거절</button>
-  </div>
-
-  <div id="accountWrap" class="account-wrap">
-    <button id="accountBtn" class="account-btn" title="계정">👤 계정</button>
-    <div id="accountPanel" class="account-panel hidden">
-      <div class="account-head">
-        <span>계정</span>
-        <button id="accountClose" class="account-close">✕</button>
-      </div>
-      <div class="account-row">
-        <input id="accNickInput" maxlength="12" placeholder="닉네임" autocomplete="off">
-        <button id="accApply">저장/로그인</button>
-      </div>
-      <div class="acc-pw-help">Google로 로그인한 뒤 닉네임을 저장하면 전적이 계정에 저장됩니다.</div>
-      <div id="accountMsg"></div>
-      <div id="fbBox" class="acc-fb hidden">
-        <div class="acc-fb-title">🔗 Google 로그인</div>
-        <div class="acc-fb-desc">Google 계정으로 로그인하면 전적이 계정에 안전하게 연결됩니다. (닉네임·전적 그대로 유지)</div>
-        <div class="acc-fb-actions">
-          <button id="fbGoogleBtn" type="button" class="acc-fb-google">Google로 로그인</button>
-          <button id="fbLogoutBtn" type="button" class="acc-fb-logout hidden">로그아웃</button>
-        </div>
-        <div id="fbStatus" class="acc-fb-status"></div>
-        <div id="fbMsg" class="acc-fb-msg"></div>
-      </div>
-      <div class="account-scores">
-        <div class="acc-row"><span>싱글 전적</span><span id="accSingleWL" class="acc-wl"></span></div>
-        <div class="acc-row"><span>멀티 점수</span><strong id="accMultiRating">-</strong><span id="accMultiRank" class="acc-rank"></span><span id="accMultiWL" class="acc-wl"></span></div>
-        <div class="acc-row"><span>랭크 점수</span><strong id="accRankedRating">-</strong><span id="accRankedRank" class="acc-rank"></span><span id="accRankedWL" class="acc-wl"></span></div>
-        <div class="acc-row"><span>랭크 연승</span><strong id="accRankedStreak">-</strong><span id="accRankedBestStreak" class="acc-rank">최대 -</span></div>
-        <div class="acc-row"><span>소지금</span><strong id="accMoney">0</strong></div>
-        <div class="acc-row"><span>칭호</span><strong id="accTitle">없음</strong></div>
-      </div>
-      <div class="acc-referral">
-        <div class="acc-referral-title">🎁 추천인 등록</div>
-        <div id="refStatus" class="acc-referral-status">추천인을 등록하면 <b>둘 다 코인</b>을 받아요. (나 +3,000 · 상대 +5,000)</div>
-        <div class="account-row ref-row">
-          <input id="refNickInput" maxlength="12" placeholder="추천인 닉네임" autocomplete="off">
-          <button id="refApply">등록</button>
-        </div>
-        <div id="refMsg" class="acc-referral-msg"></div>
-      </div>
-      <div class="acc-mail">
-        <div class="acc-mail-head">📬 쪽지함 <span id="mailUnread" class="mail-badge hidden">0</span></div>
-        <div id="mailList" class="acc-mail-list"></div>
-      </div>
-      <div class="acc-guild">
-        <div class="acc-guild-head">🏰 길드</div>
-        <div id="guildBody" class="acc-guild-body"></div>
-        <div id="guildMsg" class="acc-referral-msg"></div>
-      </div>
-    </div>
   </div>
 
   <div id="howWrap" class="how-wrap">
@@ -593,12 +589,12 @@
     </div>
   </div>
 
-  <!-- 실시간 채팅 (방 단위) -->
-  <div id="chatWrap" class="chat-wrap">
-    <button id="chatBtn" class="chat-btn" title="방 채팅 열기">💬 채팅<span id="chatUnread" class="chat-unread hidden">0</span></button>
+  <!-- 실시간 채팅 (전체/방 자동 전환 — 로그인한 유저만 사용 가능) -->
+  <div id="chatWrap" class="chat-wrap hidden">
+    <button id="chatBtn" class="chat-btn" title="채팅 열기">💬 채팅<span id="chatUnread" class="chat-unread hidden">0</span></button>
     <div id="chatPanel" class="chat-panel hidden">
       <div class="chat-head">
-        <span>💬 방 채팅</span>
+        <span id="chatTitle">💬 전체 채팅</span>
         <button id="chatClose" class="chat-close" title="채팅 닫기">✕</button>
       </div>
       <div id="chatList" class="chat-list"></div>
@@ -610,18 +606,17 @@
     </div>
   </div>
 
-  <!-- 이모지 리액션 (우측 하단, 서버 REACT_EMOJIS와 동일해야 함) -->
-  <div class="react-wrap">
-    <div id="reactTray" class="react-tray hidden"></div>
-    <button id="reactBtn" class="react-btn" title="이모지 리액션 보내기">😊</button>
+  <!-- 튜토리얼 실습 진행 배너 -->
+  <div id="practiceBar" class="practice-bar hidden">
+    <span>🎓 튜토리얼 실습 중 — 이 게임은 기록되지 않습니다</span>
+    <button id="practiceQuit" class="secondary" type="button">나가기</button>
   </div>
-  <div id="reactLayer" class="react-layer" aria-hidden="true"></div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="script.js?v=27"></script>
-  <script src="firebase-auth.js?v=1"></script>
+  <script src="script.js?v=29"></script>
+  <script src="firebase-auth.js?v=2"></script>
 </body>
 </html>

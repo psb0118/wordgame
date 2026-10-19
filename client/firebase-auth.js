@@ -17,6 +17,14 @@
 
   const $id = (id) => document.getElementById(id);
 
+  /* 로그인 상태를 script.js에 알린다 — 채팅·랭킹 게이트와 튜토리얼 표시 조건이 이 값을 본다 */
+  function notifyAuthState(loggedIn, fromServer) {
+    window.kkLoggedIn = !!loggedIn;
+    try {
+      window.dispatchEvent(new CustomEvent("kk-auth", { detail: { loggedIn: !!loggedIn, fromServer: !!fromServer } }));
+    } catch (e) { /* 무시 */ }
+  }
+
   function setStatus(text, type) {
     const el = $id("fbStatus");
     if (!el) return;
@@ -104,6 +112,9 @@
     $id("fbLogoutBtn")?.addEventListener("click", async () => {
       try {
         await fbAuth.signOut();
+        /* 서버 세션의 로그인 정보도 함께 제거 — 채팅/랭킹 게이트가 즉시 게스트로 동작 */
+        try { if (typeof socket !== "undefined" && socket && socket.connected) socket.emit("player:firebaseLogout"); } catch (e) { /* 무시 */ }
+        notifyAuthState(false, false);
         setMsg("로그아웃되었습니다.", "ok");
       } catch (err) {
         setMsg("로그아웃 실패: " + err.message, "error");
@@ -119,6 +130,7 @@
         await sendTokenToServer();
       } else {
         pendingToken = null;
+        notifyAuthState(false, false);
         setMsg("", "");
       }
     });
@@ -132,13 +144,18 @@
           socket.on("player:firebaseAuthResult", (data) => {
             if (!data) return;
             if (data.ok) {
+              notifyAuthState(true, true);
               setMsg("Google 계정이 '" + (data.nickname || "") + "' 닉네임에 연결되었습니다.", "ok");
             } else if (data.needNickname) {
+              notifyAuthState(true, true);
               setMsg(data.reason || "닉네임을 먼저 저장해주세요.", "error");
               const nick = $id("accNickInput");
               if (nick && !nick.value && (data.name || data.email)) {
                 nick.value = (data.name || data.email).split("@")[0].slice(0, 12);
               }
+            } else if (data.loggedOut) {
+              notifyAuthState(false, true);
+              setMsg("", "");
             } else {
               setMsg(data.reason || "Firebase 인증에 실패했습니다.", "error");
             }

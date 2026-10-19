@@ -37,6 +37,15 @@ function constSource(name) {
   }
 }
 
+/* 클로저 스코프의 const 화살표 함수 (moderationAction 등) — 닫는 '};'까지 추출 */
+function constFnSource(name) {
+  const start = source.indexOf(`const ${name} = `);
+  assert.ok(start >= 0, `missing const fn: ${name}`);
+  const end = source.indexOf("\n  };", start);
+  assert.ok(end > start, `missing const fn end: ${name}`);
+  return source.slice(start, end + 5);
+}
+
 function installHandler(c, event, socket) {
   const start = source.indexOf(`  socket.on("${event}",`);
   assert.ok(start >= 0, `missing handler: ${event}`);
@@ -50,6 +59,7 @@ function context(extra = {}) {
   const errors = [];
   const timers = [];
   const emissions = [];
+  const ioRooms = [];   /* io.to(room) 브로드캐스트를 방 ID와 함께 기록 */
   const c = vm.createContext({
     structuredClone,
     console: { log() {}, warn() {}, error(...args) { errors.push(args.join(" ")); } },
@@ -58,12 +68,14 @@ function context(extra = {}) {
     socketFirebaseUid: new Map(), socketFirebaseEmail: new Map(),
     ROOMS: new Map(),
     bannedMap: new Map(), mutedMap: new Map(),
+    bugReports: [],
     guildCache: null, guildsPath: "guilds.json",
     seasonStore: null, seasonJsonPath: "season.json",
     process: { env: {} },
     customWords: { nextId: 1, pending: [], approved: [], rejected: [] },
     customWordsPath: "custom-words.json", customDictPath: "legacy-custom-words.json",
     writeStoreFile() {}, loadStoreJSON: async () => null,
+    saveBugReports() {}, notifySuperAdmins() {},
     dbMode: "json", dbPool: null,
     firebaseReady: false, firebaseAuth: null,
     saveJsonDb() {},
@@ -75,12 +87,13 @@ function context(extra = {}) {
     isAdminNick: () => false, findSubAdmin: () => null, watchNicks: [],
     getPlayerRoom: () => null,
     cancelRankedInvitesFor() {}, removeFromRankedQueue() {}, broadcastRankedQueue() {},
-    broadcastRoomState() {}, getPublicRoomState: r => ({ roomId: r.id }),
+    leaveRoomForSocket() {}, addBot() {}, startNewGame() {},
+    broadcastRoomState() {}, getPublicRoomState: r => ({ roomId: r.id, practice: !!r.practice }),
     TURN_TIME: 20, MAX_PLAYERS: 10, RECONNECT_GRACE_MS: 30000, MAX_HEARTS: 3,
     PARTY_PLAYERS: 4, PARTY_TEAM_SIZE: 2, PARTY_TEAM_COUNT: 2,
     setTimeout(fn, ms) { const t = { fn, ms, active: true }; timers.push(t); return t; },
     clearTimeout(t) { if (t && typeof t === "object") t.active = false; },
-    io: { to: () => ({ emit: (...args) => emissions.push(args) }),
+    io: { to: (room) => ({ emit: (...args) => { emissions.push(args); ioRooms.push({ room, args }); } }),
       emit: (...args) => emissions.push(args),
       sockets: { sockets: new Map() } },
     requireNickname: async () => ({ ok: true, role: "super", nickname: "admin" }),
@@ -88,7 +101,9 @@ function context(extra = {}) {
   });
   for (const name of ["normKey", "MODE_DEFAULT", "SEASON_DEFAULT", "REACT_EMOJIS", "REACT_COOLDOWN_MS",
     "REFERRAL_JOIN_COIN", "REFERRAL_INVITE_COIN", "MAIL_MAX", "MAIL_COIN_MAX", "PLAYER_COLUMN_KEYS",
-    "GUILD_MAX_MEMBERS", "GUILD_CREATE_COIN", "SEA_TITLE",
+    "GUILD_MAX_MEMBERS", "GUILD_CREATE_COIN", "SEA_TITLE", "RENAME_PRICE",
+    "CHAT_MAX_LEN", "CHAT_COOLDOWN_MS", "CHAT_WINDOW_MS", "CHAT_WINDOW_MAX",
+    "GLOBAL_CHAT_HISTORY", "GLOBAL_CHAT_MAX",
     "ATTENDANCE_REWARD", "SHOP_POTION_PRICE", "SHOP_SHIELD_PRICE",
     "DAILY_MISSIONS", "WEEKLY_MISSIONS", "MONTHLY_MISSIONS",
     "SHOP_TITLES", "SHOP_MULTIPLIER_PRICES", "missionCurrent", "ADMIN_EMAILS", "AI_PLAYER_ID"]) {
@@ -102,7 +117,7 @@ function context(extra = {}) {
     "recordMatchHistory", "finishGame", "migrateJsonPlayersToPg",
     "getPlayerBySocket", "getPlayerByIndex", "getAlivePlayers", "findNextAlivePlayer",
     "stopTurnTimer", "startTurnTimer", "removePlayer",
-    "bumpMission", "bumpDaily", "playWord", "runAI", "startNewGame",
+    "bumpMission", "bumpDaily", "playWord", "runAI",
     "pushRatingHistory", "applyWelcomeReward",
     "getBan", "getMute", "banGuard", "banGuardByUid", "readModEntries",
     "applyModeration", "saveModeration", "loadModeration",
@@ -121,8 +136,9 @@ function context(extra = {}) {
     "missionKeyOf", "missionListOf", "buildMissionProgress",
     "getRankingPayload", "isAdminEmail", "isAdminPd",
     "listAllPlayers", "saveSeasonStore", "closeSeason", "ensureSeasonRollover",
+    "chatFilter", "createRoomId", "createRoom",
   ]) vm.runInContext(functionSource(name), c);
-  return { c, errors, timers, emissions };
+  return { c, errors, timers, emissions, ioRooms };
 }
 
 function seed(c, nickname, extra = {}) {
@@ -159,17 +175,29 @@ test("new socket logs into existing account without resetting balances or statis
   assert.equal(errors.length, 0);
 });
 
-test("nickname switching loads target account instead of copying old account", async () => {
-  const { c } = context();
+test("first rename is free and carries the account to the new name", async () => {
+  const { c, errors } = context();
   const s = socket("connected");
-  seed(c, "old", { money: 100 });
-  seed(c, "target", { money: 500 });
+  seed(c, "old", { money: 2000000, ranked: { rating: 1900, wins: 50, losses: 10 } });
   c.registerOnline(s.id, "old");
   c.socketFirebaseUid.set(s.id, "uid-old");
   installHandler(c, "player:setName", s);
   await s.handlers.get("player:setName")({ nickname: "target" });
-  assert.equal(c.playerCache.get("target").money, 500);
-  assert.equal(c.playerCache.get("old").money, 100);
+  const hit = s.emissions.find(([event]) => event === "player:nameUpdated");
+  assert.ok(hit);
+  assert.equal(hit[1].ok, true);
+  assert.equal(hit[1].renamed, true);
+  assert.equal(hit[1].nameChanges, 1);
+  const after = c.playerCache.get("target");
+  assert.ok(after, "새 이름 행이 만들어져야 합니다");
+  assert.equal(after.money, 2000000);        /* 첫 개명은 무료 */
+  assert.equal(after.ranked.wins, 50);       /* 전적·레이팅 승계 */
+  assert.equal(after.ranked.rating, 1900);
+  assert.equal(after.firebaseUid, "uid-old"); /* 계정 연결 유지 */
+  assert.equal(after.nameChanges, 1);
+  assert.equal(c.playerCache.has("old"), false, "옛 이름 행은 제거되어야 합니다");
+  assert.equal(c.socketNicks.get(s.id), "target");
+  assert.equal(errors.length, 0);
 });
 
 test("new nickname still creates a new account", async () => {
@@ -442,16 +470,19 @@ test("full room accepts a reconnect into its existing seat", () => {  const { c 
   assert.ok(r.timer);
 });
 
-test("display name requires a verified Google session", async () => {
-  const { c } = context();
+test("guest can set a display name without a Google session", async () => {
+  const { c, errors } = context();
   const s = socket("anon");
   installHandler(c, "player:setName", s);
   await s.handlers.get("player:setName")({ nickname: "someone" });
   const hit = s.emissions.find(([event]) => event === "player:nameUpdated");
   assert.ok(hit);
-  assert.equal(hit[1].ok, false);
-  assert.equal(hit[1].needGoogleLogin, true);
-  assert.equal(c.socketNicks.has(s.id), false);
+  assert.equal(hit[1].ok, true);
+  assert.equal(hit[1].nickname, "someone");
+  assert.equal(c.socketNicks.get(s.id), "someone");
+  assert.equal(c.playerCache.get("someone").nickname, "someone");
+  assert.equal(c.playerCache.get("someone").firebaseUid, "");
+  assert.equal(errors.length, 0);
 });
 
 test("display name already linked to another Google account is rejected", async () => {
@@ -1641,4 +1672,347 @@ test("season rollover closes the previous season, pays rewards, and archives sta
   assert.equal(champAfter.season.games, 0, "시즌 기록이 초기화된다");
   assert.equal(c.playerCache.get("runner").money, 590000, "2위 보상 50만 코인 지급");
   assert.equal(c.playerCache.get("bystander").money, 90000, "미참가자에게는 보상이 없다");
+});
+
+/* =========================================================
+   배치 구현 — 이름 변경 비용 / Firebase 세션 유지 / 랭킹 게이트 /
+   채팅(스코프·필터·기간제 뮤트) / 튜토리얼 실습 / 랭킹 nameChanges
+========================================================= */
+
+test("second rename charges 1,000,000 coins and deducts the balance", async () => {
+  const { c, errors } = context();
+  assert.equal(vm.runInContext("RENAME_PRICE", c), 1000000);
+  const s = socket("renamed");
+  seed(c, "old", { money: 2000000, nameChanges: 1, ranked: { rating: 1900, wins: 50 } });
+  c.registerOnline(s.id, "old");
+  c.socketFirebaseUid.set(s.id, "uid-old");
+  installHandler(c, "player:setName", s);
+  await s.handlers.get("player:setName")({ nickname: "newname" });
+  const hit = s.emissions.find(([event]) => event === "player:nameUpdated");
+  assert.equal(hit[1].ok, true);
+  assert.equal(hit[1].renamed, true);
+  assert.equal(hit[1].nameChanges, 2);
+  const after = c.playerCache.get("newname");
+  assert.equal(after.money, 1000000, "2회차 개명은 100만 코인 차감");
+  assert.equal(after.nameChanges, 2);
+  assert.equal(after.ranked.wins, 50, "전적은 그대로 승계");
+  assert.equal(c.playerCache.has("old"), false);
+  assert.equal(errors.length, 0);
+});
+
+test("rename is rejected when the balance cannot cover the price", async () => {
+  const { c } = context();
+  const s = socket("broke");
+  seed(c, "old", { money: 500000, nameChanges: 1 });
+  c.registerOnline(s.id, "old");
+  c.socketFirebaseUid.set(s.id, "uid-old");
+  installHandler(c, "player:setName", s);
+  await s.handlers.get("player:setName")({ nickname: "richname" });
+  const hit = s.emissions.find(([event]) => event === "player:nameUpdated");
+  assert.equal(hit[1].ok, false);
+  assert.match(String(hit[1].reason || ""), /부족/);
+  assert.equal(c.playerCache.get("old").money, 500000, "차감되지 않는다");
+  assert.equal(c.playerCache.get("old").nameChanges, 1, "횟수도 오르지 않는다");
+  assert.equal(c.playerCache.has("richname"), false, "새 이름이 만들어지지 않는다");
+  assert.equal(c.socketNicks.get(s.id), "old");
+});
+
+test("firebase login keeps uid/email so a later name change works", async () => {
+  const { c, errors } = context({
+    firebaseReady: true,
+    firebaseAuth: { async verifyIdToken() { return { uid: "uid-fb-1", email: "user@example.com", name: "U" }; } },
+  });
+  const s = socket("fresh-login");
+  installHandler(c, "player:firebaseAuth", s);
+  await s.handlers.get("player:firebaseAuth")({ idToken: "a.b.c" });
+  const auth = s.emissions.find(([event]) => event === "player:firebaseAuthResult");
+  assert.ok(auth);
+  assert.equal(auth[1].ok, true);
+  assert.equal(auth[1].needNickname, true);
+  /* 핵심 회귀: needNickname 경로에서도 UID/이메일은 세션에 남아 있어야 한다 */
+  assert.equal(c.socketFirebaseUid.get(s.id), "uid-fb-1");
+  assert.equal(c.socketFirebaseEmail.get(s.id), "user@example.com");
+  /* 이어서 이름을 정하면 세션 UID로 계정이 연결된다 */
+  installHandler(c, "player:setName", s);
+  await s.handlers.get("player:setName")({ nickname: "freshuser" });
+  const upd = s.emissions.find(([event]) => event === "player:nameUpdated");
+  assert.equal(upd[1].ok, true);
+  assert.equal(c.playerCache.get("freshuser").firebaseUid, "uid-fb-1");
+  assert.equal(c.socketNicks.get(s.id), "freshuser");
+  assert.equal(errors.length, 0);
+});
+
+test("firebase logout clears the gated login session", async () => {
+  const { c } = context();
+  const s = socket("logout");
+  c.socketFirebaseUid.set(s.id, "uid-1");
+  c.socketFirebaseEmail.set(s.id, "a@b.c");
+  c.adminAuthed.set(s.id, { role: "super", email: "a@b.c" });
+  installHandler(c, "player:firebaseLogout", s);
+  await s.handlers.get("player:firebaseLogout")();
+  assert.equal(c.socketFirebaseUid.has(s.id), false);
+  assert.equal(c.socketFirebaseEmail.has(s.id), false);
+  assert.equal(c.adminAuthed.has(s.id), false);
+  const hit = s.emissions.find(([event]) => event === "player:firebaseAuthResult");
+  assert.ok(hit);
+  assert.equal(hit[1].ok, false);
+  assert.equal(hit[1].loggedOut, true);
+});
+
+test("ranked queue/rematch/invite require a Google session", async () => {
+  const { c, emissions } = context();
+  const s = socket("guest-ranked");
+  c.registerOnline(s.id, "게스트랭커");
+  installHandler(c, "ranked:queue", s);
+  await s.handlers.get("ranked:queue")();
+  installHandler(c, "ranked:rematch", s);
+  await s.handlers.get("ranked:rematch")();
+  installHandler(c, "ranked:invite", s);
+  await s.handlers.get("ranked:invite")({ nickname: "상대" });
+  installHandler(c, "ranked:inviteAccept", s);
+  await s.handlers.get("ranked:inviteAccept")();
+  const expected = [["ranked:queueStatus"], ["ranked:rematchStatus"], ["ranked:inviteSent"], ["ranked:inviteStatus"]];
+  for (const [evt] of expected) {
+    const hit = s.emissions.find(([event]) => event === evt);
+    assert.ok(hit, `${evt} 응답이 있어야 합니다`);
+    assert.equal(hit[1].ok, false);
+    assert.match(String(hit[1].reason || ""), /로그인/);
+  }
+  assert.equal(emissions.length, 0, "게스트는 매칭·초대 동작이 일어나지 않는다");
+});
+
+test("chat send/history/report require a Google session", async () => {
+  const { c, emissions } = context();
+  const s = socket("guest-chat");
+  c.registerOnline(s.id, "게스트");
+  installHandler(c, "chat:send", s);
+  await s.handlers.get("chat:send")({ text: "안녕" });
+  installHandler(c, "chat:history", s);
+  await s.handlers.get("chat:history")();
+  installHandler(c, "chat:report", s);
+  await s.handlers.get("chat:report")({ nickname: "나쁜이", text: "spam" });
+  const sendErr = s.emissions.find(([event]) => event === "chat:error");
+  assert.ok(sendErr);
+  assert.match(String(sendErr[1].reason || ""), /로그인/);
+  assert.equal(s.emissions.some(([event]) => event === "chat:history"), false, "이력도 내주지 않는다");
+  const rep = s.emissions.find(([event]) => event === "chat:reportResult");
+  assert.ok(rep);
+  assert.equal(rep[1].ok, false);
+  assert.match(String(rep[1].reason || ""), /로그인/);
+  assert.equal(emissions.length, 0, "어디에도 브로드캐스트되지 않는다");
+});
+
+test("chat goes global without a room, stays inside a multiplayer room, global again in an AI room", async () => {
+  const { c, emissions, ioRooms } = context();
+  const s = socket("chatter");
+  c.registerOnline(s.id, "말쟁이");
+  c.socketFirebaseUid.set(s.id, "uid-chat");
+  installHandler(c, "chat:send", s);
+  const reset = () => { s.data.chatLastAt = 0; s.data.chatWin = []; };
+
+  /* 방 없음 → 전체 채팅 */
+  await s.handlers.get("chat:send")({ text: "대기실입니다" });
+  let hit = emissions.find(([event]) => event === "chat:message");
+  assert.ok(hit);
+  assert.equal(hit[1].scope, "global");
+  assert.equal(hit[1].from, "말쟁이");
+  const history = vm.runInContext("GLOBAL_CHAT_HISTORY", c);
+  assert.equal(history.length, 1, "전체 이력에 쌓인다");
+
+  /* 온라인 방 → 방 단위 브로드캐스트 */
+  const room = { id: "CR1", mode: "online", players: [{ socketId: s.id, nickname: "말쟁이", playerIndex: 0, isBot: false }] };
+  c.getPlayerRoom = () => room;
+  reset();
+  await s.handlers.get("chat:send")({ text: "방 안입니다" });
+  const roomHit = ioRooms.find((r) => r.room === "CR1");
+  assert.ok(roomHit, "io.to(방ID)로 방에만 전파되어야 합니다");
+  assert.equal(roomHit.args[0], "chat:message");
+  assert.equal(roomHit.args[1].scope, "room");
+  assert.equal(vm.runInContext("GLOBAL_CHAT_HISTORY", c).length, 1, "방 메시지는 전체 이력에 쌓이지 않는다");
+
+  /* AI(싱글·실습) 방 → 전체 채팅 */
+  c.getPlayerRoom = () => ({ id: "AI1", mode: "ai", players: [{ socketId: s.id, nickname: "말쟁이", playerIndex: 0, isBot: false }] });
+  reset();
+  await s.handlers.get("chat:send")({ text: "AI 게임 중" });
+  const global2 = vm.runInContext("GLOBAL_CHAT_HISTORY", c);
+  assert.equal(global2.length, 2, "AI 방 메시지는 전체 이력으로");
+  const last = emissions.filter(([event]) => event === "chat:message").at(-1);
+  assert.equal(last[1].scope, "global");
+});
+
+test("chat filter allows ordinary words including 시발점 and caps length at 100", () => {
+  const { c } = context();
+  const chatFilter = vm.runInContext("chatFilter", c);
+  assert.equal(chatFilter("시발점").ok, true, "비속어 필터는 제거되었다");
+  assert.equal(chatFilter("바보바보").ok, true);
+  assert.equal(chatFilter("ㅋ".repeat(101)).ok, false, "100자 제한은 유지된다");
+  assert.equal(chatFilter("").ok, false, "빈 내용은 거부된다");
+});
+
+test("chat history returns the recent global backlog after login", async () => {
+  const { c } = context();
+  const s = socket("reader");
+  c.socketFirebaseUid.set(s.id, "uid-r");
+  vm.runInContext(`GLOBAL_CHAT_HISTORY.push({ from: "a", text: "첫 메시지", scope: "global", id: "1" })`, c);
+  installHandler(c, "chat:history", s);
+  await s.handlers.get("chat:history")();
+  const hit = s.emissions.find(([event]) => event === "chat:history");
+  assert.ok(hit);
+  assert.equal(hit[1].ok, true);
+  assert.equal(hit[1].messages.length, 1);
+  assert.equal(hit[1].messages[0].text, "첫 메시지");
+});
+
+test("chat rate limit keeps only the first message inside the window", async () => {
+  const { c, emissions } = context();
+  const s = socket("speedy");
+  c.registerOnline(s.id, "빨리막");
+  c.socketFirebaseUid.set(s.id, "uid-s");
+  installHandler(c, "chat:send", s);
+  await s.handlers.get("chat:send")({ text: "하나" });
+  await s.handlers.get("chat:send")({ text: "둘" });
+  assert.equal(emissions.filter(([event]) => event === "chat:message").length, 1);
+  const err = s.emissions.find(([event]) => event === "chat:error");
+  assert.ok(err);
+  assert.match(String(err[1].reason || ""), /천천히/);
+});
+
+test("mute blocks chat until its expiry; an expired mute passes again", async () => {
+  const { c, emissions } = context();
+  const s = socket("muted");
+  c.registerOnline(s.id, "조용이");
+  c.socketFirebaseUid.set(s.id, "uid-m");
+  const normKey = vm.runInContext("normKey", c);
+  c.mutedMap.set(normKey("조용이"), { nick: "조용이", by: "admin", at: new Date().toISOString(), reason: "도배", uid: "", until: null });
+  installHandler(c, "chat:send", s);
+  await s.handlers.get("chat:send")({ text: "안녕" });
+  assert.equal(emissions.filter(([event]) => event === "chat:message").length, 0);
+  const blocked = s.emissions.find(([event]) => event === "chat:error");
+  assert.ok(blocked);
+  assert.match(String(blocked[1].reason || ""), /차단/);
+  assert.match(String(blocked[1].reason || ""), /도배/);
+
+  /* 만료 시각이 지난 뮤트는 자동으로 무시된다 */
+  c.mutedMap.set(normKey("조용이"), { nick: "조용이", by: "admin", at: new Date().toISOString(), reason: "도배", uid: "", until: new Date(Date.now() - 1000).toISOString() });
+  s.data.chatLastAt = 0;
+  s.data.chatWin = [];
+  await s.handlers.get("chat:send")({ text: "다시" });
+  assert.equal(emissions.filter(([event]) => event === "chat:message").length, 1, "만료 후에는 발화 가능");
+});
+
+test("mute by account uid follows the player after a rename", async () => {
+  const { c, emissions } = context();
+  const s = socket("uidmuted");
+  c.registerOnline(s.id, "새이름");
+  c.socketFirebaseUid.set(s.id, "uid-x");
+  const normKey = vm.runInContext("normKey", c);
+  c.mutedMap.set(normKey("옛이름"), { nick: "옛이름", by: "admin", at: new Date().toISOString(), reason: "욕설", uid: "uid-x", until: null });
+  installHandler(c, "chat:send", s);
+  await s.handlers.get("chat:send")({ text: "안녕" });
+  assert.equal(emissions.filter(([event]) => event === "chat:message").length, 0, "개명해도 UID 기준 뮤트는 우회되지 않는다");
+  const blocked = s.emissions.find(([event]) => event === "chat:error");
+  assert.ok(blocked);
+  assert.match(String(blocked[1].reason || ""), /차단/);
+});
+
+test("moderation entries: timed mutes expire, bans stay permanent, expired mutes hide from the list", () => {
+  const { c } = context();
+  const normKey = vm.runInContext("normKey", c);
+  const timed = c.addModeration("muted", "temp", { by: "admin", reason: "spam", days: 1 });
+  assert.equal(timed.ok, true);
+  const days = (Date.parse(timed.entry.until) - Date.now()) / 86400000;
+  assert.ok(days > 0.99 && days <= 1, `1일 후 만료되어야 합니다 (${days})`);
+  const permanent = c.addModeration("muted", "forever", { by: "admin", reason: "심각" });
+  assert.equal(permanent.entry.until, null, "기간 없으면 영구");
+  const banned = c.addModeration("banned", "badguy", { by: "admin", reason: "사기", days: 7 });
+  assert.equal(banned.entry.until, null, "계정정지(밴)는 기간과 무관하게 영구");
+  /* 만료된 뮤트는 목록·판정 모두에서 제외된다 */
+  c.mutedMap.set(normKey("지난놈"), { nick: "지난놈", by: "admin", at: new Date().toISOString(), reason: "", uid: "", until: new Date(Date.now() - 1000).toISOString() });
+  const list = c.listModeration();
+  const mutedNicks = list.muted.map((e) => e.nick);
+  assert.ok(mutedNicks.includes("temp"));
+  assert.ok(mutedNicks.includes("forever"));
+  assert.ok(!mutedNicks.includes("지난놈"), "만료 뮤트는 숨김");
+  assert.equal(list.banned.length, 1);
+  assert.equal(c.getMute("지난놈"), null);
+  assert.ok(c.getMute("forever"));
+});
+
+test("admin mute applies a day span message; bans are always permanent", async () => {
+  const { c, errors } = context();
+  const messages = [];
+  c.emitModeration = (m) => messages.push(m);   /* 핸들러의 닫힌 스코프 함수 대체 */
+  vm.runInContext(constFnSource("moderationAction"), c);
+  const s = socket("adm");
+  installHandler(c, "admin:mute", s);
+  await s.handlers.get("admin:mute")({ nickname: "loudmouth", reason: "도배", days: 3 });
+  const key = vm.runInContext("normKey", c);
+  const entry = c.mutedMap.get(key("loudmouth"));
+  assert.ok(entry, "뮤트 항목이 등록된다");
+  const span = (Date.parse(entry.until) - Date.now()) / 86400000;
+  assert.ok(span > 2.99 && span <= 3, `3일 후 만료 (${span})`);
+  assert.match(String(messages[0] || ""), /3일간/);
+  assert.match(String(messages[0] || ""), /음소거/);
+
+  /* 기간 미지정 → 영구 */
+  await s.handlers.get("admin:mute")({ nickname: "quiet", reason: "악성" });
+  assert.equal(c.mutedMap.get(key("quiet")).until, null);
+
+  /* 밴은 days를 줘도 영구 */
+  installHandler(c, "admin:ban", s);
+  await s.handlers.get("admin:ban")({ nickname: "badguy", reason: "사기", days: 7 });
+  assert.equal(c.bannedMap.get(key("badguy")).until, null);
+  assert.match(String(messages.at(-1) || ""), /차단/);
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("practice AI rooms carry the flag and record no statistics", async () => {
+  const { c, errors } = context();
+  const s = socket("tut");
+  installHandler(c, "room:create", s);
+  /* ① 실습 방 생성 → practice 플래그 */
+  await s.handlers.get("room:create")({ nickname: "연습생", mode: "ai", difficulty: "easy", practice: true });
+  const created = s.emissions.find(([event]) => event === "room:created");
+  assert.ok(created);
+  assert.equal(created[1].state.practice, true, "공개 상태에 practice가 보여야 합니다");
+  const practiceRoom = c.ROOMS.get(created[1].roomId);
+  assert.equal(practiceRoom.practice, true);
+  assert.equal(practiceRoom.difficulty, "easy");
+  /* ② 일반 싱글은 practice 없음 */
+  await s.handlers.get("room:create")({ nickname: "연습생", mode: "ai" });
+  const second = s.emissions.filter(([event]) => event === "room:created")[1];
+  assert.ok(second);
+  assert.equal(second[1].state.practice, false);
+  assert.equal(c.ROOMS.get(second[1].roomId).practice, false);
+  assert.equal(errors.length, 0);
+
+  /* ③ 실습 게임 종료 → 전적·돈·최근경기 아무것도 기록하지 않는다 */
+  const p = seed(c, "연습생2", { recentGames: [] });
+  const r = room(c, 2);
+  r.mode = "ai";
+  r.practice = true;
+  Object.assign(r.players[0], { nickname: "연습생2" });
+  Object.assign(r.players[1], { isBot: true, nickname: "AI" });
+  c.registerOnline("s0", "연습생2");
+  await c.finishGame(r, 0, 1);
+  const after = c.playerCache.get("연습생2");
+  assert.equal(after.single.wins, p.single.wins, "승수 미기록");
+  assert.equal(after.money, p.money, "보상 없음");
+  assert.equal(after.recentGames.length, 0, "최근경기 미기록");
+  assert.equal(errors.length, 0);
+});
+
+test("ranking payload carries nameChanges for rename pricing", async () => {
+  const { c } = context();
+  const s = socket("ranked-nick");
+  seed(c, "renamedtwice", { nameChanges: 2 });
+  c.registerOnline(s.id, "renamedtwice");
+  const payload = await c.getRankingPayload(s.id);
+  assert.equal(payload.nickname, "renamedtwice");
+  assert.equal(payload.nameChanges, 2);
+  const fresh = seed(c, "newbie");
+  fresh.nameChanges = 0;
+  c.playerCache.set("newbie", fresh);
+  const p2 = await c.getRankingPayload("newbie");
+  assert.equal(p2.nameChanges, 0);
 });
