@@ -1501,12 +1501,13 @@ button:disabled {
 }
 
 /* =========================================================
-   친구 패널 (머니바 in-flow — 드롭다운)
+   친구 패널 (오른쪽 위 고정)
 ========================================================= */
 .friends-wrap {
-  position: relative;
+  position: fixed;
+  top: 12px;
+  right: 16px;
   z-index: 90;
-  margin-left: auto;
 }
 
 .friends-btn {
@@ -1573,7 +1574,7 @@ button:disabled {
 
 .friends-panel {
   position: absolute;
-  top: calc(100% + 8px);
+  top: 46px;
   right: 0;
   width: 264px;
   background: var(--card);
@@ -1702,10 +1703,12 @@ button:disabled {
 }
 
 /* =========================================================
-   계정 패널 (머니바 in-flow — 드롭다운)
+   계정 패널 (왼쪽 위 고정)
 ========================================================= */
 .account-wrap {
-  position: relative;
+  position: fixed;
+  top: 12px;
+  left: 12px;
   z-index: 90;
 }
 
@@ -1719,10 +1722,10 @@ button:disabled {
 
 .account-panel {
   position: absolute;
-  top: calc(100% + 8px);
+  top: 46px;
   left: 0;
   width: 280px;
-  max-height: calc(100vh - 200px);
+  max-height: calc(100vh - 58px);
   overflow-y: auto;
   background: var(--card);
   border: 1px solid var(--border);
@@ -2213,13 +2216,12 @@ button:active:not(:disabled) {
    신규 UI 스타일 — 랭크 매칭 / 상점 / 돈 / AI 승률
 --------------------------------------------------------- */
 
-/* 돈 바 (상단) — 닉네임 칩·계정·친구를 in-flow로 담는다 */
+/* 돈 바 (상단) */
 .money-bar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
-  position: relative;
   padding: 6px 10px;
   margin: 6px 0 10px;
   background: linear-gradient(135deg, #1e293b, #334155);
@@ -2229,9 +2231,6 @@ button:active:not(:disabled) {
   font-weight: 600;
   box-shadow: var(--shadow-sm);
 }
-/* 계정/친구 패널은 머니바 오른쪽에 드롭다운으로 붙는다 */
-.money-bar .title-chip { margin-left: auto; }
-.money-bar .friends-wrap { margin-left: 0; }
 .money-chip {
   color: #fbbf24;
 }
