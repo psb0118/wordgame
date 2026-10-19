@@ -4941,13 +4941,10 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("채팅 오류:", err); }
   });
 
-  /* 전체 채팅 이력 — 패널을 열 때 최근 대화를 돌려준다 (서버 메모리 유지) */
+  /* 전체 채팅 이력 — 패널을 열 때 최근 대화를 돌려준다 (서버 메모리 유지).
+     읽기는 로그인 없이도 허용한다(보이는 채팅), 쓰기·신고만 Google 로그인 게이트 */
   socket.on("chat:history", () => {
     try {
-      if (!socketFirebaseUid.get(socket.id)) {
-        socket.emit("chat:error", { reason: "채팅은 Google 로그인 후 이용할 수 있습니다." });
-        return;
-      }
       socket.emit("chat:history", { ok: true, messages: GLOBAL_CHAT_HISTORY.slice(-30) });
     } catch (err) { console.error("채팅 이력 오류:", err); }
   });

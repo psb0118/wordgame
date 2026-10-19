@@ -24,6 +24,7 @@ let myNickname = localStorage.getItem("kkNickname") || "";
 let friends = [];
 let friendRequests = [];
 let friendsPanelOpen = false;
+let accountPanelOpen = false;
 let pendingInvite = null;
 /* 끊긴 온라인/랭크 게임 재접속(30초 유예)용 — 마지막으로 있던 방 */
 let lastRoomId = sessionStorage.getItem("kkLastRoom") || null;
@@ -937,11 +938,18 @@ function initSocket() {
   socket.on("player:unmuted", () => showMessage("채팅 차단이 해제되었습니다.", "success"));
 
   /* -- 실시간 채팅 -------------------------------------- */
-  socket.on("chat:message", (data) => appendChatLine(data));
+  socket.on("chat:message", (data) => {
+    if (data && data.scope === "global") {
+      globalChatCache.push(data);
+      if (globalChatCache.length > 30) globalChatCache.shift();
+    }
+    appendChatLine(data);
+  });
   socket.on("chat:history", (data) => {
     if (!data || !data.ok) return;
+    globalChatCache = (Array.isArray(data.messages) ? data.messages : []).slice(-30);
     clearChat();
-    (data.messages || []).forEach(m => appendChatLine(m, { silent: true }));
+    globalChatCache.forEach(m => appendChatLine(m, { silent: true }));
     const list = $("#chatList");
     if (list) list.scrollTop = list.scrollHeight;
   });
@@ -1077,7 +1085,8 @@ function initSocket() {
     roomId = data.roomId;
     playerIndex = data.playerIndex;
     spectating = false;
-    clearChat();
+    /* 방(온라인/랭크)에 들어가면 방 채팅으로, AI 방이면 전체 채팅 유지 */
+    if (data.state && data.state.mode !== "ai") clearChat();
     gameSessionId++;
     gameState = data.state;
     setPracticeBar(!!(data.state && data.state.practice));
@@ -1183,7 +1192,7 @@ function initSocket() {
     gameState = null;
     setPracticeBar(false);
     updateChatScopeLabel();
-    clearChat();
+    restoreGlobalChat(); /* 방을 나가면 전체 채팅으로 — 캐시+이력 복원 */
     showMessage("방을 나갔습니다.", "info");
     hideRoomInfo();
     resetOnlineBoard();
@@ -2748,11 +2757,27 @@ function updateChatScopeLabel() {
   if (btn) btn.title = chatScopeNow() === "room" ? "방 채팅 열기" : "전체 채팅 열기";
 }
 
-/* 채팅은 로그인한 유저만 쓸 수 있다 — 게스트에게는 위젯 자체를 숨긴다 */
+/* 채팅은 누구나 볼 수 있다 — 쓰기·신고만 로그인(서버가 게이트).
+   전체 채팅은 클라이언트 캐시를 유지해 방 이동·새로고침에도 목록이 사라지지 않는다. */
+let globalChatCache = [];
+
 function updateChatVisibility() {
   const wrap = $("#chatWrap");
-  if (wrap) wrap.classList.toggle("hidden", !isLoggedIn());
+  /* 계정 패널이 열려 있으면 채팅을 숨겨 가림을 피한다 */
+  if (wrap) wrap.classList.toggle("hidden", accountPanelOpen);
   updateChatScopeLabel();
+  const inp = $("#chatInput");
+  if (inp) {
+    inp.disabled = !isLoggedIn();
+    inp.placeholder = isLoggedIn() ? "메시지 입력" : "Google 로그인 후 채팅할 수 있어요";
+  }
+}
+
+/* 전체 스코프로 돌아올 때 — 캐시에서 목록을 되살리고 서버 이력도 다시 받는다 */
+function restoreGlobalChat() {
+  clearChat();
+  globalChatCache.forEach(m => appendChatLine(m, { silent: true }));
+  if (socket && socketConnected) socket.emit("chat:history");
 }
 
 /* 튜토리얼 실습 배너 — 실습 게임이 진행 중임을 알린다 */
@@ -3247,6 +3272,8 @@ function openAccountPanel(force) {
   if (!panel) return;
   const open = typeof force === "boolean" ? force : panel.classList.contains("hidden");
   panel.classList.toggle("hidden", !open);
+  accountPanelOpen = open;
+  updateChatVisibility(); /* 계정 패널이 채팅을 가리지 않도록 채팅을 숨겼다/되살린다 */
   if (open) {
     renderAccountInfo(myNickname);
     if (socket && socketConnected) { socket.emit("referral:status"); socket.emit("mail:list"); socket.emit("guild:info"); }

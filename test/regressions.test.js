@@ -1798,7 +1798,7 @@ test("ranked queue/rematch/invite require a Google session", async () => {
   assert.equal(emissions.length, 0, "게스트는 매칭·초대 동작이 일어나지 않는다");
 });
 
-test("chat send/history/report require a Google session", async () => {
+test("chat send/report require a Google session; history is readable by anyone", async () => {
   const { c, emissions } = context();
   const s = socket("guest-chat");
   c.registerOnline(s.id, "게스트");
@@ -1811,12 +1811,14 @@ test("chat send/history/report require a Google session", async () => {
   const sendErr = s.emissions.find(([event]) => event === "chat:error");
   assert.ok(sendErr);
   assert.match(String(sendErr[1].reason || ""), /로그인/);
-  assert.equal(s.emissions.some(([event]) => event === "chat:history"), false, "이력도 내주지 않는다");
+  const hist = s.emissions.find(([event]) => event === "chat:history");
+  assert.ok(hist, "이력은 로그인 없이도 받는다(보이는 채팅)");
+  assert.equal(hist[1].ok, true);
   const rep = s.emissions.find(([event]) => event === "chat:reportResult");
   assert.ok(rep);
   assert.equal(rep[1].ok, false);
   assert.match(String(rep[1].reason || ""), /로그인/);
-  assert.equal(emissions.length, 0, "어디에도 브로드캐스트되지 않는다");
+  assert.equal(emissions.some(([event]) => event === "chat:message"), false, "어디에도 브로드캐스트되지 않는다");
 });
 
 test("chat goes global without a room, stays inside a multiplayer room, global again in an AI room", async () => {
