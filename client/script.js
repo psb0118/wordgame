@@ -3615,13 +3615,11 @@ function initSideRanking() {
     $("#sideRank").classList.add("closed");
     $("#sideRank").style.display = "";
     $("#sideRankOpen").classList.remove("hidden");
-    try { localStorage.setItem("kkSideRankClosed", "1"); } catch (e) { /* 무시 */ }
   };
   const openRanking = () => {
     $("#sideRank").classList.remove("closed");
     $("#sideRank").style.display = "flex";
     $("#sideRankOpen").classList.add("hidden");
-    try { localStorage.setItem("kkSideRankClosed", "0"); } catch (e) { /* 무시 */ }
     loadSideRanking(sideRankMode, true);
   };
   $all(".side-rank-tabs button").forEach(btn => {
@@ -3630,11 +3628,7 @@ function initSideRanking() {
   $("#sideRankClose")?.addEventListener("click", closeRanking);
   $("#sideRankOpen")?.addEventListener("click", openRanking);
   $("#sideRankRefresh")?.addEventListener("click", () => loadSideRanking(sideRankMode));
-  let closedInit = false;
-  try { closedInit = localStorage.getItem("kkSideRankClosed") === "1"; } catch (e) { closedInit = false; }
-  if (closedInit || window.innerWidth < 1080) {
-    closeRanking();
-  }
+  closeRanking(); /* 로드 시 항상 닫힘 — 마지막 상태 복원 안 함 */
   loadSideRanking("ranked");
   setInterval(() => { if (!$("#sideRank").classList.contains("closed")) loadSideRanking(sideRankMode, true); }, 180000);
 }

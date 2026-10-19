@@ -2231,6 +2231,7 @@ button:active:not(:disabled) {
   font-weight: 600;
   box-shadow: var(--shadow-sm);
 }
+.money-bar.hidden { display: none; }
 .money-chip {
   color: #fbbf24;
 }
@@ -2936,6 +2937,7 @@ html.dark .practice-bar button { background: #b45309; }
   align-items: center;
   justify-content: center;
 }
+.chat-unread.hidden { display: none; }
 
 .chat-panel {
   position: absolute;
@@ -2952,6 +2954,7 @@ html.dark .practice-bar button { background: #b45309; }
   flex-direction: column;
   gap: 8px;
 }
+.chat-panel.hidden { display: none; }
 
 .chat-head {
   display: flex;
