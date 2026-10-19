@@ -2426,7 +2426,6 @@ function renderMoneyBar() {
 
 function renderAccountScoresStatic() {
   setText(["#accMoney"], moneyBalance.toLocaleString());
-  setText(["#accTitle"], currentTitle || "없음");
 }
 
 /* 랭크 대기실 연승 칩 — 현재/최대 연승 표시 */
