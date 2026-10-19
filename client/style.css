@@ -2243,15 +2243,6 @@ button:active:not(:disabled) {
   color: #fef3c7;
   font-size: 0.78rem;
 }
-.title-chip {
-  margin-left: auto;
-  background: rgba(139,92,246,0.15);
-  border: 1px solid rgba(139,92,246,0.25);
-  border-radius: 8px;
-  padding: 2px 7px;
-  color: #c4b5fd;
-  font-size: 0.78rem;
-}
 /* 소리/진동 토글 */
 .sound-chip {
   margin-left: 6px;
@@ -2268,7 +2259,7 @@ button:active:not(:disabled) {
 
 /* 일일 미션 미니 칩 (머니바) */
 .mission-mini {
-  margin-left: 6px;
+  margin-left: auto;
   background: rgba(16, 185, 129, 0.15);
   border: 1px solid rgba(16, 185, 129, 0.35);
   border-radius: 8px;
@@ -2789,16 +2780,6 @@ button:active:not(:disabled) {
 }
 .player-item .player-title {
   margin-right: 2px;
-}
-
-/* 칭호 획득/변경 팝 */
-.title-chip.fx-title-pop {
-  animation: titlePop 0.9s ease;
-}
-@keyframes titlePop {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
-  40% { transform: scale(1.25); box-shadow: 0 0 16px 4px rgba(251, 191, 36, 0.6); }
-  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
 }
 
 /* 계정 패널 — 안내 문구 */
@@ -3487,15 +3468,6 @@ h1 {
   box-shadow: 0 6px 16px -6px rgba(16, 185, 129, 0.7);
 }
 
-.title-chip {
-  background: linear-gradient(135deg, #818cf8, #a855f7);
-  color: #fff;
-  border-radius: 999px;
-  padding: 6px 12px;
-  font-weight: 800;
-  box-shadow: 0 6px 16px -6px rgba(168, 85, 247, 0.7);
-}
-
 /* --- 버튼: 그라데이션 + 호버 리프트 + 포커스 링 --- */
 button {
   white-space: nowrap;
@@ -3774,14 +3746,6 @@ input:focus {
 .side-rank:not(.closed) {
   animation: fade-in-up 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
-
-@keyframes fx-title-pop-enhanced {
-  0% { transform: scale(0.7); opacity: 0; }
-  60% { transform: scale(1.15); opacity: 1; }
-  100% { transform: scale(1); }
-}
-
-.fx-title-pop { animation: fx-title-pop-enhanced 0.6s ease; }
 
 /* =========================================================
    다크 모드 — :root 변수만 갈아끼워 350+ var() 사용처에 반영
@@ -4228,6 +4192,12 @@ html.dark .acc-rename-info {
 }
 
 .chart-leg b { color: var(--text); }
+
+.chart-hint {
+  font-size: 0.74rem;
+  color: var(--text-faint);
+  margin-bottom: 6px;
+}
 
 .chart-range { margin-left: auto; color: var(--text-faint); font-size: 0.74rem; }
 

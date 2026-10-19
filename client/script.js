@@ -785,8 +785,6 @@ function initSocket() {
       if (typeof data.currentTitle === "string" && data.currentTitle !== currentTitle) {
         currentTitle = data.currentTitle;
         renderMoneyBar();
-        const chip = $("#titleChip");
-        if (chip) applyFx(chip, "fx-title-pop", 900);
       }
       if (typeof data.ratingBoostGames === "number") ratingBoostGames = data.ratingBoostGames;
       if (typeof data.moneyMultiplier === "number") moneyMultiplier = data.moneyMultiplier;
@@ -2424,11 +2422,6 @@ function renderMoneyBar() {
     boostChip.classList.toggle("hidden", ratingBoostGames <= 0);
     setText(["#boostCount"], ratingBoostGames);
   }
-  const titleChip = $("#titleChip");
-  if (titleChip) {
-    if (currentTitle) { titleChip.textContent = currentTitle; titleChip.classList.remove("hidden"); }
-    else titleChip.classList.add("hidden");
-  }
 }
 
 function renderAccountScoresStatic() {
@@ -3769,7 +3762,8 @@ async function showWordDefinition(word) {
 }
 
 /* ---------------------------------------------------------
-   레이팅 추이 그래프 (아이템 탭, 최근 30일·점당 1일)
+   레이팅 변동 그래프 (아이템 탭, 최근 30일·점당 1일)
+   표시하는 값은 오직 랭크 게임 레이팅(r)뿐 — 멀티 레이팅은 제외
 --------------------------------------------------------- */
 function renderRatingChart() {
   const box = $("#ratingChartBox");
@@ -3777,36 +3771,29 @@ function renderRatingChart() {
   const hist = (shopInfo && Array.isArray(shopInfo.ratingHistory)) ? shopInfo.ratingHistory : [];
   const pts = hist.slice(-30);
   if (pts.length < 2) {
-    box.innerHTML = `<div class="items-empty">아직 데이터가 부족합니다.<br>랭크/온라인 게임을 한 판 더 플레이하면 추이가 기록됩니다.</div>`;
+    box.innerHTML = `<div class="items-empty">아직 그래프가 없어요.<br>랭크 게임을 2판 이상 하면 레이팅이 어떻게 변했는지 보여 줍니다.</div>`;
     return;
   }
   const W = 320, H = 130, PADX = 8, PADY = 14;
-  const series = [
-    { key: "r", color: "#818cf8", label: "랭크", width: 2.5 },
-    { key: "m", color: "#c084fc", label: "멀티", width: 1.5 }
-  ];
-  const all = pts.flatMap(p => [Number(p.r), Number(p.m)]).filter(Number.isFinite);
+  const all = pts.map(p => Number(p.r)).filter(Number.isFinite);
   let min = Math.min(...all), max = Math.max(...all);
   if (min === max) { min -= 10; max += 10; }
   const x = i => PADX + (i / (pts.length - 1)) * (W - PADX * 2);
   const y = v => H - PADY - ((v - min) / (max - min)) * (H - PADY * 2);
-  const paths = series.map(s => {
-    const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(Number(p[s.key]) || 0).toFixed(1)}`).join(" ");
-    const last = pts[pts.length - 1];
-    return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.width}" stroke-linejoin="round" stroke-linecap="round"/>
-      <circle cx="${x(pts.length - 1).toFixed(1)}" cy="${y(Number(last[s.key]) || 0).toFixed(1)}" r="3.5" fill="${s.color}"/>`;
-  }).join("");
-  const legend = series.map(s => `<span class="chart-leg"><i style="background:${s.color}"></i>${s.label} <b>${Number(pts[pts.length - 1][s.key]) || "-"}</b></span>`).join("");
+  const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(Number(p.r) || 0).toFixed(1)}`).join(" ");
+  const last = pts[pts.length - 1];
   const dateFirst = String(pts[0].d || "").slice(5).replace("-", "/");
-  const dateLast = String(pts[pts.length - 1].d || "").slice(5).replace("-", "/");
+  const dateLast = String(last.d || "").slice(5).replace("-", "/");
   box.innerHTML = `
-    <div class="chart-legend">${legend}<span class="chart-range">${dateFirst} ~ ${dateLast}</span></div>
-    <svg class="rating-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="레이팅 추이 그래프">
+    <div class="chart-legend"><span class="chart-leg"><i style="background:#818cf8"></i>랭크 점수 <b>${Number(last.r) || "-"}</b></span><span class="chart-range">${dateFirst} ~ ${dateLast}</span></div>
+    <div class="chart-hint">숫자가 높을수록 실력이 좋다는 뜻! 랭크 게임을 해야만 올라가요.</div>
+    <svg class="rating-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="랭크 게임 레이팅 변동 그래프">
       <line class="chart-grid" x1="${PADX}" y1="${H - PADY}" x2="${W - PADX}" y2="${H - PADY}"/>
       <line class="chart-grid" x1="${PADX}" y1="${PADY}" x2="${W - PADX}" y2="${PADY}" stroke-dasharray="3 4"/>
       <text x="${PADX + 2}" y="${PADY - 4}" class="chart-max">${Math.round(max)}</text>
       <text x="${PADX + 2}" y="${H - PADY - 4}" class="chart-min">${Math.round(min)}</text>
-      ${paths}
+      <path d="${d}" fill="none" stroke="#818cf8" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${x(pts.length - 1).toFixed(1)}" cy="${y(Number(last.r) || 0).toFixed(1)}" r="3.5" fill="#818cf8"/>
     </svg>`;
 }
 
