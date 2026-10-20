@@ -1211,9 +1211,10 @@ function initSocket() {
       if (el && nk(el.textContent) === oldKey) el.textContent = newName;
     });
 
-    /* 길드 패널이 떠 있으면 최신 구성으로 재조회 */
+    /* 길드 패널/길드 탭이 떠 있으면 최신 구성으로 재조회 */
     const accPanel = $("#accountPanel");
-    if (accPanel && !accPanel.classList.contains("hidden") && socket && socketConnected) {
+    const accOpen = accPanel && !accPanel.classList.contains("hidden");
+    if ((accOpen || currentMode === "guild") && socket && socketConnected) {
       socket.emit("guild:info");
     }
     /* 사이드 랭킹이 떠 있으면 조용히 새로고침 (표시명 반영) */
@@ -1386,7 +1387,8 @@ function initSocket() {
     if (!text) return;
     showMessage(text, "info");
     const panel = $("#accountPanel");
-    if (panel && !panel.classList.contains("hidden")) socket.emit("guild:info");
+    const accOpen = panel && !panel.classList.contains("hidden");
+    if ((accOpen || currentMode === "guild") && socket && socketConnected) socket.emit("guild:info");
   });
 
   /* -- 커스텀 사전 (단어 신청) — 상점 탭에서만 사용 ------------------------- */
@@ -3405,14 +3407,25 @@ function showGuildMsg(text, ok) {
 
 function renderGuildState(data) {
   const body = $("#guildBody");
-  if (!body) return;
+  const accGuild = $("#accGuildName");
   if (!data || data.ok === false) {
     if (data && data.reason) showGuildMsg(data.reason, false);
+    if (accGuild && (!data || !data.guild)) { accGuild.textContent = "소속된 길드가 없습니다."; accGuild.classList.add("empty"); }
     return;
   }
   if (data.message) showGuildMsg(data.message, true);
 
   const g = data.guild;
+  if (accGuild) {
+    if (g) {
+      accGuild.textContent = `🏰 ${g.name} · ${g.memberCount}/${g.maxMembers}명${g.isLeader ? " · 리더" : ""}`;
+      accGuild.classList.remove("empty");
+    } else {
+      accGuild.textContent = "소속된 길드가 없습니다.";
+      accGuild.classList.add("empty");
+    }
+  }
+  if (!body) return;
   if (!g) {
     body.innerHTML = `
       <div class="acc-referral-status">길드가 없나요? <b>생성</b>(10,000코인)하거나 이름으로 <b>가입</b>하세요. 최대 30명.</div>
@@ -4100,6 +4113,9 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("keydown", () => ensureAudio(), { once: false });
 
   /* 탭 전환 */
+  $("#guildRefresh")?.addEventListener("click", () => {
+    if (socket && socketConnected) socket.emit("guild:info");
+  });
   $all(".tabs button").forEach(btn => {
     btn.addEventListener("click", () => {
       $all(".tabs button").forEach(b => b.classList.remove("active"));
@@ -4131,12 +4147,15 @@ document.addEventListener("DOMContentLoaded", () => {
       } else if (currentMode === "items") {
         if (socket && socketConnected) socket.emit("shop:list");
         renderItems();
-      } else if (currentMode === "season") {
-        refreshSeasonBar();
-        if (socket && socketConnected) socket.emit("missions:status");
-      } else if (currentMode === "achievements") {
-        fetchAchievements();
-      }
+  } else if (currentMode === "season") {
+    refreshSeasonBar();
+    if (socket && socketConnected) socket.emit("missions:status");
+  } else if (currentMode === "achievements") {
+    fetchAchievements();
+  } else if (currentMode === "guild") {
+    if (socket && socketConnected) socket.emit("guild:info");
+  }
+
       loadSideRanking(sideRankMode, true);
     });
   });

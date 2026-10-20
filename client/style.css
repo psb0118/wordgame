@@ -46,7 +46,7 @@ body {
 }
 
 main {
-  width: min(700px, 92vw);
+  width: min(1040px, 94vw);
   padding: 24px;
 }
 
@@ -119,26 +119,71 @@ button:disabled {
   opacity: 0.5;
 }
 
-/* 탭 */
+/* 좌측 세로 내비 + 콘텐츠 그리드 */
+.app-grid {
+  display: grid;
+  grid-template-columns: 212px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+  margin-top: 10px;
+}
+
+.content-col {
+  min-width: 0;
+}
+
+/* 탭 — 세로 사이드바 */
 .tabs {
   display: flex;
-  gap: 8px;
-  margin: 10px 0;
+  flex-direction: column;
+  gap: 4px;
+  position: sticky;
+  top: 64px;
+  padding: 12px 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow-sm);
+}
+
+.nav-group-label {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  padding: 12px 8px 4px;
+}
+
+.nav-group-label:first-child {
+  padding-top: 2px;
 }
 
 .tabs button {
-  flex: 1;
-  padding: 10px;
-  background: var(--card);
+  width: 100%;
+  text-align: left;
+  padding: 11px 12px;
+  background: var(--card-soft);
   color: var(--text-dim);
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   box-shadow: none;
+  border-radius: 12px;
+  font-size: 0.92rem;
+  white-space: nowrap;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.tabs button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+  transform: translateX(2px);
 }
 
 .tabs button.active {
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   color: #fff;
   border-color: transparent;
+  box-shadow: 0 8px 18px -8px rgba(99, 102, 241, 0.7);
 }
 
 /* 패널 */
@@ -2005,6 +2050,47 @@ button:disabled {
   font-weight: 800;
   margin-bottom: 6px;
 }
+.acc-guild-current {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--accent);
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  word-break: keep-all;
+}
+.acc-guild-current.empty {
+  color: var(--text-dim);
+  font-weight: 600;
+  background: var(--card-soft);
+}
+.guild-panel-title {
+  font-size: 1.02rem;
+  font-weight: 800;
+}
+.guild-panel-sub {
+  margin-left: 8px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.guild-panel-body {
+  margin-top: 12px;
+}
+.guild-panel-body .guild-members {
+  max-height: 420px;
+}
+.guild-panel-body .guild-member {
+  font-size: 0.88rem;
+  padding: 8px 10px;
+}
+.guild-panel-body .guild-head {
+  font-size: 0.95rem;
+}
+.guild-panel-body .account-row {
+  max-width: 420px;
+}
 .guild-head {
   display: flex;
   justify-content: space-between;
@@ -3406,28 +3492,25 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 
-/* --- 탭: 세그먼트 필 스타일 + 액티브 그라데이션 --- */
+/* --- 탭: 사이드바 유리 카드 + 액티브 그라데이션 --- */
 .tabs {
-  display: flex;
-  gap: 6px;
-  padding: 6px;
   background: rgba(255, 255, 255, 0.7);
   border: 1px solid rgba(255, 255, 255, 0.8);
-  border-radius: 999px;
+  border-radius: 18px;
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(8px);
 }
 
 .tabs button {
   position: relative;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--text-dim);
   font-weight: 700;
-  font-size: 0.88rem;
-  padding: 9px 8px;
+  font-size: 0.92rem;
+  padding: 11px 12px;
   white-space: nowrap;
-  border-radius: 999px;
+  border-radius: 12px;
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -3440,8 +3523,40 @@ body {
   color: #fff;
   background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 60%, #a855f7 100%);
   box-shadow: 0 8px 20px -8px rgba(99, 102, 241, 0.7);
-  transform: translateY(-1px);
+  transform: translateX(2px);
 }
+
+/* 모바일/좁은 화면: 사이드바 → 가로 스크롤 탭 */
+@media (max-width: 860px) {
+  .app-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .tabs {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    position: static;
+    padding: 8px;
+    gap: 6px;
+  }
+  .nav-group-label {
+    display: none;
+  }
+  .tabs button {
+    width: auto;
+    flex: 0 0 auto;
+    text-align: center;
+    padding: 9px 10px;
+    font-size: 0.84rem;
+  }
+  .tabs button:hover,
+  .tabs button.active {
+    transform: none;
+  }
+}
+
 
 /* --- 헤더 타이틀: 더 강한 글로우 --- */
 h1 {
