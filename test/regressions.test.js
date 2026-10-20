@@ -64,6 +64,7 @@ function context(extra = {}) {
     structuredClone,
     console: { log() {}, warn() {}, error(...args) { errors.push(args.join(" ")); } },
     playerCache: new Map(), socketNicks: new Map(), onlineNicks: new Map(),
+    friendsMap: new Map(), friendRequests: new Map(),
     adminAuthed: new Map(), disconnectedPlayers: new Map(), REMATCHES: new Map(),
     socketFirebaseUid: new Map(), socketFirebaseEmail: new Map(),
     ROOMS: new Map(),
@@ -77,6 +78,7 @@ function context(extra = {}) {
     writeStoreFile() {}, loadStoreJSON: async () => null,
     chatHistoryPath: "chat-history.json", chatSaveTimer: null, scheduleSaveChatHistory() {},
     chatReportCounts: new Map(), saveModeration() {}, saveFriends() {}, saveGuilds() {},
+    saveAdminConfig() {},
     PUBLIC_URL: "", setInterval: (fn, ms) => ({ unref() {} }),
     fetch: () => Promise.resolve({ body: { cancel() {} } }), AbortSignal: { timeout: () => null },
     saveBugReports() {}, notifySuperAdmins() {},
@@ -2143,6 +2145,54 @@ test("renameAccountRefs migrates friend/guild keys from old to new nick", () => 
   assert.equal(c.guildCache.g1.leader, "newname");
   assert.equal(c.guildCache.g1.leaderNick, "새명");
   assert.equal(c.guildCache.g1.members[0].key, "newname");
+});
+
+test("rename migrates moderation keys, watchlist, and chat history display names", () => {
+  const { c, emissions } = context();
+  const friendsMap = new Map();
+  c.friendsMap = friendsMap;
+  c.friendRequests = new Map();
+  c.mutedMap.set("도배쟁이", { nick: "도배쟁이", by: "admin", at: "2026-01-01", reason: "도배", uid: "uid-d", until: null });
+  c.bannedMap.set("도배쟁이", { nick: "도배쟁이", by: "admin", at: "2026-01-01", reason: "욕설", uid: "uid-d", until: null });
+  c.watchNicks.push("도배쟁이", "남의이름");
+  vm.runInContext(`GLOBAL_CHAT_HISTORY.push({ from: "도배쟁이", text: "이전 메시지", scope: "global", id: "1" })`, c);
+  c.ROOMS.set("R1", { id: "R1", mode: "online", chat: [{ from: "도배쟁이", text: "방에서도", scope: "room", id: "2" }] });
+
+  c.renameAccountRefs("도배쟁이", "얌전이", "얌전이");
+
+  /* 제재 목록 — 옛 키로 남으면 개명 즉시 조회가 끊긴다 */
+  assert.ok(!c.mutedMap.has("도배쟁이"), "뮤트가 옛 키에 남지 않는다");
+  assert.ok(!c.bannedMap.has("도배쟁이"), "밴이 옛 키에 남지 않는다");
+  assert.equal(c.mutedMap.get("얌전이").nick, "얌전이", "뮤트 표시명이 갱신된다");
+  assert.equal(c.bannedMap.get("얌전이").reason, "욕설", "사유는 유지된다");
+  /* 감시 목록 */
+  assert.deepEqual([...c.watchNicks], ["얌전이", "남의이름"], "감시 대상도 개명된다");
+  /* 채팅 이력 표시명 — 전체·방 모두 */
+  const hist = vm.runInContext("GLOBAL_CHAT_HISTORY", c);
+  assert.equal(hist[0].from, "얌전이", "전체 채팅 이력 표시명이 갱신된다");
+  assert.equal(c.ROOMS.get("R1").chat[0].from, "얌전이", "방 채팅 이력 표시명이 갱신된다");
+  assert.equal(emissions.length, 0, "이 함수는 브로드캐스트하지 않는다");
+});
+
+test("rename broadcasts profile:nickChanged so other screens update immediately", async () => {
+  const { c, emissions } = context();
+  const s = socket("renamed-live");
+  seed(c, "oldname", { money: 5000000, nameChanges: 0 });
+  c.registerOnline(s.id, "oldname");
+  c.socketFirebaseUid.set(s.id, "uid-live");
+  vm.runInContext(`GLOBAL_CHAT_HISTORY.push({ from: "oldname", text: "안녕", scope: "global", id: "1" })`, c);
+  installHandler(c, "player:setName", s);
+  await s.handlers.get("player:setName")({ nickname: "newname" });
+  const upd = s.emissions.find(([event]) => event === "player:nameUpdated");
+  assert.equal(upd[1].ok, true);
+  const nickChanged = emissions.find(([event]) => event === "profile:nickChanged");
+  assert.ok(nickChanged, "개명이 전체에 브로드캐스트되어야 합니다");
+  assert.equal(nickChanged[1].old, "oldname");
+  assert.equal(nickChanged[1].new, "newname");
+  assert.equal(nickChanged[1].oldKey, "oldname");
+  /* 이력 표시명도 함께 갱신된다 */
+  const hist = vm.runInContext("GLOBAL_CHAT_HISTORY", c);
+  assert.equal(hist[0].from, "newname");
 });
 
 test("admin:chatClear wipes global history and emits chat:cleared", async () => {

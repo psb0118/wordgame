@@ -762,7 +762,9 @@ function saveFriends() {
 
 /* 개명 반영 — 친구/신청/길드에 남은 옛 계정 키를 새 키로 치환한다.
    friendsMap은 표시명이 아니라 정규화 키만 저장하므로, 키를 갱신하지 않으면
-   목록 조회 시옛 행이 사라져 친구/길드가 튕겨 나간다 */
+   목록 조회 시옛 행이 사라져 친구/길드가 튕겨 나간다.
+   제재 목록(밴/뮤트)·감시 목록·채팅 이력의 표시명도 함께 개명해
+   옛 이름이 화면/조회에 남지 않게 한다 */
 function renameAccountRefs(prevKey, newKey, newNick) {
   try {
     const from = normKey(prevKey), to = normKey(newKey);
@@ -789,6 +791,42 @@ function renameAccountRefs(prevKey, newKey, newNick) {
       if (set.has(from)) { set.delete(from); set.add(to); }
     }
     saveFriends();
+
+    /* 제재 목록 — 닉네임 키 기준 조회·표시가 새 이름으로 유지된다.
+       (키를 안 옮기면 개명 즉시 뮤트/밴 조회가 끊겨 제재가 무력화된다) */
+    let modChanged = false;
+    for (const store of [bannedMap, mutedMap]) {
+      const entry = store.get(from);
+      if (entry) {
+        store.delete(from);
+        entry.nick = String(newNick || entry.nick);
+        store.set(to, entry);
+        modChanged = true;
+      }
+    }
+    if (modChanged) saveModeration();
+
+    /* 감시 목록 — 로그인 감시 대상의 표시명을 새 이름으로 교체 */
+    let watchChanged = false;
+    watchNicks = watchNicks.map(w => {
+      if (normKey(w) === from) { watchChanged = true; return String(newNick || w); }
+      return w;
+    });
+    if (watchChanged) saveAdminConfig();
+
+    /* 채팅 이력(전체 + 각 방) — 옛 이름으로 쓴 메시지의 표시명을 새 이름으로 치환 */
+    const rewriteFrom = (list) => {
+      if (!Array.isArray(list)) return false;
+      let hit = false;
+      for (const m of list) {
+        if (m && normKey(m.from) === from) { m.from = String(newNick || m.from); hit = true; }
+      }
+      return hit;
+    };
+    let histChanged = rewriteFrom(GLOBAL_CHAT_HISTORY);
+    for (const r of ROOMS.values()) if (rewriteFrom(r.chat)) histChanged = true;
+    if (histChanged) scheduleSaveChatHistory();
+
     if (guildCache) {
       let changed = false;
       for (const g of Object.values(guildCache)) {
@@ -5528,6 +5566,11 @@ io.on("connection", (socket) => {
       registerOnline(socket.id, nickname);
       socket.emit("player:nameUpdated", { ok: true, nickname, renamed: isRename && prevOwned, nameChanges: Number(playerData.nameChanges || 0) });
       if (room) broadcastRoomState(room);
+      /* 개명을 전체에 알림 — 친구·길드·채팅 화면의 옛 이름이 즉시 새 이름으로 바뀐다.
+         (이 알림이 없으면 다른 유저 화면은 새로고침 전까지 옛 이름을 유지한다) */
+      if (isRename && prevOwned && prevKey !== claim.key) {
+        io.emit("profile:nickChanged", { old: prevNick, oldKey: prevKey, new: nickname });
+      }
 
       /* 감시 목록(로그인 알림) — 최고 관리자에게 접속 알림 */
       if (watchNicks.some(w => normKey(w) === normKey(nickname))) {

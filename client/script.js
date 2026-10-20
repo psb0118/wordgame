@@ -1186,6 +1186,41 @@ function initSocket() {
     if (data.reason) showMessage(data.reason, data.ok ? "success" : "error");
   });
 
+  /* 다른 유저의 개명 알림 — 화면에 떠 있는 옛 이름을 모두 새 이름으로 교체한다.
+     (친구 목록·채팅 목록·받은 신청·길드 패널·랭킹이 즉시 갱신된다) */
+  socket.on("profile:nickChanged", (data) => {
+    const oldName = String(data?.old || "");
+    const newName = String(data?.new || "");
+    if (!oldName || !newName || oldName === newName) return;
+    const nk = (s) => String(s || "").replace(/\s+/g, "").toLowerCase();
+    const oldKey = nk(oldName);
+
+    /* 친구/받은 신청 로컬 목록 */
+    let dirty = false;
+    for (const f of friends) if (nk(f.nickname) === oldKey) { f.nickname = newName; dirty = true; }
+    if (friendRequests.some(n => nk(n) === oldKey)) {
+      friendRequests = friendRequests.map(n => (nk(n) === oldKey ? newName : n));
+      dirty = true;
+    }
+    if (dirty) renderFriends();
+
+    /* 채팅 — 이미 화면에 그려진 줄과 캐시(전체 이력)의 옛 이름을 교체 */
+    globalChatCache.forEach(m => { if (nk(m.from) === oldKey) m.from = newName; });
+    $all(".chat-line").forEach(line => {
+      const el = line.querySelector(".chat-line-nick");
+      if (el && nk(el.textContent) === oldKey) el.textContent = newName;
+    });
+
+    /* 길드 패널이 떠 있으면 최신 구성으로 재조회 */
+    const accPanel = $("#accountPanel");
+    if (accPanel && !accPanel.classList.contains("hidden") && socket && socketConnected) {
+      socket.emit("guild:info");
+    }
+    /* 사이드 랭킹이 떠 있으면 조용히 새로고침 (표시명 반영) */
+    const rank = $("#sideRank");
+    if (rank && !rank.classList.contains("closed")) loadSideRanking(sideRankMode, true);
+  });
+
   socket.on("room:inviteSent", (data) => {
     if (!data) return;
     if (data.ok) showMessage(`'${data.nickname}' 님에게 초대를 보냈습니다.`, "success");
