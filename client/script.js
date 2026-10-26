@@ -2595,6 +2595,15 @@ function renderShop() {
 /* ---------------------------------------------------------
    칭호·아이템 패널 — 칭호 장착/해제, 물약 현황, 최근 전적
 --------------------------------------------------------- */
+function sortOwnedTitles(entries, selectedTitle) {
+  return (Array.isArray(entries) ? entries : []).filter(Boolean).slice().sort((a, b) => {
+    const aSelected = a.name === selectedTitle;
+    const bSelected = b.name === selectedTitle;
+    if (aSelected !== bSelected) return aSelected ? -1 : 1;
+    return String(a.name || "").localeCompare(String(b.name || ""), "ko");
+  });
+}
+
 function renderItems() {
   const titleEl = $("#itemsCurrentTitle");
   const listEl = $("#itemsTitleList");
@@ -2607,7 +2616,7 @@ function renderItems() {
     if (entries.length === 0) {
       listEl.innerHTML = `<div class="items-empty">보유한 칭호가 없습니다. 상점에서 구매하세요.</div>`;
     } else {
-      let html = entries.map(t => {
+      let html = sortOwnedTitles(entries, currentTitle).map(t => {
         const isCur = currentTitle === t.name;
         return `<button type="button" class="items-title-chip${isCur ? " current" : ""}" data-item-title="${escapeHtml(t.id)}">${isCur ? "장착 중 · " : ""}${escapeHtml(t.name)}</button>`;
       }).join("");
@@ -3895,7 +3904,7 @@ function showReplay(data) {
 }
 
 /* ---------------------------------------------------------
-   단어 뜻 표시 — 위키백과 요약 API(키 불필요, CORS 허용)
+   단어 뜻 표시 — 서버의 우리말샘 Open API 프록시
 --------------------------------------------------------- */
 async function showWordDefinition(word) {
   const modal = $("#wordDefModal");
@@ -3905,22 +3914,26 @@ async function showWordDefinition(word) {
   const w = String(word || "").trim();
   if (!w) return;
   title.textContent = w;
-  body.innerHTML = `<div class="word-def-loading">뜻을 찾는 중...</div>`;
+  body.innerHTML = `<div class="word-def-loading">국어사전에서 뜻을 찾는 중...</div>`;
   modal.classList.remove("hidden");
   try {
-    const res = await fetch(`https://ko.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(w)}?origin=*`);
-    if (!res.ok) throw new Error("not found");
-    const j = await res.json();
-    const extract = String(j.extract || "").trim();
-    const desc = String(j.description || "").trim();
-    if (extract || desc) {
-      body.innerHTML = `${desc ? `<div class="word-def-desc">${escapeHtml(desc)}</div>` : ""}<div class="word-def-text">${escapeHtml(extract || desc)}</div>
-        <div class="word-def-src">출처: 한국어 위키백과</div>`;
+    const res = await fetch(`/api/dictionary/definition?word=${encodeURIComponent(w)}`);
+    const payload = await res.json();
+    if (!res.ok || !payload.ok) throw new Error(payload.reason || "사전 조회 실패");
+    if (payload.entries.length) {
+      body.innerHTML = `<div class="word-def-entries">${payload.entries.map((entry, index) => `
+        <article class="word-def-entry">
+          ${entry.pos ? `<div class="word-def-desc">${escapeHtml(entry.pos)}</div>` : ""}
+          ${entry.type ? `<div class="word-def-desc">${escapeHtml(entry.type)}</div>` : ""}
+          <div class="word-def-text">${index + 1}. ${escapeHtml(entry.definition)}</div>
+          <div class="word-def-src"><a class="word-def-entry-link" href="${escapeHtml(entry.link)}" target="_blank" rel="noopener noreferrer">우리말샘 원문</a></div>
+        </article>`).join("")}</div>
+        <div class="word-def-src">사전 출처: <a class="word-def-entry-link" href="https://opendict.korean.go.kr/service/openApiInfo" target="_blank" rel="noopener noreferrer">우리말샘</a> · <a class="word-def-entry-link" href="https://opendict.korean.go.kr/service/copyrightPolicy" target="_blank" rel="noopener noreferrer">CC BY-SA 2.0 대한민국</a></div>`;
       return;
     }
-    throw new Error("empty");
-  } catch (e) {
-    body.innerHTML = `<div class="word-def-none">뜻 정보를 찾지 못했습니다.<br><span class="word-def-hint">단어가 사전/위키백과에 아직 없을 수 있어요.</span></div>`;
+    body.innerHTML = `<div class="word-def-none">우리말샘에서 '${escapeHtml(w)}'의 뜻풀이를 찾지 못했습니다.<br><a class="word-def-entry-link" href="https://opendict.korean.go.kr/search?query=${encodeURIComponent(w)}" target="_blank" rel="noopener noreferrer">우리말샘에서 직접 검색</a></div>`;
+  } catch (error) {
+    body.innerHTML = `<div class="word-def-none">${escapeHtml(error.message || "사전 조회에 실패했습니다.")}<br><span class="word-def-hint">서버의 우리말샘 API 키 설정과 연결 상태를 확인해 주세요.</span></div>`;
   }
 }
 

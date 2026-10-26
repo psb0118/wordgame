@@ -54,9 +54,9 @@ const DUEUM = {
    적용해 연결 허용 글자를 자동 생성한다. 받침(종성)은 그대로 둔다.
 
    - 초성 ㄹ : 두음법칙 → ㄴ (라→나, 룹→눕, 랓→낯…)
-   - 초성 ㄹ : 이/야/여/예/요/유 앞 → ㅇ (리→이, 릿→잇, 류→유…)
+   - 초성 ㄹ : 이/야/여/예/요/유 앞 → ㅇ (리→이, 류→유…)
    - 초성 ㄴ : 이/야/여/예/요/유 앞 → ㅇ (니→이, 녀→여…)
-   역방향(눕→룹, 잇→릿)도 같은 표로 함께 허용된다.
+   역방향(눕→룹 등)도 같은 표로 함께 허용된다. 릿은 별도 예외로 잇과만 연결한다.
 ========================================================= */
 
 const Y_GLIDE_MOS = new Set([2, 3, 6, 7, 12, 17, 20]);
@@ -130,6 +130,12 @@ function allowedFirstChars(lastChar) {
   if (!lastChar) return [];
   const result = new Set();
   result.add(lastChar);
+
+  /* 사용자 지정 예외: 릿으로 끝날 때는 릿/잇만 허용하고 닛은 허용하지 않는다. */
+  if (lastChar === "릿") {
+    result.add("잇");
+    return [...result];
+  }
 
   const direct = DUEUM[lastChar];
   if (Array.isArray(direct)) for (const ch of direct) if (ch) result.add(ch);

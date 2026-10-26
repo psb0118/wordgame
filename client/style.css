@@ -3778,6 +3778,12 @@ button:focus-visible {
 
 .item-current b { color: var(--accent); }
 
+.items-sort-hint {
+  color: var(--text-faint);
+  font-size: 0.76rem;
+  margin: -4px 0 10px;
+}
+
 .items-title-list {
   display: flex;
   flex-wrap: wrap;
@@ -4244,6 +4250,11 @@ html.dark .attendance-card { border-color: #0e7490; }
 .word-def-box { max-width: 460px; width: 92vw; }
 
 .word-def-body { padding: 6px 2px 4px; line-height: 1.65; }
+
+.word-def-text p { margin: 0 0 8px; }
+.word-def-entry { padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid var(--border); }
+.word-def-entry:last-child { padding-bottom: 0; margin-bottom: 0; border-bottom: 0; }
+.word-def-entry-link { color: var(--accent); text-decoration: underline; }
 
 .word-def-desc {
   display: inline-block;

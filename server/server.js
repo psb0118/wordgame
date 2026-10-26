@@ -420,6 +420,68 @@ function rebuildWordViews() {
   WORD_INDEX = merged.WORD_INDEX;
 }
 
+function extractOpenDictionaryEntries(payload, requestedWord) {
+  const wanted = normalizeWord(requestedWord);
+  const rawItems = payload?.channel?.item;
+  const items = Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : [];
+  const entries = [];
+  const seen = new Set();
+
+  for (const item of items) {
+    const headword = normalizeWord(String(item?.word || "").replace(/\^/g, ""));
+    if (headword !== wanted) continue;
+    const rawSenses = item.sense || item.sense_info || item.senseInfo;
+    const senses = Array.isArray(rawSenses) ? rawSenses : rawSenses ? [rawSenses] : [];
+    for (const sense of senses) {
+      const definition = String(sense?.definition || "").trim();
+      if (!definition) continue;
+      const pos = String(sense.pos || "").trim();
+      const type = String(sense.type || item.type || "").trim();
+      const identity = `${pos}\u0000${definition}`;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      const link = String(sense.link || item.link || "");
+      entries.push({
+        definition, pos, type,
+        link: /^https:\/\/opendict\.korean\.go\.kr\//.test(link) ? link : "https://opendict.korean.go.kr/search",
+      });
+    }
+  }
+  return entries;
+}
+
+async function fetchOpenDictionaryEntries(word, apiKey, fetchFn = fetch, signal = AbortSignal.timeout(8000)) {
+  const params = new URLSearchParams({
+    key: apiKey,
+    q: word,
+    req_type: "json",
+    advanced: "y",
+    target: "1",
+    method: "exact",
+    num: "100",
+  });
+  const response = await fetchFn(`https://opendict.korean.go.kr/api/search?${params}`, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) throw new Error(`우리말샘 응답 오류 (${response.status})`);
+  const payload = await response.json();
+  if (payload?.error) throw new Error("우리말샘 API 오류");
+  return extractOpenDictionaryEntries(payload, word);
+}
+
+const dictionaryDefinitionCache = new Map();
+const DICTIONARY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const DICTIONARY_CACHE_LIMIT = 500;
+
+function cacheDictionaryDefinition(word, entries) {
+  dictionaryDefinitionCache.delete(word);
+  if (dictionaryDefinitionCache.size >= DICTIONARY_CACHE_LIMIT) {
+    dictionaryDefinitionCache.delete(dictionaryDefinitionCache.keys().next().value);
+  }
+  dictionaryDefinitionCache.set(word, { entries, expiresAt: Date.now() + DICTIONARY_CACHE_TTL_MS });
+}
+
 /* =========================================================
    커스텀 사전 — 단일 저장소 customWords(kv 'customWords' + RUNTIME 파일)
    구 시스템 customDict(kv 'customDict' + 저장소 루트 파일)는 부팅 시
@@ -3039,6 +3101,38 @@ app.get("/", (req, res) => {
   }
   res.status(404).send("index.html을 찾을 수 없습니다.");
 });
+
+async function handleDictionaryDefinition(req, res) {
+  const word = normalizeWord(String(req.query.word || ""));
+  if (!/^[가-힣]{2,40}$/.test(word)) {
+    return res.status(400).json({ ok: false, reason: "한글 두 음절 이상, 40자 이하로 입력해 주세요." });
+  }
+  if (!WORD_SET.has(word)) {
+    return res.status(404).json({ ok: false, reason: "게임 사전에서 찾을 수 없는 단어입니다." });
+  }
+
+  const cached = dictionaryDefinitionCache.get(word);
+  if (cached && cached.expiresAt > Date.now()) {
+    return res.json({ ok: true, word, entries: cached.entries, cached: true });
+  }
+  if (cached) dictionaryDefinitionCache.delete(word);
+
+  const apiKey = String(process.env.OPENDICT_API_KEY || "").trim();
+  if (!apiKey) {
+    return res.status(503).json({ ok: false, reason: "우리말샘 API 키가 서버에 설정되지 않았습니다." });
+  }
+
+  try {
+    const entries = await fetchOpenDictionaryEntries(word, apiKey, fetch, AbortSignal.timeout(8000));
+    cacheDictionaryDefinition(word, entries);
+    return res.json({ ok: true, word, entries, source: "우리말샘", cached: false });
+  } catch (error) {
+    console.warn("우리말샘 뜻 조회 실패:", error.message);
+    return res.status(502).json({ ok: false, reason: "우리말샘 사전 조회에 실패했습니다. 잠시 후 다시 시도해 주세요." });
+  }
+}
+
+app.get("/api/dictionary/definition", handleDictionaryDefinition);
 
 app.get("/api/health", (req, res) => {
   res.json({

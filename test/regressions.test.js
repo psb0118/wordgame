@@ -923,6 +923,108 @@ test("achievements list reports unlocked and locked state", async () => {
   assert.equal(body.totals.wins, 1);
 });
 
+test("Open Dictionary results extract exact-headword senses and ignore unrelated hits", () => {
+  const extract = vm.runInNewContext(
+    `${functionSource("extractOpenDictionaryEntries")}\nextractOpenDictionaryEntries`,
+    { normalizeWord: game.normalizeWord },
+  );
+  const entries = extract({ channel: { item: [
+    { word: "나무", sense: { definition: " 줄기나 가지가 목질인 식물. ", pos: "명사", type: "일반어", link: "https://opendict.korean.go.kr/dictionary/view?sense_no=1" } },
+    { word: "나무", sense: [ { definition: "뜻 하나", pos: "명사" }, { definition: "뜻 둘", pos: "동사" } ] },
+    { word: "나무꾼", sense: { definition: "다른 표제어" } },
+  ] } }, "나무");
+  assert.equal(entries.length, 3);
+  assert.equal(entries[0].definition, "줄기나 가지가 목질인 식물.");
+  assert.equal(entries[0].link, "https://opendict.korean.go.kr/dictionary/view?sense_no=1");
+  assert.equal(entries[2].link, "https://opendict.korean.go.kr/search");
+});
+
+test("dictionary API request keeps its key server-side and uses exact JSON search", async () => {
+  let requestedUrl = "";
+  let requestedOptions;
+  const fetchEntries = vm.runInNewContext(
+    `${functionSource("fetchOpenDictionaryEntries")}\nfetchOpenDictionaryEntries`,
+    {
+      URLSearchParams,
+      AbortSignal,
+      extractOpenDictionaryEntries: (payload, word) => ({ payload, word }),
+    },
+  );
+  const result = await fetchEntries("나무", "private-test-key", async (url, options) => {
+    requestedUrl = url;
+    requestedOptions = options;
+    return { ok: true, async json() { return { channel: { total: 1 } }; } };
+  });
+  const url = new URL(requestedUrl);
+  assert.equal(url.origin, "https://opendict.korean.go.kr");
+  assert.equal(url.pathname, "/api/search");
+  assert.equal(url.searchParams.get("key"), "private-test-key");
+  assert.equal(url.searchParams.get("q"), "나무");
+  assert.equal(url.searchParams.get("method"), "exact");
+  assert.equal(url.searchParams.get("req_type"), "json");
+  assert.equal(requestedOptions.headers.Accept, "application/json");
+  assert.deepEqual(result, { payload: { channel: { total: 1 } }, word: "나무" });
+});
+
+test("dictionary endpoint validates game words, handles missing keys, and caches successful lookups", async () => {
+  const dictionaryDefinitionCache = new Map();
+  let lookups = 0;
+  const c = vm.createContext({
+    normalizeWord: game.normalizeWord,
+    WORD_SET: new Set(["나무"]),
+    dictionaryDefinitionCache,
+    DICTIONARY_CACHE_LIMIT: 500,
+    DICTIONARY_CACHE_TTL_MS: 3600000,
+    cacheDictionaryDefinition: (word, entries) => dictionaryDefinitionCache.set(word, { entries, expiresAt: Date.now() + 3600000 }),
+    process: { env: { OPENDICT_API_KEY: "test-key" } },
+    fetchOpenDictionaryEntries: async (word, key) => {
+      lookups++;
+      assert.equal(word, "나무");
+      assert.equal(key, "test-key");
+      return [{ definition: "나무 뜻", pos: "명사", type: "일반어", link: "https://opendict.korean.go.kr/search" }];
+    },
+    fetch: async () => ({}),
+    AbortSignal: { timeout: () => ({}) },
+  });
+  vm.runInContext(`${functionSource("handleDictionaryDefinition")}\nhandleDictionaryDefinition`, c);
+  const invoke = async (word) => {
+    const res = {
+      code: 200,
+      status(code) { this.code = code; return this; },
+      json(body) { this.body = body; return this; },
+    };
+    await c.handleDictionaryDefinition({ query: { word } }, res);
+    return res;
+  };
+  assert.equal((await invoke("없는단어")).code, 404);
+  assert.equal((await invoke("1bad")).code, 400);
+  c.process.env.OPENDICT_API_KEY = "";
+  const missingKey = await invoke("나무");
+  assert.equal(missingKey.code, 503);
+  assert.match(missingKey.body.reason, /API 키/);
+  c.process.env.OPENDICT_API_KEY = "test-key";
+  const first = await invoke("나무");
+  const second = await invoke("나무");
+  assert.equal(first.body.entries[0].definition, "나무 뜻");
+  assert.equal(first.body.cached, false);
+  assert.equal(second.body.cached, true);
+  assert.equal(lookups, 1);
+});
+
+test("owned titles sort current first then Korean alphabetical without mutating input", () => {
+  const sortTitles = vm.runInNewContext(
+    `${clientFunctionSource("sortOwnedTitles")}\nsortOwnedTitles`,
+  );
+  const titles = [
+    { id: "b", name: "나무" },
+    { id: "current", name: "하늘" },
+    { id: "a", name: "가을" },
+  ];
+  const sorted = sortTitles(titles, "하늘");
+  assert.deepEqual(Array.from(sorted, item => item.id), ["current", "a", "b"]);
+  assert.deepEqual(titles.map(item => item.id), ["b", "current", "a"]);
+});
+
 test("achievement filters render matching cards and preserve the unlocked total", () => {
   const grid = { innerHTML: "" };
   const summary = { textContent: "" };
@@ -951,6 +1053,14 @@ test("achievement filters render matching cards and preserve the unlocked total"
   context.renderAchievements(data);
   assert.match(grid.innerHTML, /10승/);
   assert.doesNotMatch(grid.innerHTML, /첫 승리/);
+});
+
+test("릿 allows only 릿/잇 as the next initial; 닛 has no reverse exception", () => {
+  assert.deepEqual(game.allowedFirstChars("릿"), ["릿", "잇"]);
+  assert.equal(game.canConnect("릿", "잇다"), true);
+  assert.equal(game.canConnect("릿", "릿다"), true);
+  assert.equal(game.canConnect("릿", "닛다"), false);
+  assert.equal(game.canConnect("닛", "릿다"), true, "릿은 닛의 일반 ㄹ→ㄴ 역방향 규칙을 그대로 따른다");
 });
 
 test("mobile navigation hint appears only when the menu overflows", () => {
