@@ -973,9 +973,10 @@ test("dictionary endpoint validates game words, handles missing keys, and caches
     normalizeWord: game.normalizeWord,
     WORD_SET: new Set(["나무"]),
     dictionaryDefinitionCache,
+    DICTIONARY_INFLIGHT: new Map(),
     DICTIONARY_CACHE_LIMIT: 500,
     DICTIONARY_CACHE_TTL_MS: 3600000,
-    cacheDictionaryDefinition: (word, entries) => dictionaryDefinitionCache.set(word, { entries, expiresAt: Date.now() + 3600000 }),
+    DICTIONARY_EMPTY_CACHE_TTL_MS: 600000,
     process: { env: { OPENDICT_API_KEY: "test-key" } },
     fetchOpenDictionaryEntries: async (word, key) => {
       lookups++;
@@ -986,7 +987,7 @@ test("dictionary endpoint validates game words, handles missing keys, and caches
     fetch: async () => ({}),
     AbortSignal: { timeout: () => ({}) },
   });
-  vm.runInContext(`${functionSource("handleDictionaryDefinition")}\nhandleDictionaryDefinition`, c);
+  vm.runInContext(`${functionSource("getCachedDictionaryDefinition")}\n${functionSource("cacheDictionaryDefinition")}\n${functionSource("handleDictionaryDefinition")}\nhandleDictionaryDefinition`, c);
   const invoke = async (word) => {
     const res = {
       code: 200,
@@ -1008,7 +1009,95 @@ test("dictionary endpoint validates game words, handles missing keys, and caches
   assert.equal(first.body.entries[0].definition, "나무 뜻");
   assert.equal(first.body.cached, false);
   assert.equal(second.body.cached, true);
+  assert.equal(second.body.source, "우리말샘", "캐시된 응답도 사전 출처를 포함합니다");
   assert.equal(lookups, 1);
+});
+
+test("dictionary cache uses short negative TTL, evicts least-recently-used entries, and shares concurrent requests", async () => {
+  const cache = new Map();
+  let now = 1000;
+  const cacheContext = vm.createContext({
+    dictionaryDefinitionCache: cache,
+    DICTIONARY_CACHE_LIMIT: 2,
+    DICTIONARY_CACHE_TTL_MS: 6000,
+    DICTIONARY_EMPTY_CACHE_TTL_MS: 1000,
+    Date: class extends Date { static now() { return now; } },
+  });
+  vm.runInContext(`${functionSource("getCachedDictionaryDefinition")}\n${functionSource("cacheDictionaryDefinition")}`, cacheContext);
+  cacheContext.cacheDictionaryDefinition("빈값", []);
+  assert.equal(cache.get("빈값").expiresAt, 2000);
+  now = 1500;
+  assert.equal(cacheContext.getCachedDictionaryDefinition("빈값").source, "우리말샘");
+  cacheContext.cacheDictionaryDefinition("정의", [{ definition: "뜻" }]);
+  now = 1800;
+  cacheContext.getCachedDictionaryDefinition("빈값");
+  cacheContext.cacheDictionaryDefinition("새 단어", [{ definition: "뜻" }]);
+  assert.equal(cache.has("정의"), false, "최근 사용된 빈 결과가 LRU에서 살아남습니다");
+  assert.equal(cache.has("빈값"), true);
+  now = 2500;
+  assert.equal(cacheContext.getCachedDictionaryDefinition("빈값"), null, "빈 결과는 짧은 TTL 후 다시 조회됩니다");
+
+  const dictionaryDefinitionCache = new Map();
+  const inFlight = new Map();
+  let releaseLookup;
+  let lookupCount = 0;
+  const concurrent = vm.createContext({
+    normalizeWord: game.normalizeWord,
+    WORD_SET: new Set(["나무"]), dictionaryDefinitionCache, DICTIONARY_INFLIGHT: inFlight,
+    DICTIONARY_CACHE_LIMIT: 2, DICTIONARY_CACHE_TTL_MS: 6000, DICTIONARY_EMPTY_CACHE_TTL_MS: 1000,
+    process: { env: { OPENDICT_API_KEY: "test-key" } },
+    AbortSignal: { timeout: () => ({}) }, fetch: async () => ({}),
+    fetchOpenDictionaryEntries: () => {
+      lookupCount++;
+      return new Promise(resolve => { releaseLookup = () => resolve([{ definition: "나무 뜻" }]); });
+    },
+  });
+  const concurrentHandlers = [
+    functionSource("getCachedDictionaryDefinition"),
+    functionSource("cacheDictionaryDefinition"),
+    functionSource("handleDictionaryDefinition"),
+    "handleDictionaryDefinition",
+  ];
+  vm.runInContext(concurrentHandlers.join(String.fromCharCode(10)), concurrent);
+  const invoke = async () => {
+    const res = { code: 200, status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
+    await concurrent.handleDictionaryDefinition({ query: { word: "나무" } }, res);
+    return res;
+  };
+  const first = invoke();
+  const second = invoke();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(lookupCount, 1);
+  releaseLookup();
+  const results = await Promise.all([first, second]);
+  assert.equal(results[0].body.ok, true);
+  assert.equal(results[1].body.ok, true);
+  assert.equal(lookupCount, 1);
+});
+
+test("empty title inventory offers a direct jump to the shop", () => {
+  const list = {
+    innerHTML: "",
+    querySelector(selector) { return selector === "[data-items-open-shop]" ? shopButton : null; },
+  };
+  const shopButton = { addEventListener(event, handler) { this.event = event; this.handler = handler; } };
+  const tabs = { clicked: false, click() { this.clicked = true; } };
+  const context = vm.createContext({
+    currentTitle: "", ownedTitles: [], shopInfo: { isAdmin: false }, ratingBoostGames: 0,
+    $(selector) {
+      if (selector === "#itemsCurrentTitle") return { textContent: "" };
+      if (selector === "#itemsTitleList") return list;
+      if (selector === ".tabs button[data-mode='shop']") return tabs;
+      return null;
+    },
+    escapeHtml: String, renderRatingChart() {}, renderRecentGames() {},
+  });
+  vm.runInContext(`${clientFunctionSource("renderItems")}`, context);
+  context.renderItems();
+  assert.match(list.innerHTML, /아직 보유한 칭호가 없습니다/);
+  assert.equal(shopButton.event, "click");
+  shopButton.handler();
+  assert.equal(tabs.clicked, true);
 });
 
 test("owned titles sort current first then Korean alphabetical without mutating input", () => {
@@ -1061,6 +1150,32 @@ test("릿 allows only 릿/잇 as the next initial; 닛 has no reverse exception"
   assert.equal(game.canConnect("릿", "릿다"), true);
   assert.equal(game.canConnect("릿", "닛다"), false);
   assert.equal(game.canConnect("닛", "릿다"), true, "릿은 닛의 일반 ㄹ→ㄴ 역방향 규칙을 그대로 따른다");
+  assert.ok(game.allowedFirstChars("렙").includes("엡"));
+  assert.ok(game.allowedFirstChars("륄").includes("윌"));
+  assert.equal(game.canConnect("엡", "렙다"), false, "검증된 루트 연결을 반대 방향 두음으로 확장하지 않습니다");
+  assert.equal(game.canConnect("윌", "륄다"), false, "검증된 루트 연결을 반대 방향 두음으로 확장하지 않습니다");
+});
+
+test("custom dueum exceptions retain rare-root continuations from the supplied root lists", () => {
+  const d = dict();
+  const rootFiles = ["끄글_주요 루트 단어_20260823005524.txt", "끄글_희귀 루트 단어_20260823005524.txt"];
+  let checked = 0;
+  for (const file of rootFiles) {
+    for (const line of fs.readFileSync(path.join(__dirname, "../data", file), "utf8").split(/\r?\n/)) {
+      const colon = line.indexOf(":");
+      if (colon < 0) continue;
+      const last = game.normalizeWord(line.slice(0, colon));
+      for (const next of line.slice(colon + 1).split(/[,，\s]+/).map(game.normalizeWord).filter(Boolean)) {
+        assert.equal(game.canConnect(last, next), true, `기존 루트 연결이 차단됨: ${last} → ${next}`);
+        assert.ok(game.getCandidates(last, new Set(), d.WORD_INDEX).includes(next), `루트 후보가 후보 목록에서 누락됨: ${last} → ${next}`);
+        assert.ok(game.getCandidates(next, new Set([last, next]), d.WORD_INDEX).length > 0, `기존에 지지 않던 루트 경로가 한방 패배로 바뀜: ${last} → ${next}`);
+        checked++;
+      }
+    }
+  }
+  assert.equal(checked, 3593);
+  assert.equal(game.canConnect("렙", "엡스탱"), true);
+  assert.equal(game.canConnect("륄", "윌리엄슨"), true);
 });
 
 test("mobile navigation hint appears only when the menu overflows", () => {

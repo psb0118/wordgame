@@ -61,17 +61,17 @@ npm run dev:neon
 또는 `.env.local`의 `DATABASE_URL`을 Neon pooled connection string으로 직접 설정하고 `npm start`를 실행해도 됩니다. Neon의 **direct** 연결을 써야 하는 경우가 아니라면 애플리케이션 트래픽에는 pooled URL을 권장합니다.
 
 ## 우리말샘 단어 뜻 조회
-단어 클릭 시 공식 [우리말샘 Open API](https://opendict.korean.go.kr/service/openApiInfo)를 통해 뜻풀이를 조회합니다. API 키를 발급받아 서버 비밀 환경 변수 `OPENDICT_API_KEY`에 설정하세요. 키는 브라우저에 전달되지 않으며, 조회 결과는 서버 메모리에 최대 6시간 캐시됩니다. 우리말샘에 항목이 없는 단어는 직접 검색 링크를 표시합니다.
+단어 클릭 시 공식 [우리말샘 Open API](https://opendict.korean.go.kr/service/openApiInfo)를 통해 뜻풀이를 조회합니다. API 키를 발급받아 서버 비밀 환경 변수 `OPENDICT_API_KEY`에 설정하세요. 키는 브라우저에 전달되지 않으며, 정의가 있는 조회는 서버 메모리에 최대 6시간, 빈 결과는 10분 동안 캐시됩니다. 동시 요청은 같은 API 조회를 공유하고, 캐시는 최대 500개를 최근 사용 순으로 유지합니다. 우리말샘에 항목이 없는 단어는 직접 검색 링크를 표시합니다.
 
 - 로컬: `.env.local`에 `OPENDICT_API_KEY=발급받은키`를 설정한 뒤 `npm run dev:neon` 실행
 - Render: 웹 서비스의 Environment에 `OPENDICT_API_KEY`를 비밀 변수로 추가하고 재배포
 - 키 발급과 사용량 제한은 우리말샘 API 안내를 확인하세요.
 
 ## Render 배포
-- Start Command: `npm start`
-- Build Command: `npm install`
-- Render 서비스 환경 변수에 Neon pooled connection string을 `DATABASE_URL`로, 우리말샘 API 키를 `OPENDICT_API_KEY`로 설정
-- 재배포 후 `https://<서비스주소>/api/health`의 `db`가 `"postgres"`인지 확인하고 단어 뜻 조회를 시험
+1. Build Command는 `npm install`, Start Command는 `npm start`로 설정합니다.
+2. 웹 서비스 **Environment**에서 `DATABASE_URL`(Neon pooled connection string)과 `OPENDICT_API_KEY`(우리말샘 발급 키)를 각각 비밀 환경 변수로 설정합니다. API 키를 브라우저 코드나 Git에 넣지 마세요.
+3. 저장 후 새 배포가 완료되면 `https://<서비스주소>/api/health`가 HTTP 200이고 `db`가 `"postgres"`인지 확인합니다.
+4. `https://<서비스주소>/api/dictionary/definition?word=나무`를 호출해 HTTP 200과 `source: "우리말샘"`, 하나 이상의 `entries`가 반환되는지 확인합니다. `503`이면 API 키 환경 변수 저장과 새 배포 여부를 확인하세요.
 
 ## 데이터 저장 (초기화 방지)
 서버는 플레이어·시즌·친구·관리자 설정·단어 신청·버그 제보 데이터를 저장합니다.

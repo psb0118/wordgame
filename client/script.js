@@ -370,6 +370,13 @@ function allowedFirstChars(lastChar) {
   if (!lastChar) return [];
   const result = new Set();
   result.add(lastChar);
+  /* 서버와 동일: 릿 예외와 확인된 희귀 루트의 이어말하기를 그대로 적용. */
+  if (lastChar === "릿") {
+    result.add("잇");
+    return [...result];
+  }
+  if (lastChar === "렙") result.add("엡");
+  if (lastChar === "륄") result.add("윌");
   const direct = DUEUM[lastChar];
   if (Array.isArray(direct)) for (const ch of direct) if (ch) result.add(ch);
   for (const [from, values] of Object.entries(DUEUM)) {
@@ -2614,7 +2621,8 @@ function renderItems() {
     if (isAdmin) entries.push({ id: "t_admin", name: "관리자" });
     for (const t of ownedTitles) entries.push(t);
     if (entries.length === 0) {
-      listEl.innerHTML = `<div class="items-empty">보유한 칭호가 없습니다. 상점에서 구매하세요.</div>`;
+      listEl.innerHTML = `<div class="items-empty">아직 보유한 칭호가 없습니다.</div><button type="button" class="items-title-chip items-shop-link" data-items-open-shop>상점에서 칭호 보기</button>`;
+      listEl.querySelector("[data-items-open-shop]")?.addEventListener("click", () => $(".tabs button[data-mode='shop']")?.click());
     } else {
       let html = sortOwnedTitles(entries, currentTitle).map(t => {
         const isCur = currentTitle === t.name;

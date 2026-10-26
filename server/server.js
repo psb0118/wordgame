@@ -472,14 +472,34 @@ async function fetchOpenDictionaryEntries(word, apiKey, fetchFn = fetch, signal 
 
 const dictionaryDefinitionCache = new Map();
 const DICTIONARY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const DICTIONARY_EMPTY_CACHE_TTL_MS = 10 * 60 * 1000;
 const DICTIONARY_CACHE_LIMIT = 500;
+const DICTIONARY_INFLIGHT = new Map();
+
+function getCachedDictionaryDefinition(word) {
+  const cached = dictionaryDefinitionCache.get(word);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    dictionaryDefinitionCache.delete(word);
+    return null;
+  }
+  /* Map insertion order doubles as LRU order: a hit keeps frequently viewed words. */
+  dictionaryDefinitionCache.delete(word);
+  dictionaryDefinitionCache.set(word, cached);
+  return cached;
+}
 
 function cacheDictionaryDefinition(word, entries) {
   dictionaryDefinitionCache.delete(word);
   if (dictionaryDefinitionCache.size >= DICTIONARY_CACHE_LIMIT) {
     dictionaryDefinitionCache.delete(dictionaryDefinitionCache.keys().next().value);
   }
-  dictionaryDefinitionCache.set(word, { entries, expiresAt: Date.now() + DICTIONARY_CACHE_TTL_MS });
+  const ttl = entries.length ? DICTIONARY_CACHE_TTL_MS : DICTIONARY_EMPTY_CACHE_TTL_MS;
+  dictionaryDefinitionCache.set(word, {
+    entries,
+    source: "우리말샘",
+    expiresAt: Date.now() + ttl,
+  });
 }
 
 /* =========================================================
@@ -3111,11 +3131,10 @@ async function handleDictionaryDefinition(req, res) {
     return res.status(404).json({ ok: false, reason: "게임 사전에서 찾을 수 없는 단어입니다." });
   }
 
-  const cached = dictionaryDefinitionCache.get(word);
-  if (cached && cached.expiresAt > Date.now()) {
-    return res.json({ ok: true, word, entries: cached.entries, cached: true });
+  const cached = getCachedDictionaryDefinition(word);
+  if (cached) {
+    return res.json({ ok: true, word, entries: cached.entries, source: cached.source, cached: true });
   }
-  if (cached) dictionaryDefinitionCache.delete(word);
 
   const apiKey = String(process.env.OPENDICT_API_KEY || "").trim();
   if (!apiKey) {
@@ -3123,9 +3142,20 @@ async function handleDictionaryDefinition(req, res) {
   }
 
   try {
-    const entries = await fetchOpenDictionaryEntries(word, apiKey, fetch, AbortSignal.timeout(8000));
+    let lookup = DICTIONARY_INFLIGHT.get(word);
+    const joinedLookup = !!lookup;
+    if (!lookup) {
+      lookup = fetchOpenDictionaryEntries(word, apiKey, fetch, AbortSignal.timeout(8000));
+      DICTIONARY_INFLIGHT.set(word, lookup);
+    }
+    let entries;
+    try {
+      entries = await lookup;
+    } finally {
+      if (!joinedLookup && DICTIONARY_INFLIGHT.get(word) === lookup) DICTIONARY_INFLIGHT.delete(word);
+    }
     cacheDictionaryDefinition(word, entries);
-    return res.json({ ok: true, word, entries, source: "우리말샘", cached: false });
+    return res.json({ ok: true, word, entries, source: "우리말샘", cached: joinedLookup });
   } catch (error) {
     console.warn("우리말샘 뜻 조회 실패:", error.message);
     return res.status(502).json({ ok: false, reason: "우리말샘 사전 조회에 실패했습니다. 잠시 후 다시 시도해 주세요." });

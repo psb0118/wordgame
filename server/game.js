@@ -131,11 +131,13 @@ function allowedFirstChars(lastChar) {
   const result = new Set();
   result.add(lastChar);
 
-  /* 사용자 지정 예외: 릿으로 끝날 때는 릿/잇만 허용하고 닛은 허용하지 않는다. */
+  /* 사용자 지정 예외: 릿은 잇으로만, 렙/륄은 확인된 이어말하기 방향만 추가 허용. */
   if (lastChar === "릿") {
     result.add("잇");
     return [...result];
   }
+  if (lastChar === "렙") result.add("엡");
+  if (lastChar === "륄") result.add("윌");
 
   const direct = DUEUM[lastChar];
   if (Array.isArray(direct)) for (const ch of direct) if (ch) result.add(ch);
@@ -145,7 +147,6 @@ function allowedFirstChars(lastChar) {
 
   const auto = AUTO_DUEUM.get(lastChar);
   if (auto) for (const ch of auto) result.add(ch);
-
   return [...result];
 }
 
