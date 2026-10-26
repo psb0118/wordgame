@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=34">
+  <link rel="stylesheet" href="style.css?v=35">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -15,20 +15,23 @@
     </header>
 
     <div class="app-grid">
-      <nav class="tabs" aria-label="주요 메뉴">
-        <span class="nav-group-label">플레이</span>
-        <button data-mode="single" class="active">🎯 싱글플레이</button>
-        <button data-mode="online">🌐 온라인 멀티</button>
-        <button data-mode="ranked">⚔️ 랭크 매칭</button>
-        <span class="nav-group-label">기록</span>
-        <button data-mode="season">📅 시즌</button>
-        <button data-mode="achievements">🏆 업적</button>
-        <span class="nav-group-label">보관함</span>
-        <button data-mode="items">🎭 칭호·아이템</button>
-        <button data-mode="shop">🛒 상점</button>
-        <span class="nav-group-label">커뮤니티</span>
-        <button data-mode="guild">🏰 길드</button>
-      </nav>
+      <div class="nav-shell">
+        <nav class="tabs" aria-label="주요 메뉴">
+          <span class="nav-group-label">플레이</span>
+          <button data-mode="single" class="active">🎯 싱글플레이</button>
+          <button data-mode="online">🌐 온라인 멀티</button>
+          <button data-mode="ranked">⚔️ 랭크 매칭</button>
+          <span class="nav-group-label">기록</span>
+          <button data-mode="season">📅 시즌</button>
+          <button data-mode="achievements">🏆 업적</button>
+          <span class="nav-group-label">보관함</span>
+          <button data-mode="items">🎭 칭호·아이템</button>
+          <button data-mode="shop">🛒 상점</button>
+          <span class="nav-group-label">커뮤니티</span>
+          <button data-mode="guild">🏰 길드</button>
+        </nav>
+        <div class="nav-scroll-hint" aria-hidden="true">↔ 메뉴를 좌우로 밀어 보세요</div>
+      </div>
 
       <div class="content-col">
     <div class="money-bar hidden">
@@ -365,6 +368,11 @@
           <button id="achRefresh" class="secondary">새로고침</button>
         </div>
       </div>
+      <div class="ach-filters" role="group" aria-label="업적 필터">
+        <button type="button" class="secondary active" data-ach-filter="all" aria-pressed="true">전체</button>
+        <button type="button" class="secondary" data-ach-filter="unlocked" aria-pressed="false">달성</button>
+        <button type="button" class="secondary" data-ach-filter="locked" aria-pressed="false">미달성</button>
+      </div>
       <div id="achGrid" class="ach-grid"></div>
     </section>
 
@@ -570,6 +578,10 @@
         <button class="modal-close" id="replayClose">✕</button>
       </div>
       <div id="replayList" class="replay-list"></div>
+      <div class="replay-actions">
+        <button id="replayCopy" class="secondary" type="button">결과 복사</button>
+        <span id="replayCopyStatus" class="replay-copy-status" role="status" aria-live="polite"></span>
+      </div>
       <div class="replay-hint">단어를 클릭하면 뜻을 볼 수 있어요.</div>
     </div>
   </div>
@@ -631,7 +643,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="script.js?v=38"></script>
+  <script src="script.js?v=39"></script>
   <script src="firebase-auth.js?v=2"></script>
 </body>
 </html>

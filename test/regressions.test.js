@@ -11,6 +11,7 @@ const game = require("../server/game.js");
 const source = fs.readFileSync(
   process.env.WORDGAME_TEST_SOURCE || path.join(__dirname, "../server/server.js"), "utf8"
 );
+const clientSource = fs.readFileSync(path.join(__dirname, "../client/script.js"), "utf8");
 
 function functionSource(name) {
   const match = new RegExp(`^(?:async )?function ${name}\\(`, "m").exec(source);
@@ -20,6 +21,14 @@ function functionSource(name) {
   const end = source.indexOf("\n}", match.index);
   assert.ok(end > match.index, `missing function end: ${name}`);
   return source.slice(match.index, end + 2);
+}
+
+function clientFunctionSource(name) {
+  const match = new RegExp(`^(?:async )?function ${name}\\(`, "m").exec(clientSource);
+  assert.ok(match, `missing client function: ${name}`);
+  const end = clientSource.indexOf("\n}", match.index);
+  assert.ok(end > match.index, `missing client function end: ${name}`);
+  return clientSource.slice(match.index, end + 2);
 }
 
 /* 한 줄 const는 그대로, 여러 줄 배열/식은 닫는 줄(');' 또는 '];')까지 포함 (CRLF 포함) */
@@ -912,6 +921,81 @@ test("achievements list reports unlocked and locked state", async () => {
   assert.ok(w10 && !w10.unlockedAt, "미해금 업적은 unlockedAt 없음");
   assert.ok(body.unlockedCount >= 1);
   assert.equal(body.totals.wins, 1);
+});
+
+test("achievement filters render matching cards and preserve the unlocked total", () => {
+  const grid = { innerHTML: "" };
+  const summary = { textContent: "" };
+  const context = vm.createContext({
+    achievementFilter: "all", achievementData: null,
+    $(selector) { return selector === "#achGrid" ? grid : selector === "#achSummary" ? summary : null; },
+    escapeHtml: value => String(value),
+  });
+  vm.runInContext(
+    `${clientFunctionSource("filterAchievementList")}\n${clientFunctionSource("renderAchievements")}`,
+    context,
+  );
+  const data = { ok: true, list: [
+    { id: "first_win", name: "첫 승리", desc: "한 번 승리", coin: 100, unlockedAt: "2026-10-01T00:00:00.000Z" },
+    { id: "win10", name: "10승", desc: "열 번 승리", coin: 200 },
+  ] };
+  context.renderAchievements(data);
+  assert.equal(summary.textContent, "해금 1/2");
+  assert.equal((grid.innerHTML.match(/class="ach-card/g) || []).length, 2);
+  context.achievementFilter = "unlocked";
+  context.renderAchievements(data);
+  assert.equal(summary.textContent, "해금 1/2", "필터가 전체 해금 현황을 바꾸지 않습니다");
+  assert.equal((grid.innerHTML.match(/class="ach-card/g) || []).length, 1);
+  assert.match(grid.innerHTML, /첫 승리/);
+  context.achievementFilter = "locked";
+  context.renderAchievements(data);
+  assert.match(grid.innerHTML, /10승/);
+  assert.doesNotMatch(grid.innerHTML, /첫 승리/);
+});
+
+test("mobile navigation hint appears only when the menu overflows", () => {
+  const toggles = [];
+  const nav = { scrollWidth: 300, clientWidth: 100, closest: () => shell };
+  const shell = { classList: { toggle: (...args) => toggles.push(args) } };
+  const updateHint = vm.runInNewContext(
+    `${clientFunctionSource("updateMobileNavHint")}\nupdateMobileNavHint`,
+    { $: selector => selector === ".tabs" ? nav : null },
+  );
+  updateHint();
+  assert.deepEqual(toggles.at(-1), ["has-overflow", true]);
+  nav.clientWidth = 320;
+  updateHint();
+  assert.deepEqual(toggles.at(-1), ["has-overflow", false]);
+});
+
+
+test("game result copy reports success and clipboard permission failures", async () => {
+  const result = { winner: 1, winnerName: "승자", state: { history: [{ word: "사과", player: -1 }] } };
+  const successStatus = { textContent: "" };
+  let copied = "";
+  const successCopy = vm.runInNewContext(
+    `${clientFunctionSource("buildGameResultText")}\n${clientFunctionSource("copyReplayResult")}\ncopyReplayResult`,
+    {
+      lastReplayData: result,
+      navigator: { clipboard: { async writeText(text) { copied = text; } } },
+      $: () => successStatus,
+    },
+  );
+  await successCopy();
+  assert.match(copied, /승자 승리/);
+  assert.equal(successStatus.textContent, "게임 결과를 복사했어요.");
+
+  const failureStatus = { textContent: "" };
+  const failedCopy = vm.runInNewContext(
+    `${clientFunctionSource("buildGameResultText")}\n${clientFunctionSource("copyReplayResult")}\ncopyReplayResult`,
+    {
+      lastReplayData: result,
+      navigator: { clipboard: { async writeText() { throw new Error("denied"); } } },
+      $: () => failureStatus,
+    },
+  );
+  await failedCopy();
+  assert.match(failureStatus.textContent, /클립보드 권한/);
 });
 
 /* =========================================================

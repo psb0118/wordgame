@@ -133,6 +133,14 @@ button:disabled {
 }
 
 /* 탭 — 세로 사이드바 */
+.nav-shell {
+  min-width: 0;
+}
+
+.nav-scroll-hint {
+  display: none;
+}
+
 .tabs {
   display: flex;
   flex-direction: column;
@@ -2513,6 +2521,22 @@ button:active:not(:disabled) {
   font-weight: 700;
   color: var(--accent);
 }
+.ach-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+.ach-filters button {
+  padding: 8px 12px;
+}
+.ach-filters button.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+html.dark .ach-filters button.active {
+  color: #fff;
+}
 .ach-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -3537,9 +3561,20 @@ body {
     flex-wrap: nowrap;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
     position: static;
     padding: 8px;
     gap: 6px;
+  }
+  .nav-scroll-hint {
+    display: none;
+    margin: 4px 8px 0;
+    color: var(--text-faint);
+    font-size: 0.72rem;
+    text-align: right;
+  }
+  .nav-shell.has-overflow .nav-scroll-hint {
+    display: block;
   }
   .nav-group-label {
     display: none;
@@ -4183,6 +4218,20 @@ html.dark .attendance-card { border-color: #0e7490; }
   background: var(--red-soft);
   color: var(--red);
   font-weight: 700;
+}
+
+.replay-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.replay-copy-status {
+  color: var(--text-dim);
+  font-size: 0.78rem;
 }
 
 .replay-hint {

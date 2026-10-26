@@ -33,6 +33,9 @@ let aiDifficulty = localStorage.getItem("kkAiDiff") || "normal";
 
 const localStats = JSON.parse(localStorage.getItem("kkStats") || '{"wins":0,"losses":0,"games":0,"totalLength":0}');
 let localUsedWords = new Set();
+let achievementFilter = "all";
+let achievementData = null;
+let lastReplayData = null;
 
 /* 금액/상점/버그/랭크 상태 */
 let moneyBalance = 0;
@@ -414,6 +417,12 @@ function formatRank(rank) {
 --------------------------------------------------------- */
 function saveStats() {
   localStorage.setItem("kkStats", JSON.stringify(localStats));
+}
+
+function updateMobileNavHint() {
+  const nav = $(".tabs");
+  const shell = nav && nav.closest(".nav-shell");
+  if (nav && shell) shell.classList.toggle("has-overflow", nav.scrollWidth > nav.clientWidth + 1);
 }
 
 function updateStatsUI() {
@@ -2175,6 +2184,13 @@ function fetchAchievements() {
   if (socket && socketConnected) socket.emit("achievements:list");
 }
 
+function filterAchievementList(list, filter) {
+  const achievements = Array.isArray(list) ? list.filter(Boolean) : [];
+  if (filter === "unlocked") return achievements.filter(item => !!item.unlockedAt);
+  if (filter === "locked") return achievements.filter(item => !item.unlockedAt);
+  return achievements;
+}
+
 function renderAchievements(data) {
   const grid = $("#achGrid");
   const sum = $("#achSummary");
@@ -2183,6 +2199,7 @@ function renderAchievements(data) {
     grid.innerHTML = `<div class="room-list-status error">${escapeHtml((data && data.reason) || "업적을 불러오지 못했습니다.")}</div>`;
     return;
   }
+  achievementData = data;
   const list = Array.isArray(data.list) ? data.list : [];
   const done = list.filter(d => d && d.unlockedAt).length;
   if (sum) sum.textContent = `해금 ${done}/${list.length}`;
@@ -2190,7 +2207,13 @@ function renderAchievements(data) {
     grid.innerHTML = `<div class="room-list-status">등록된 업적이 없습니다.</div>`;
     return;
   }
-  grid.innerHTML = list.map(d => {
+  const visibleList = filterAchievementList(list, achievementFilter);
+  if (visibleList.length === 0) {
+    const emptyText = achievementFilter === "unlocked" ? "달성한 업적이 없습니다." : "미달성 업적이 없습니다.";
+    grid.innerHTML = `<div class="room-list-status">${emptyText}</div>`;
+    return;
+  }
+  grid.innerHTML = visibleList.map(d => {
     const on = !!d.unlockedAt;
     let when = "미해금";
     if (on) {
@@ -3802,6 +3825,38 @@ function applyTheme(dark) {
 /* ---------------------------------------------------------
    게임 종료 리플레이 — 이번 판 단어 흐름 한눈에 보기
 --------------------------------------------------------- */
+function buildGameResultText(data) {
+  const state = (data && data.state) || {};
+  const history = Array.isArray(state.history) ? state.history : [];
+  const winnerIndex = data && data.winner != null ? data.winner : state.winner;
+  const winner = winnerIndex == null
+    ? "무승부"
+    : `${String((data && data.winnerName) || state.players?.find(player => player.playerIndex === winnerIndex)?.nickname || "승자")} 승리`;
+  const wordLines = history.map(item => {
+    if (!item || !item.word) return "";
+    const isStart = item.player === -1 || item.nickname === "시작";
+    const turn = Number.isFinite(item.turn) && item.turn > 0 ? `${item.turn}. ` : "";
+    const player = isStart ? "시작" : `${turn}${String(item.nickname || "플레이어")}`;
+    return `${player}: ${String(item.word)}`;
+  }).filter(Boolean);
+  return `끝말잇기 게임 결과\n${winner} · 총 ${history.length}단어${wordLines.length ? `\n${wordLines.join("\n")}` : ""}`;
+}
+
+async function copyReplayResult() {
+  const status = $("#replayCopyStatus");
+  const text = buildGameResultText(lastReplayData);
+  if (!lastReplayData || !text) return;
+  try {
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+      throw new Error("clipboard_unavailable");
+    }
+    await navigator.clipboard.writeText(text);
+    if (status) status.textContent = "게임 결과를 복사했어요.";
+  } catch (error) {
+    if (status) status.textContent = "복사할 수 없어요. 브라우저의 클립보드 권한을 확인해 주세요.";
+  }
+}
+
 function showReplay(data) {
   const modal = $("#replayModal");
   const list = $("#replayList");
@@ -3810,6 +3865,9 @@ function showReplay(data) {
   const st = (data && data.state) || gameState;
   const hist = (st && Array.isArray(st.history)) ? st.history : [];
   if (hist.length < 2) return;   /* 시작 단어뿐이면 굳이 띄우지 않는다 */
+  lastReplayData = data || { state: st, winner: st && st.winner };
+  const copyStatus = $("#replayCopyStatus");
+  if (copyStatus) copyStatus.textContent = "";
 
   const winnerIdx = data ? data.winner : (st ? st.winner : null);
   const winnerName = data && data.winnerName ? data.winnerName : "";
@@ -4108,7 +4166,21 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#practiceQuit")?.addEventListener("click", () => quitTutorialPractice());
   $("#tutorialReplayBtn")?.addEventListener("click", () => showTutorial(true));
   $("#replayClose")?.addEventListener("click", () => $("#replayModal")?.classList.add("hidden"));
+  $("#replayCopy")?.addEventListener("click", copyReplayResult);
   $("#wordDefClose")?.addEventListener("click", () => $("#wordDefModal")?.classList.add("hidden"));
+  $all("[data-ach-filter]").forEach(button => {
+    button.addEventListener("click", () => {
+      achievementFilter = button.dataset.achFilter || "all";
+      $all("[data-ach-filter]").forEach(filterButton => {
+        const selected = filterButton === button;
+        filterButton.classList.toggle("active", selected);
+        filterButton.setAttribute("aria-pressed", String(selected));
+      });
+      if (achievementData) renderAchievements(achievementData);
+    });
+  });
+  updateMobileNavHint();
+  window.addEventListener("resize", updateMobileNavHint);
   document.addEventListener("pointerdown", () => ensureAudio(), { once: false });
   document.addEventListener("keydown", () => ensureAudio(), { once: false });
 
