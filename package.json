@@ -7,6 +7,8 @@
   "scripts": {
     "start": "node server/server.js",
     "dev": "node --watch server/server.js",
+    "dev:neon": "node --env-file-if-exists=.env.local --watch server/server.js",
+    "start:neon": "node --env-file-if-exists=.env.local server/server.js",
     "test": "node --test"
   },
   "dependencies": {

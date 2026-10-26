@@ -40,10 +40,29 @@
 4. `npm start`
 5. 브라우저에서 `http://localhost:3000` 접속
 
+## Neon PostgreSQL 연결
+서버는 기존 `pg` 드라이버로 Neon PostgreSQL에 연결합니다. 별도 Neon Functions나 Data API를 사용하지 않습니다.
+
+1. [Neon Console](https://console.neon.tech/)에서 프로젝트의 **Connect**를 눌러 브랜치, 데이터베이스, 역할을 선택하고 **pooled connection string**을 복사합니다. URL에는 보통 `-pooler`가 포함됩니다.
+2. 실행 환경의 비밀 환경 변수에 `DATABASE_URL`을 설정합니다. 연결 문자열은 소스 코드나 GitHub에 커밋하지 마세요.
+3. 서버가 시작될 때 `players`, `kv_store` 테이블을 자동 생성/보완합니다.
+4. 배포 후 `/api/health`의 `db` 값이 `"postgres"`인지 확인합니다.
+
+### 로컬 개발
+Neon CLI로 연결된 브랜치의 데이터베이스 URL을 로컬 `.env.local`로 가져올 수 있습니다. 이 저장소는 `.env.local`을 Git에서 제외합니다.
+
+```bash
+npx neon env pull --env DATABASE_URL --file .env.local
+npm run dev:neon
+```
+
+또는 `.env.local`의 `DATABASE_URL`을 Neon pooled connection string으로 직접 설정하고 `npm start`를 실행해도 됩니다. Neon의 **direct** 연결을 써야 하는 경우가 아니라면 애플리케이션 트래픽에는 pooled URL을 권장합니다.
+
 ## Render 배포
 - Start Command: `npm start`
 - Build Command: `npm install`
-- 환경 변수 `DATABASE_URL`: PostgreSQL 연결 문자열 (선택사항)
+- Render 서비스의 환경 변수에 Neon pooled connection string을 `DATABASE_URL`로 설정
+- 재배포 후 `https://<서비스주소>/api/health`의 `db`가 `"postgres"`인지 확인
 
 ## 데이터 저장 (초기화 방지)
 서버는 플레이어·시즌·친구·관리자 설정·단어 신청·버그 제보 데이터를 저장합니다.

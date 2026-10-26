@@ -25,7 +25,7 @@ const io = new Server(server, {
 });
 app.use(express.json({ limit: "256kb" }));
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT && process.env.PORT !== "0" ? process.env.PORT : 3000;
 const ROOT_DIR = path.join(__dirname, "..");
 const CLIENT_DIR = path.join(ROOT_DIR, "client");
 const DATA_DIR = path.join(ROOT_DIR, "data");
@@ -996,7 +996,9 @@ async function initDatabase() {
   if (databaseUrl) {
     try {
       const { Pool } = require("pg");
-      dbPool = new Pool({ connectionString: databaseUrl, ssl: { rejectUnauthorized: false } });
+      /* PostgreSQL/Neon URLs carry their own TLS settings (e.g. sslmode=require).
+         Do not disable certificate verification with an explicit SSL override. */
+      dbPool = new Pool({ connectionString: databaseUrl });
       await dbPool.query(`
         CREATE TABLE IF NOT EXISTS players (
           id TEXT PRIMARY KEY,

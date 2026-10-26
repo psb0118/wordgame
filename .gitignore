@@ -17,5 +17,6 @@ entry/
 *-firebase-adminsdk-*.json
 serviceAccountKey.json
 firebase-service-account.json
-.env
-.env.local
+.env.*
+!.env.example
+.neon
