@@ -6,6 +6,7 @@ const path = require("path");
 const crypto = require("crypto");
 const express = require("express");
 const { Server } = require("socket.io");
+const { createCluster } = require("./cluster.js");
 const {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
   loadData, hasWord, getAttackDepth, isAttackWord,
@@ -23,13 +24,48 @@ const app = express();
    직접 노출되는 환경이라면 프록시 홉 수에 맞게 조정해야 한다. */
 app.set("trust proxy", 1);
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
-  transports: ["websocket", "polling"]
+const PORT = process.env.PORT && process.env.PORT !== "0" ? process.env.PORT : 3000;
+
+/* 다중 인스턴스 구성 — game 역할만 실제 Socket.IO 게임 코어를 띄우고,
+   web 역할은 /socket.io 와 상태성 API를 게임 코어로 릴레이한다. */
+const cluster = createCluster({
+  onLeaseLost: () => {
+    /* 리더 lease를 잃은 코어가 계속 살아 있으면 두 코어가 서로 다른 방 상태를
+       들고 갈라질 수 있다. 즉시 종료하고 플랫폼이 재시작하게 둔다. */
+    console.error("[CLUSTER] 게임 코어 lease 상실 — 프로세스를 종료합니다.");
+    process.exit(1);
+  }
 });
+app.use(cluster.middleware);
 app.use(express.json({ limit: "256kb" }));
 
-const PORT = process.env.PORT && process.env.PORT !== "0" ? process.env.PORT : 3000;
+/* web 릴레이 인스턴스는 Socket.IO 엔진을 띄우지 않는다. 기존 핸들러 등록 코드가
+   그대로 실행될 수 있도록 아무 일도 하지 않는 최소 인터페이스를 제공한다. */
+function createNoopIo() {
+  const noop = {
+    on() { return noop; },
+    emit() { return noop; },
+    to() { return noop; },
+    in() { return noop; },
+    use() { return noop; },
+    close() {},
+    serverSideEmit() {},
+    sockets: { sockets: new Map() }
+  };
+  return noop;
+}
+
+const io = cluster.isGameCore
+  ? new Server(server, {
+      cors: { origin: "*", methods: ["GET", "POST"] },
+      transports: ["websocket", "polling"],
+      /* 짧은 끊김은 Socket.IO가 방/핸드셰이크를 복구한다. 30초 유예와 같은 범위. */
+      connectionStateRecovery: { maxDisconnectionDuration: 30000, skipMiddlewares: true }
+    })
+  : createNoopIo();
+
+/* web 역할에서만 WebSocket 업그레이드를 게임 코어로 전달한다. */
+if (cluster.role === "web") server.on("upgrade", cluster.upgrade);
 const ROOT_DIR = path.join(__dirname, "..");
 const CLIENT_DIR = path.join(ROOT_DIR, "client");
 const DATA_DIR = path.join(ROOT_DIR, "data");
@@ -3833,6 +3869,15 @@ async function handleDictionaryDefinition(req, res) {
 
 app.get("/api/dictionary/definition", dictionaryRateLimit, handleDictionaryDefinition);
 
+app.get("/api/cluster/status", async (req, res) => {
+  res.set("cache-control", "no-store");
+  res.json({
+    ok: true,
+    ...cluster.health(),
+    nodes: await cluster.listNodes(dbPool),
+  });
+});
+
 app.get("/api/health", (req, res) => {
   res.json({
     ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length,
@@ -3842,6 +3887,7 @@ app.get("/api/health", (req, res) => {
     firebase: firebaseReady,
     dataDir: RUNTIME_DATA_DIR || null,
     uptime: process.uptime(),
+    cluster: cluster.health(),
   });
 });
 
@@ -6971,11 +7017,18 @@ io.on("connection", (socket) => {
 ========================================================= */
 
 initDatabase().then(async () => {
+  /* 게임 코어 lease — DB가 있으면 게임 코어가 하나만 뜨도록 보호한다.
+     web 릴레이는 lease를 잡지 않고 노드 heartbeat만 기록한다. */
+  const clusterStart = await cluster.start(dbPool);
+  if (cluster.isGameCore && !clusterStart.ok) {
+    console.error("게임 코어를 시작할 수 없습니다:", clusterStart.reason || "알 수 없는 이유");
+    process.exit(1);
+  }
   /* Firebase(로그인 토큰 검증 + Firestore 랭킹 미러링) 초기화 */
   initFirebase();
   /* JSON 모드로 굴리다가 PG로 넘어왔을 때, 살아있는 유저 기록을 DB로 1회만 이관한다.
-     마커 보호라서 재배포돼도 두 번 실행되지 않는다. */
-  await migrateJsonPlayersToPg();
+     마커 보호라서 재배포돼도 두 번 실행되지 않는다. 게임 코어에서만 실행한다. */
+  if (cluster.isGameCore) await migrateJsonPlayersToPg();
   /* PG 모드에서는 파일이 남아있지 않아도 DB(kv_store)에서 보조 저장소를 복구한다 */
   await Promise.all([
     loadAdminConfig(),
@@ -6991,9 +7044,12 @@ initDatabase().then(async () => {
   await loadCustomDict();
   rebuildWordViews();
   if (!seasonStore) await loadSeasonStore();
-  ensureSeasonRollover().catch(err => console.error("시작 시 시즌 전환 오류:", err.message));
-  /* 한 시간마다 시즌 전환 감지 — 달이 바뀌는 순간을 놓치지 않도록 */
-  setInterval(() => { ensureSeasonRollover().catch(() => {}); }, 60 * 60 * 1000);
+  /* 시즌 전환은 게임 코어에서만 실행한다. web 인스턴스가 여러 개 떠도
+     같은 시즌 마감/보상 지급이 중복 실행되지 않도록 하기 위함이다. */
+  if (cluster.isGameCore) {
+    ensureSeasonRollover().catch(err => console.error("시작 시 시즌 전환 오류:", err.message));
+    setInterval(() => { ensureSeasonRollover().catch(() => {}); }, 60 * 60 * 1000);
+  }
   server.listen(PORT, "0.0.0.0", () => {
     console.log("========================================");
     console.log(`끝말잇기 서버 실행 중: http://localhost:${PORT}`);
@@ -7002,6 +7058,8 @@ initDatabase().then(async () => {
     console.log(`방어 단어: ${DEFENSE_WORDS.size.toLocaleString()}개`);
     console.log(`데이터베이스: ${dbMode === "pg" ? "PostgreSQL" : "JSON 파일"}`);
     console.log(`Firebase: ${firebaseReady ? "연결됨 (로그인 + 파이어 랭킹)" : "미설정"}`);
+    console.log(`클러스터 역할: ${cluster.role} / 인스턴스: ${cluster.instanceId}`);
+    if (cluster.role === "web") console.log(`게임 코어로 릴레이: ${cluster.gameUrl}`);
     console.log(`공격 단어 금지 턴: ${ONESHOT_FREE_TURNS}턴`);
     if (dbMode === "json") {
       console.log("⚠ 데이터가 JSON 파일로만 저장됩니다 — 재배포/새 클론 시 유실될 수 있습니다.");
@@ -7040,7 +7098,10 @@ function startKeepAlivePing() {
 function shutdown(signal) {
   for (const room of ROOMS.values()) stopTurnTimer(room);
   if (chatSaveTimer) { clearTimeout(chatSaveTimer); chatSaveTimer = null; saveChatHistoryNow(); }
-  flushFirebaseScores().finally(() => server.close(() => process.exit(0)));
+  Promise.resolve(cluster.stop(dbPool)).catch(() => {})
+    .then(() => flushFirebaseScores())
+    .catch(() => {})
+    .finally(() => server.close(() => process.exit(0)));
 }
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
