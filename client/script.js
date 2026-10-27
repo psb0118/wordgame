@@ -68,6 +68,9 @@ let rankedAutoContinue = localStorage.getItem("kkAutoRequeue") === "1";
 let rankedStreak = 0;
 let rankedBestStreak = 0;
 let lastRankedStreak = 0;
+let tournamentQueued = false;
+let tournamentQueueStats = null;
+let tournamentTicker = null;
 
 /* 출석체크 상태 */
 let attendanceCheckedToday = false;
@@ -599,6 +602,10 @@ function initSocket() {
     rankedQueued = false;
     rankedQueueStats = null;
     stopRankedQueueTicker();
+    tournamentQueued = false;
+    tournamentQueueStats = null;
+    stopTournamentTicker();
+    updateTournamentQueueUI();
     updateRankedQueueUI();
     stopCountdown();
     updateInputState();
@@ -716,6 +723,96 @@ function initSocket() {
     rankedQueueStats = { ...data, receivedAt: Date.now() };
     renderRankedQueueInfo();
     startRankedQueueTicker();
+  });
+
+  /* -- 4인 랭크 대회 ---------------------------------- */
+  socket.on("tournament:queueStatus", (data) => {
+    if (!data) return;
+    tournamentQueued = !!data.queued;
+    if (!tournamentQueued) {
+      tournamentQueueStats = null;
+      stopTournamentTicker();
+    }
+    updateTournamentQueueUI();
+    if (data.reason) tournamentMsg(data.reason, data.ok ? "" : "error");
+  });
+
+  socket.on("tournament:queueSize", (data) => {
+    if (!data || !tournamentQueued) return;
+    tournamentQueueStats = { ...data, receivedAt: Date.now() };
+    renderTournamentQueueInfo();
+    startTournamentTicker();
+  });
+
+  socket.on("tournament:matched", (data) => {
+    if (!data || !data.ok || !data.state) return;
+    clearTimeout(rankedAutoLeave);
+    rankedAutoLeave = null;
+    tournamentQueued = false;
+    tournamentQueueStats = null;
+    stopTournamentTicker();
+    gameState = data.state;
+    roomId = data.roomId;
+    playerIndex = data.playerIndex ?? data.state.players?.find(p => p.id === socket.id)?.playerIndex ?? 0;
+    storeLastRoomId(data.roomId);
+    gameSessionId++;
+    switchToModeTab("online", false);
+    $("#onlineRestartWrap")?.classList.add("hidden");
+    renderGameState(gameState);
+    updateTournamentQueueUI();
+    const names = (data.players || []).filter(p => !p.isMe).map(p => p.nickname).join(", ");
+    showMessage(`🏟️ 대회 시작! 함께하는 플레이어: ${names || "3명"}`, "success");
+    if (socket && socketConnected) socket.emit("chat:history", { roomId: data.roomId });
+  });
+
+  /* -- 계정 복구 / 기기 연결 ---------------------------- */
+  socket.on("account:recoveryCode", (data) => {
+    if (!data) return;
+    if (!data.ok) { recoveryMsg(data.reason || "복구 코드를 만들지 못했습니다.", "error"); return; }
+    const box = $("#recoveryCodeBox");
+    const code = $("#recoveryCodeValue");
+    if (code) code.textContent = data.code || "";
+    if (box) box.classList.remove("hidden");
+    recoveryMsg(data.message || "복구 코드를 안전한 곳에 보관하세요.", "ok");
+  });
+
+  socket.on("account:recoverResult", (data) => {
+    if (!data) return;
+    if (data.ok) {
+      recoveryMsg(`'${data.nickname}' 계정을 복구했습니다.`, "ok");
+      showMessage(`'${data.nickname}' 계정으로 복구되었습니다.`, "success");
+    } else {
+      recoveryMsg(data.reason || "계정 복구에 실패했습니다.", "error");
+    }
+  });
+
+  socket.on("account:linkCode", (data) => {
+    if (!data) return;
+    if (!data.ok) { recoveryMsg(data.reason || "연결 코드를 만들지 못했습니다.", "error"); return; }
+    const box = $("#linkCodeBox");
+    const code = $("#linkCodeValue");
+    if (code) code.textContent = data.code || "";
+    if (box) box.classList.remove("hidden");
+    recoveryMsg(data.message || "10분 안에 다른 기기에서 입력하세요.", "ok");
+  });
+
+  socket.on("account:linkResult", (data) => {
+    if (!data) return;
+    if (data.ok) {
+      recoveryMsg(`'${data.nickname}' 계정과 연결했습니다.`, "ok");
+      showMessage(`'${data.nickname}' 계정으로 연결되었습니다.`, "success");
+    } else {
+      recoveryMsg(data.reason || "기기 연결에 실패했습니다.", "error");
+    }
+  });
+
+  socket.on("account:recovered", (data) => {
+    if (!data || !data.ok) return;
+    myNickname = data.nickname;
+    try { localStorage.setItem("kkNickname", myNickname); } catch (e) { /* 무시 */ }
+    updateNicknameUI();
+    renderAccountInfo();
+    socket.emit("player:getRanking");
   });
 
   /* -- 랭크 복수전 (다시 대결) -------------------------- */
@@ -1714,6 +1811,21 @@ function initSocket() {
 
     /* 랭크 게임 종료 후 처리 — 복수전 버튼 제공, 자동 계속매칭 설정에 따라
        자동 재매칭 또는 매칭 대기실 복귀 */
+    if (data.state && data.state.tournament) {
+      const wrap = $("#onlineRestartWrap");
+      if (wrap) wrap.classList.add("hidden");
+      showMessage(data.winner === playerIndex
+        ? "🏟️ 대회 우승! 보상이 지급되었습니다."
+        : "🏟️ 대회가 끝났습니다. 다음 대회에 도전해보세요.", data.winner === playerIndex ? "win" : "info");
+      setTimeout(() => {
+        if (currentMode === "online" && gameState && gameState.tournament) {
+          leaveRoom();
+          switchToModeTab("tournament", false);
+          updateTournamentQueueUI();
+        }
+      }, 5000);
+    }
+
     if (currentMode === "ranked") {
       clearTimeout(rankedAutoLeave);
       rankedAutoLeave = null;
@@ -4599,6 +4711,9 @@ document.addEventListener("DOMContentLoaded", () => {
         else { $("#rankedLobby")?.classList.remove("hidden"); $("#rankedGame")?.classList.add("hidden"); refreshSeasonBar(); }
         updateRankedQueueUI();
         renderRankedStreakChip();
+      } else if (currentMode === "tournament") {
+        updateTournamentQueueUI();
+        renderTournamentQueueInfo();
       } else if (currentMode === "shop") {
         if (socket && socketConnected) {
           socket.emit("shop:list");
@@ -4734,6 +4849,65 @@ document.addEventListener("DOMContentLoaded", () => {
     updateRankedQueueUI();
     socket.emit("ranked:cancel");
   });
+
+  /* 4인 랭크 대회 */
+  $("#tournamentQueueBtn")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+    if (!isLoggedIn()) {
+      showMessage("랭크 대회는 Google 로그인 후 이용할 수 있습니다.", "error");
+      openAccountPanel(true);
+      return;
+    }
+    if (!requireNickname()) return;
+    tournamentQueued = true;
+    tournamentQueueStats = null;
+    updateTournamentQueueUI();
+    socket.emit("tournament:queue");
+  });
+  $("#tournamentCancelBtn")?.addEventListener("click", () => {
+    tournamentQueued = false;
+    tournamentQueueStats = null;
+    stopTournamentTicker();
+    updateTournamentQueueUI();
+    socket.emit("tournament:cancel");
+  });
+
+  /* 계정 복구 · 기기 연결 */
+  $("#recoveryCreateBtn")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) { recoveryMsg("서버에 연결 중입니다.", "error"); return; }
+    socket.emit("account:recoveryCode");
+  });
+  $("#recoveryApplyBtn")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) { recoveryMsg("서버에 연결 중입니다.", "error"); return; }
+    const nickname = normalizeWord($("#recoveryNickInput")?.value || "");
+    const code = String($("#recoveryCodeInput")?.value || "").replace(/\s+/g, "").toUpperCase();
+    if (!nickname || !code) { recoveryMsg("닉네임과 복구 코드를 입력해주세요.", "error"); return; }
+    socket.emit("account:recover", { nickname, code });
+  });
+  $("#linkCodeBtn")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) { recoveryMsg("서버에 연결 중입니다.", "error"); return; }
+    socket.emit("account:linkCode");
+  });
+  $("#linkRedeemBtn")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) { recoveryMsg("서버에 연결 중입니다.", "error"); return; }
+    const code = String($("#linkRedeemInput")?.value || "").replace(/\s+/g, "").toUpperCase();
+    if (!code) { recoveryMsg("연결 코드를 입력해주세요.", "error"); return; }
+    if (!window.confirm("이 기기의 게스트 데이터는 대체됩니다. 계속 연결할까요?")) return;
+    socket.emit("account:linkRedeem", { code, confirm: true });
+  });
+  const copyRecovery = async (selector, label) => {
+    const text = $(selector)?.textContent || "";
+    if (!text) return;
+    try {
+      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") throw new Error("clipboard");
+      await navigator.clipboard.writeText(text);
+      recoveryMsg(label + "를 복사했습니다.", "ok");
+    } catch (e) {
+      window.prompt(label + "를 복사하세요.", text);
+    }
+  };
+  $("#recoveryCopyBtn")?.addEventListener("click", () => copyRecovery("#recoveryCodeValue", "복구 코드"));
+  $("#linkCopyBtn")?.addEventListener("click", () => copyRecovery("#linkCodeValue", "연결 코드"));
 
   /* 자동 계속매칭 — 게임 후 자동으로 다음 매칭 이어가기 */
   const autoCb = $("#rankedAutoContinue");
@@ -4917,3 +5091,61 @@ document.addEventListener("DOMContentLoaded", () => {
   renderAccountScores();
 
 });
+
+/* ---------------------------------------------------------
+   4인 랭크 대회 UI
+--------------------------------------------------------- */
+function tournamentMsg(text, type) {
+  const el = $("#tournamentStatus");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = "acc-referral-msg" + (type === "ok" ? " ok" : type === "error" ? " error" : "");
+}
+
+function updateTournamentQueueUI() {
+  const start = $("#tournamentQueueBtn");
+  const cancel = $("#tournamentCancelBtn");
+  if (start) start.classList.toggle("hidden", tournamentQueued);
+  if (cancel) cancel.classList.toggle("hidden", !tournamentQueued);
+  const info = $("#tournamentQueueInfo");
+  if (info) info.dataset.active = tournamentQueued ? "true" : "false";
+  if (tournamentQueued) renderTournamentQueueInfo();
+  else stopTournamentTicker();
+}
+
+function renderTournamentQueueInfo() {
+  const info = $("#tournamentQueueInfo");
+  if (!info) return;
+  if (!tournamentQueued) { info.textContent = "참가 버튼을 누르면 4명이 모일 때 자동으로 시작됩니다."; return; }
+  const stats = tournamentQueueStats || {};
+  const size = Number(stats.size) || 0;
+  const needed = Math.max(0, Number(stats.needed != null ? stats.needed : 4 - size));
+  const elapsed = Math.max(0, Date.now() - (stats.receivedAt || Date.now()));
+  const oldest = Math.max(0, (Number(stats.oldestWaitMs) || 0) + elapsed);
+  info.textContent = `대기 ${size}/4명 · ${needed ? needed + "명 더 모이면 시작" : "곧 시작합니다"} · 최장 ${Math.floor(oldest / 1000)}초`;
+}
+
+function startTournamentTicker() {
+  if (tournamentTicker) return;
+  tournamentTicker = setInterval(renderTournamentQueueInfo, 1000);
+}
+
+function stopTournamentTicker() {
+  if (tournamentTicker) {
+    clearInterval(tournamentTicker);
+    tournamentTicker = null;
+  }
+}
+
+function recoveryMsg(text, type) {
+  const el = $("#recoveryMsg");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = "acc-referral-msg" + (type === "ok" ? " ok" : type === "error" ? " error" : "");
+}
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => { /* 오프라인 캐시는 선택 기능 */ });
+  });
+}

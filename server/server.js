@@ -3,6 +3,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const express = require("express");
 const { Server } = require("socket.io");
 const {
@@ -1358,6 +1359,8 @@ function migratePlayerData(p) {
   if (!Array.isArray(p.ratingHistory)) p.ratingHistory = [];
   else p.ratingHistory = p.ratingHistory.slice(-60).filter(e => e && typeof e === "object" && Number.isFinite(Number(e.r)));
   p.lastSeen = typeof p.lastSeen === "string" ? p.lastSeen : "";
+  p.recoveryHash = typeof p.recoveryHash === "string" ? p.recoveryHash.slice(0, 128) : "";
+  p.recoveryAt = typeof p.recoveryAt === "string" ? p.recoveryAt : "";
   p.daily = initDailyData(p.daily, getKstDate());
   p.weekly = initWeeklyData(p.weekly, getKstWeek());
   p.monthly = initMonthlyData(p.monthly, getKstMonth());
@@ -1754,6 +1757,93 @@ async function recordWelcomeLedger(accountId, amount, balanceAfter) {
   }
 }
 
+/* ---------- 계정 복구·기기 연결 helpers ---------- */
+function normalizeRecoveryCode(value) {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 32);
+}
+
+function randomRecoveryCode(length) {
+  const bytes = crypto.randomBytes(Math.max(1, length));
+  let out = "";
+  for (let i = 0; i < length; i++) out += RECOVERY_ALPHABET[bytes[i] % RECOVERY_ALPHABET.length];
+  return out;
+}
+
+function hashRecoveryCode(code, accountId) {
+  const clean = normalizeRecoveryCode(code);
+  const account = normKey(accountId);
+  if (!clean || !account) return "";
+  return crypto.createHash("sha256")
+    .update(RECOVERY_PEPPER + ":" + account + ":" + clean)
+    .digest("hex");
+}
+
+function sameRecoveryHash(a, b) {
+  const x = String(a || ""), y = String(b || "");
+  if (!x || !y || x.length !== y.length) return false;
+  try { return crypto.timingSafeEqual(Buffer.from(x), Buffer.from(y)); } catch { return false; }
+}
+
+function recoveryAttemptAllowed(socketId) {
+  const now = Date.now();
+  let row = RECOVERY_ATTEMPTS.get(socketId);
+  if (!row || now - row.startedAt >= RECOVERY_ATTEMPT_WINDOW_MS) {
+    row = { count: 0, startedAt: now };
+    RECOVERY_ATTEMPTS.set(socketId, row);
+  }
+  row.count += 1;
+  return row.count <= RECOVERY_ATTEMPT_MAX;
+}
+
+function issueLinkCode(ownerKey) {
+  const now = Date.now();
+  for (const [code, row] of LINK_CODES) {
+    if (!row || row.expiresAt <= now) LINK_CODES.delete(code);
+  }
+  const code = randomRecoveryCode(LINK_CODE_LENGTH);
+  LINK_CODES.set(code, { ownerKey: normKey(ownerKey), expiresAt: now + LINK_CODE_TTL_MS });
+  return code;
+}
+
+function redeemLinkCode(code) {
+  const clean = normalizeRecoveryCode(code);
+  const row = LINK_CODES.get(clean);
+  if (!row) return null;
+  LINK_CODES.delete(clean);
+  if (!row.ownerKey || row.expiresAt <= Date.now()) return null;
+  return row.ownerKey;
+}
+
+/* 계정을 현재 소켓으로 이어받는다. 방에 있었다면 확인된 뒤 자동으로 나간다. */
+async function adoptAccountForSocket(socket, nickname, via) {
+  const key = normKey(nickname);
+  if (!key) return { ok: false, reason: "닉네임을 입력해주세요." };
+  const target = await getPlayerData(key);
+  if (!target || !target.nickname || normKey(target.nickname) !== key || isGhostRecord(target)) {
+    return { ok: false, reason: "해당 닉네임의 계정을 찾을 수 없습니다." };
+  }
+  const currentUid = socketFirebaseUid.get(socket.id) || "";
+  if (target.firebaseUid && currentUid && target.firebaseUid !== currentUid) {
+    return { ok: false, reason: "이 계정은 다른 Google 계정에 연결되어 있습니다." };
+  }
+  const holder = onlineNicks.get(key);
+  if (holder && holder !== socket.id && io.sockets.sockets.has(holder)) {
+    return { ok: false, reason: "이미 다른 기기에서 접속 중인 계정입니다. 기존 접속을 종료한 뒤 다시 시도해주세요." };
+  }
+  if (getPlayerRoom(socket)) {
+    leaveRoomForSocket(socket, "account");
+    socket.emit("room:left", { ok: true });
+  }
+  registerOnline(socket.id, target.nickname);
+  socket.emit("player:nameUpdated", {
+    ok: true, nickname: target.nickname, recovered: true,
+    nameChanges: Number(target.nameChanges || 0)
+  });
+  socket.emit("player:ranking", await getRankingPayload(socket.id));
+  socket.emit("account:recovered", { ok: true, nickname: target.nickname, via });
+  return { ok: true, nickname: target.nickname };
+}
+
 /* 구매 요청 ID — 반복 구매(보호 티켓·물약)의 중복 청구를 막는다 */
 function safeEconomyRequestId(value, prefix = "req") {
   const clean = String(value || "").replace(/[^a-zA-Z0-9:_-]/g, "").slice(0, 80);
@@ -1822,8 +1912,10 @@ async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mo
   winner[key].wins += 1; winner.nickname = winnerNickname || winner.nickname;
   loser[key].losses += 1; loser.nickname = loserNickname || loser.nickname;
   if (key === "ranked" || key === "multi") {
-    winner[key].streak = Math.max(0, (winner[key].streak || 0)) + 1;
-    winner[key].bestStreak = Math.max((winner[key].bestStreak || 0), winner[key].streak);
+    if (opts.noStreak !== true) {
+      winner[key].streak = Math.max(0, (winner[key].streak || 0)) + 1;
+      winner[key].bestStreak = Math.max((winner[key].bestStreak || 0), winner[key].streak);
+    }
     loser[key].streak = 0;
   }
   if (!Number.isFinite(winner[key].rating)) winner[key].rating = 1000;
@@ -1963,6 +2055,36 @@ const RANKED_RECENT_MATCHES = [];
    친구에게 지명 랭크 대결을 신청하고 수락하면 그 둘끼리 새 랭크 매치를 시작한다 */
 const RANKED_INVITES = new Map();
 
+/* =========================================================
+   랭크 대회 — 4인 서바이벌
+   한 방에 4명이 들어와 턴을 돌리고, 하트가 모두 소진된 순서대로
+   탈락한다. 마지막 한 명이 남으면 대회 승리로 정산한다.
+   기존 턴/한방/타이머 엔진을 그대로 쓰므로 일반 대전과 규칙이 같다.
+========================================================= */
+const TOURNAMENT_SIZE = 4;
+const TOURNAMENT_QUEUE = [];
+/* socketId -> true */
+const TOURNAMENT_QUEUE_MAP = new Map();
+const TOURNAMENT_RECENT = [];
+
+/* =========================================================
+   계정 복구·기기 연결
+   - 복구 코드: 계정마다 한 번 발급/재발급. 해시만 저장하고 원문은 발급 시 1회만 보여준다.
+   - 연결 코드: 현재 기기에서 10분짜리 일회용 코드를 만들어 다른 기기에서 입력한다.
+   - 두 경로 모두 코드를 아는 사람만 계정을 이어받을 수 있다.
+========================================================= */
+const RECOVERY_PEPPER = String(process.env.RECOVERY_PEPPER || "kkeul-recovery-v1");
+const RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const RECOVERY_CODE_LENGTH = 10;
+const LINK_CODE_LENGTH = 8;
+const LINK_CODE_TTL_MS = 10 * 60 * 1000;
+const RECOVERY_ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
+const RECOVERY_ATTEMPT_MAX = 8;
+/* code -> { ownerKey, expiresAt } */
+const LINK_CODES = new Map();
+/* socketId -> { count, startedAt } */
+const RECOVERY_ATTEMPTS = new Map();
+
 /* 소켓과 얽힌 랭크 초대를 모두 정리 — 내가 보낸 초대와 나를 대상으로 한 초대를
    취소하고 상대에게 통지한다 (매칭 대기 진입/커넥션 종료 등에서 호출) */
 function cancelRankedInvitesFor(socketId) {
@@ -2029,6 +2151,8 @@ async function getRankingPayload(socketId) {
     moneyMultiplier: data.moneyMultiplier,
     ratingBoostGames: data.ratingBoostGames,
     nameChanges: Number(data.nameChanges || 0),
+    hasRecovery: !!data.recoveryHash,
+    recoveryAt: data.recoveryAt || "",
     titles: data.titles,
     currentTitle: data.currentTitle,
     attendance: {
@@ -2565,6 +2689,182 @@ function startRankedGame(a, b) {
 }
 
 /* =========================================================
+   랭크 대회 — 큐/방/정산
+========================================================= */
+function addToTournamentQueue(socketId, nickname, rating) {
+  if (TOURNAMENT_QUEUE_MAP.has(socketId)) return false;
+  TOURNAMENT_QUEUE.push({ socketId, nickname, rating, joinedAt: Date.now() });
+  TOURNAMENT_QUEUE_MAP.set(socketId, true);
+  return true;
+}
+
+function removeFromTournamentQueue(socketId) {
+  const idx = TOURNAMENT_QUEUE.findIndex(q => q.socketId === socketId);
+  if (idx !== -1) TOURNAMENT_QUEUE.splice(idx, 1);
+  TOURNAMENT_QUEUE_MAP.delete(socketId);
+}
+
+function broadcastTournamentQueue() {
+  const now = Date.now();
+  const size = TOURNAMENT_QUEUE.length;
+  const oldestWaitMs = size
+    ? Math.max(0, now - TOURNAMENT_QUEUE.reduce((min, q) => Math.min(min, q.joinedAt), now))
+    : 0;
+  for (const q of TOURNAMENT_QUEUE) {
+    const nearbyCount = TOURNAMENT_QUEUE.reduce(
+      (count, other) => count + (other !== q && Math.abs(other.rating - q.rating) <= 200 ? 1 : 0), 0);
+    io.to(q.socketId).emit("tournament:queueSize", {
+      size, needed: Math.max(0, TOURNAMENT_SIZE - size), nearbyCount, oldestWaitMs
+    });
+  }
+  if (size === 0) io.emit("tournament:queueSize", { size: 0, needed: TOURNAMENT_SIZE });
+}
+
+function tryMatchTournament() {
+  while (TOURNAMENT_QUEUE.length >= TOURNAMENT_SIZE) {
+    TOURNAMENT_QUEUE.sort((a, b) =>
+      (a.rating - b.rating) || (a.joinedAt - b.joinedAt) || String(a.socketId).localeCompare(String(b.socketId)));
+    const entries = TOURNAMENT_QUEUE.splice(0, TOURNAMENT_SIZE);
+    for (const entry of entries) TOURNAMENT_QUEUE_MAP.delete(entry.socketId);
+    if (entries.some(entry => !io.sockets.sockets.has(entry.socketId))) continue;
+    const matchedAt = Date.now();
+    TOURNAMENT_RECENT.push({
+      at: matchedAt,
+      waitMs: Math.max(0, matchedAt - Math.min(...entries.map(e => e.joinedAt)))
+    });
+    if (TOURNAMENT_RECENT.length > 10) TOURNAMENT_RECENT.shift();
+    startTournamentGame(entries);
+  }
+  broadcastTournamentQueue();
+}
+
+function startTournamentGame(entries) {
+  if (!Array.isArray(entries) || entries.length !== TOURNAMENT_SIZE) return false;
+  const sockets = entries.map(e => io.sockets.sockets.get(e.socketId));
+  if (sockets.some(s => !s)) return false;
+  for (const s of sockets) leaveRoomForSocket(s, "leave");
+  const roomId = createRoomId();
+  const room = {
+    id: roomId,
+    hostSocketId: entries[0].socketId,
+    mode: "tournament",
+    tournament: true,
+    tournamentId: "T" + roomId,
+    players: [],
+    currentWord: null,
+    turnPlayerIndex: 0,
+    turnNumber: 0,
+    history: [],
+    usedWords: new Set(),
+    started: false,
+    finished: false,
+    winner: null,
+    loser: null,
+    timer: null,
+    turnStartedAt: null,
+    turnEndsAt: null,
+    lastSyllable: null,
+    gameSessionId: 0
+  };
+  for (const entry of entries) addPlayer(room, entry.socketId, entry.nickname);
+  ROOMS.set(roomId, room);
+  entries.forEach((entry, index) => {
+    const s = sockets[index];
+    s.join(roomId);
+    s.data.roomId = roomId;
+    s.data.playerIndex = index;
+    registerOnline(entry.socketId, entry.nickname);
+    s.emit("tournament:matched", {
+      ok: true, roomId, playerIndex: index,
+      players: entries.map((e, i) => ({ nickname: e.nickname, rating: e.rating, isMe: i === index })),
+      state: getPublicRoomState(room)
+    });
+  });
+  startNewGame(room);
+  console.log(`[TOURNAMENT MATCH] ${entries.map(e => e.nickname).join(", ")} → ${roomId}`);
+  return true;
+}
+
+/* 대회 정산 — 승자는 남은 인원 전원을 상대로 랭크 승리를 얻고,
+   패자는 각각 랭크 패배를 기록한다. 승자 연승은 한 번만 올린다. */
+async function settleTournamentGame(resultRoom, winnerIndex, roomId, gameSessionId) {
+  const humans = (resultRoom.players || []).filter(p => !p.isBot);
+  const winner = humans.find(p => p.playerIndex === winnerIndex);
+  const losers = humans.filter(p => p.playerIndex !== winnerIndex);
+  if (!winner) {
+    await recordMatchHistory(resultRoom, winnerIndex, null);
+    return;
+  }
+  const winnerId = normKey(winner.nickname) || winner.id;
+  let winnerData = null;
+  for (const loser of losers) {
+    const loserId = normKey(loser.nickname) || loser.id;
+    try {
+      const result = await updateRating(
+        winnerId, loserId, winner.nickname || "플레이어", loser.nickname || "플레이어",
+        "ranked", { noStreak: true }
+      );
+      winnerData = result.winner;
+      for (const [data, p] of [[result.winner, winner], [result.loser, loser]]) {
+        if (p && p.socketId) {
+          const s = io.sockets.sockets.get(p.socketId);
+          if (s) s.emit("player:ranking", { ...data, rank: data.rank });
+        }
+      }
+      if (result.loserProtected && loser && loser.socketId) {
+        const ls = io.sockets.sockets.get(loser.socketId);
+        if (ls) ls.emit("shield:used", { message: "랭크 보호 티켓이 사용되어 레이팅이 감소하지 않았습니다!" });
+      }
+      await bumpSeasonFor(loserId, "lose");
+    } catch (err) {
+      console.error("대회 패자 정산 오류:", err.message);
+    }
+  }
+
+  winnerData = await getPlayerData(winnerId);
+  winnerData.ranked.streak = Math.max(0, Number(winnerData.ranked.streak) || 0) + 1;
+  winnerData.ranked.bestStreak = Math.max(Number(winnerData.ranked.bestStreak) || 0, winnerData.ranked.streak);
+  await savePlayerData(winnerId, winnerData);
+
+  const base = rollMoney() * Math.max(1, losers.length);
+  const earned = computeMoneyReward(base, winnerData);
+  if (earned > 0) {
+    const tx = await beginEconomyTx({
+      accountId: winnerId,
+      idemKey: `tournament:${roomId}:${gameSessionId}:${winnerId}`,
+      delta: earned, reason: "tournament_win", ref: roomId
+    });
+    if (tx && tx.ok) {
+      winnerData.money += earned;
+      try {
+        await savePlayerData(winnerId, winnerData);
+        await finishEconomyTx(tx, winnerData.money);
+      } catch (err) {
+        await abortEconomyTx(tx);
+        throw err;
+      }
+      const ws = winner.socketId ? io.sockets.sockets.get(winner.socketId) : null;
+      if (ws) ws.emit("money:received", {
+        amount: earned, base, multiplier: Math.round(earned / Math.max(1, base)), roomId
+      });
+    } else if (tx && tx.duplicate) {
+      console.warn("이미 지급된 대회 보상 — 중복 지급 생략:", roomId, winnerId);
+    }
+  }
+
+  /* 코인 저장 뒤에 일일/시즌 카운터를 갱신해야 오래된 스냅샷이 카운터를 덮어쓰지 않는다. */
+  await bumpDaily(winnerId, "rankedWins");
+  if (winnerData.ranked.streak >= 2) await bumpDaily(winnerId, "streakDone");
+  await bumpSeasonFor(winnerId, "win");
+  await recordMatchHistory(resultRoom, winnerIndex, null);
+  for (const p of humans) {
+    if (!p.socketId) continue;
+    const s = io.sockets.sockets.get(p.socketId);
+    if (s) s.emit("player:ranking", await getRankingPayload(p.socketId));
+  }
+}
+
+/* =========================================================
    방 관리
 ========================================================= */
 
@@ -2581,6 +2881,7 @@ function createRoomId() {
 function roomCapacity(room) {
   if (!room) return MAX_PLAYERS;
   if (room.mode === "ranked") return 2;
+  if (room.mode === "tournament") return TOURNAMENT_SIZE;
   return room.mode === "party" ? PARTY_PLAYERS : MAX_PLAYERS;
 }
 
@@ -2746,6 +3047,8 @@ function getPublicRoomState(room) {
     hostSocketId: room.hostSocketId,
     mode: room.mode,
     practice: !!room.practice,
+    tournament: !!room.tournament,
+    tournamentId: room.tournamentId || null,
     currentWord: room.currentWord,
     startSyllable: room.startSyllable || null,
     turnPlayer: room.turnPlayerIndex,
@@ -2964,7 +3267,12 @@ async function finishGame(room, winnerIndex, loserIndex) {
   const winnerAccountId = w ? normKey(w.nickname) || w.id : null;
   const loserAccountId = l ? normKey(l.nickname) || l.id : null;
   const humanOnly = w && l && !w.isBot && !l.isBot;
-  if (room.mode === "party" && humanOnly && w && l && winnerIndex !== null) {
+  if (room.mode === "tournament") {
+    resultSave = (winnerIndex !== null
+      ? settleTournamentGame(resultRoom, winnerIndex, room.id, room.gameSessionId)
+      : recordMatchHistory(resultRoom, winnerIndex, null))
+      .catch(err => console.error("대회 결과 저장 오류:", err.message));
+  } else if (room.mode === "party" && humanOnly && w && l && winnerIndex !== null) {
     /* 2v2 — 승리 팀·패배 팀 전원에게 멀티 레이팅 승/패를 각각 반영 */
     const pairs = partyResultPairs(resultRoom, winnerIndex);
     resultSave = (async () => {
@@ -4181,6 +4489,10 @@ io.on("connection", (socket) => {
     try {
       const room = getPlayerRoom(socket);
       if (!room) return;
+      if (room.mode === "tournament") {
+        socket.emit("game:error", { ok: false, reason: "대회 경기는 다시 시작할 수 없습니다. 새 대회에 참가해주세요." });
+        return;
+      }
       if (room.hostSocketId !== socket.id) {
         socket.emit("game:error", { ok: false, reason: "방장만 게임을 다시 시작할 수 있습니다." });
         return;
@@ -4347,7 +4659,10 @@ io.on("connection", (socket) => {
     REMATCHES.delete(socket.id);
     cancelRankedInvitesFor(socket.id);
     removeFromRankedQueue(socket.id);
+    removeFromTournamentQueue(socket.id);
     broadcastRankedQueue();
+    broadcastTournamentQueue();
+    RECOVERY_ATTEMPTS.delete(socket.id);
     const hadNick = socketNicks.has(socket.id);
     unregisterOnline(socket.id);
     /* 이름 없이 접속했다 끊긴 고스트 레코드 정리 — 랭킹이 '플레이어'로 오염되는 것 방지 */
@@ -4414,6 +4729,10 @@ io.on("connection", (socket) => {
       }
       REMATCHES.delete(socket.id);
       cancelRankedInvitesFor(socket.id);
+      const wasTournamentQueued = TOURNAMENT_QUEUE_MAP.has(socket.id);
+      removeFromTournamentQueue(socket.id);
+      broadcastTournamentQueue();
+      if (wasTournamentQueued) socket.emit("tournament:queueStatus", { ok: true, queued: false });
       const pd = await getPlayerData(socket.id);
       const nickname = String(pd.nickname || "플레이어").trim();
       if (!nickname) { socket.emit("ranked:queueStatus", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
@@ -4438,6 +4757,45 @@ io.on("connection", (socket) => {
     removeFromRankedQueue(socket.id);
     socket.emit("ranked:queueStatus", { ok: true, queued: false });
     broadcastRankedQueue();
+  });
+
+  /* -- 4인 랭크 대회 ------------------------------------- */
+  socket.on("tournament:queue", async () => {
+    try {
+      if (!socketFirebaseUid.get(socket.id)) {
+        socket.emit("tournament:queueStatus", { ok: false, reason: "랭크 대회는 Google 로그인 후 이용할 수 있습니다." });
+        return;
+      }
+      const pd = await getPlayerData(socket.id);
+      const nickname = String(pd.nickname || "플레이어").trim();
+      if (!nickname || isGhostRecord(pd)) { socket.emit("tournament:queueStatus", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
+      const banMsg = banGuard(nickname);
+      if (banMsg) { socket.emit("tournament:queueStatus", { ok: false, reason: banMsg, banned: true }); return; }
+      leaveRoomForSocket(socket, "leave");
+      socket.emit("room:left", { ok: true });
+      const wasRankedQueued = RANKED_QUEUE_MAP.has(socket.id);
+      removeFromRankedQueue(socket.id);
+      cancelRankedInvitesFor(socket.id);
+      broadcastRankedQueue();
+      if (wasRankedQueued) socket.emit("ranked:queueStatus", { ok: true, queued: false });
+      if (!addToTournamentQueue(socket.id, nickname, Number(pd.ranked && pd.ranked.rating) || 1000)) {
+        socket.emit("tournament:queueStatus", { ok: true, queued: true, reason: "이미 대회 대기 중입니다." });
+        return;
+      }
+      registerOnline(socket.id, nickname);
+      socket.emit("tournament:queueStatus", { ok: true, queued: true });
+      broadcastTournamentQueue();
+      tryMatchTournament();
+    } catch (err) {
+      console.error("대회 매칭 오류:", err);
+      socket.emit("tournament:queueStatus", { ok: false, reason: "대회 매칭에 실패했습니다." });
+    }
+  });
+
+  socket.on("tournament:cancel", () => {
+    removeFromTournamentQueue(socket.id);
+    socket.emit("tournament:queueStatus", { ok: true, queued: false });
+    broadcastTournamentQueue();
   });
 
   /* -- 랭크 복수전 (다시 대결) --------------------------- */
@@ -6116,6 +6474,95 @@ io.on("connection", (socket) => {
       await loadGuilds();
       socket.emit("guild:state", buildGuildState(nick));
     } catch (err) { console.error("길드 조회 오류:", err); socket.emit("guild:state", { ok: false, reason: "길드 정보를 불러오지 못했습니다." }); }
+  });
+
+  /* -- 계정 복구 · 기기 연결 ----------------------------- */
+  socket.on("account:recoveryCode", async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      if (!pd.nickname || isGhostRecord(pd)) {
+        socket.emit("account:recoveryCode", { ok: false, reason: "먼저 닉네임을 설정해주세요." });
+        return;
+      }
+      const code = randomRecoveryCode(RECOVERY_CODE_LENGTH);
+      pd.recoveryHash = hashRecoveryCode(code, normKey(pd.nickname));
+      pd.recoveryAt = new Date().toISOString();
+      await savePlayerData(socket.id, pd);
+      socket.emit("account:recoveryCode", {
+        ok: true, code, createdAt: pd.recoveryAt,
+        message: "복구 코드를 안전한 곳에 보관하세요. 이 코드는 다시 보여주지 않습니다."
+      });
+    } catch (err) {
+      console.error("복구 코드 발급 오류:", err);
+      socket.emit("account:recoveryCode", { ok: false, reason: "복구 코드를 만들지 못했습니다." });
+    }
+  });
+
+  socket.on("account:recover", async (data) => {
+    try {
+      if (!recoveryAttemptAllowed(socket.id)) {
+        socket.emit("account:recoverResult", { ok: false, reason: "복구 시도가 너무 많습니다. 잠시 후 다시 시도해주세요." });
+        return;
+      }
+      const nickname = normalizeWord(data?.nickname);
+      const code = normalizeRecoveryCode(data?.code);
+      if (!nickname || !code) {
+        socket.emit("account:recoverResult", { ok: false, reason: "닉네임과 복구 코드를 입력해주세요." });
+        return;
+      }
+      const target = await getPlayerData(normKey(nickname));
+      if (!target.recoveryHash || !sameRecoveryHash(hashRecoveryCode(code, normKey(nickname)), target.recoveryHash)) {
+        socket.emit("account:recoverResult", { ok: false, reason: "닉네임 또는 복구 코드가 올바르지 않습니다." });
+        return;
+      }
+      const result = await adoptAccountForSocket(socket, target.nickname, "recovery");
+      socket.emit("account:recoverResult", result);
+    } catch (err) {
+      console.error("계정 복구 오류:", err);
+      socket.emit("account:recoverResult", { ok: false, reason: "계정 복구에 실패했습니다." });
+    }
+  });
+
+  socket.on("account:linkCode", async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      if (!pd.nickname || isGhostRecord(pd)) {
+        socket.emit("account:linkCode", { ok: false, reason: "먼저 닉네임을 설정해주세요." });
+        return;
+      }
+      const code = issueLinkCode(normKey(pd.nickname));
+      socket.emit("account:linkCode", {
+        ok: true, code, expiresInMs: LINK_CODE_TTL_MS,
+        message: "10분 안에 다른 기기에서 이 코드를 입력하세요. 한 번만 사용할 수 있습니다."
+      });
+    } catch (err) {
+      console.error("기기 연결 코드 발급 오류:", err);
+      socket.emit("account:linkCode", { ok: false, reason: "연결 코드를 만들지 못했습니다." });
+    }
+  });
+
+  socket.on("account:linkRedeem", async (data) => {
+    try {
+      if (data?.confirm !== true) {
+        socket.emit("account:linkResult", { ok: false, reason: "이 기기의 기존 게스트 데이터를 대체한다는 확인이 필요합니다." });
+        return;
+      }
+      const ownerKey = redeemLinkCode(data?.code);
+      if (!ownerKey) {
+        socket.emit("account:linkResult", { ok: false, reason: "연결 코드가 만료되었거나 이미 사용되었습니다." });
+        return;
+      }
+      const owner = await getPlayerData(ownerKey);
+      if (!owner || !owner.nickname || normKey(owner.nickname) !== normKey(ownerKey)) {
+        socket.emit("account:linkResult", { ok: false, reason: "연결할 계정을 찾을 수 없습니다." });
+        return;
+      }
+      const result = await adoptAccountForSocket(socket, owner.nickname, "device");
+      socket.emit("account:linkResult", result);
+    } catch (err) {
+      console.error("기기 연결 오류:", err);
+      socket.emit("account:linkResult", { ok: false, reason: "기기 연결에 실패했습니다." });
+    }
   });
 
   /* 표시 이름 설정 — 로그인 여부와 무관하게 가능하다 (게스트 포함).

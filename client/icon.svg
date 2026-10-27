@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="끝말잇기">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#0f172a"/>
+  <rect x="28" y="28" width="456" height="456" rx="88" fill="url(#g)" opacity=".18"/>
+  <text x="256" y="318" text-anchor="middle" font-family="'Apple SD Gothic Neo','Malgun Gothic',sans-serif" font-size="196" font-weight="800" fill="#f8fafc">끝</text>
+  <circle cx="128" cy="128" r="18" fill="#fbbf24"/>
+  <circle cx="384" cy="384" r="12" fill="#a78bfa"/>
+</svg>

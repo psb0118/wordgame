@@ -3,8 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#6d28d9">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="icon.svg">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=40">
+  <link rel="stylesheet" href="style.css?v=41">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -21,6 +24,7 @@
           <button data-mode="single" class="active">🎯 싱글플레이</button>
           <button data-mode="online">🌐 온라인 멀티</button>
           <button data-mode="ranked">⚔️ 랭크 매칭</button>
+          <button data-mode="tournament">🏟️ 랭크 대회</button>
           <span class="nav-group-label">기록</span>
           <button data-mode="season">📅 시즌</button>
           <button data-mode="achievements">🏆 업적</button>
@@ -285,6 +289,30 @@
       <button id="adminBtnRanked" class="admin-btn wide secondary hidden">⚙ 관리자 패널</button>
     </section>
 
+    <!-- 4인 랭크 대회 -->
+    <section id="tournament" class="panel hidden">
+      <div class="season-panel-head">
+        <div class="guild-panel-title">🏟️ 랭크 대회 <span class="guild-panel-sub">4인 서바이벌 · 마지막 1인이 우승</span></div>
+      </div>
+      <div class="tournament-hero">
+        <div class="tournament-hero-badge">4</div>
+        <div>
+          <b>4명이 한 방에서 턴을 돌립니다.</b>
+          <p>하트를 모두 잃으면 탈락하고, 마지막까지 살아남으면 랭크 승리와 코인 보상을 받습니다. Google 로그인이 필요합니다.</p>
+        </div>
+      </div>
+      <div class="onlineTop">
+        <button id="tournamentQueueBtn">🏟️ 대회 참가</button>
+        <button id="tournamentCancelBtn" class="secondary hidden">참가 취소</button>
+      </div>
+      <div id="tournamentQueueInfo" class="ranked-queue-info"></div>
+      <div class="rule-notice">
+        대회는 4명이 모이면 자동으로 시작됩니다. 탈락해도 관전할 수 있고, 우승자는 남은 인원 수만큼 코인을 받습니다.
+        경기 중 연결이 끊기면 30초 안에 같은 닉네임으로 돌아오면 이어집니다.
+      </div>
+      <div id="tournamentStatus" class="acc-referral-msg"></div>
+    </section>
+
     <!-- 상점 -->
     <section id="shop" class="panel hidden">
       <div class="attendance-card">
@@ -455,6 +483,36 @@
         </div>
         <div id="fbStatus" class="acc-fb-status"></div>
         <div id="fbMsg" class="acc-fb-msg"></div>
+      </div>
+      <div class="acc-recovery">
+        <div class="acc-fb-title">🛟 계정 복구 · 기기 연결</div>
+        <div class="acc-fb-desc">복구 코드를 만들면 새 기기에서 닉네임과 코드로 계정을 되찾을 수 있습니다. 코드는 발급 직후 한 번만 표시돼요.</div>
+        <div class="acc-fb-actions">
+          <button id="recoveryCreateBtn" type="button" class="secondary">복구 코드 만들기/재발급</button>
+        </div>
+        <div id="recoveryCodeBox" class="recovery-code-box hidden">
+          <code id="recoveryCodeValue"></code>
+          <button id="recoveryCopyBtn" type="button" class="secondary">복사</button>
+        </div>
+        <div class="account-row">
+          <input id="recoveryNickInput" maxlength="12" placeholder="복구할 닉네임" autocomplete="off">
+          <input id="recoveryCodeInput" maxlength="16" placeholder="복구 코드" autocomplete="off">
+          <button id="recoveryApplyBtn" type="button">계정 복구</button>
+        </div>
+        <div class="acc-fb-title" style="margin-top:14px;">📱 이 기기를 다른 기기와 연결</div>
+        <div class="acc-fb-desc">이 기기에서 10분짜리 연결 코드를 만든 뒤, 새 기기에서 입력하면 같은 계정으로 이어집니다. 새 기기의 게스트 데이터는 대체됩니다.</div>
+        <div class="acc-fb-actions">
+          <button id="linkCodeBtn" type="button" class="secondary">연결 코드 만들기</button>
+        </div>
+        <div id="linkCodeBox" class="recovery-code-box hidden">
+          <code id="linkCodeValue"></code>
+          <button id="linkCopyBtn" type="button" class="secondary">복사</button>
+        </div>
+        <div class="account-row">
+          <input id="linkRedeemInput" maxlength="12" placeholder="연결 코드" autocomplete="off">
+          <button id="linkRedeemBtn" type="button">이 기기에서 연결</button>
+        </div>
+        <div id="recoveryMsg" class="acc-referral-msg"></div>
       </div>
       <div class="account-scores">
         <div class="acc-row"><span>싱글 전적</span><span id="accSingleWL" class="acc-wl"></span></div>
@@ -676,7 +734,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="script.js?v=48"></script>
+  <script src="script.js?v=49"></script>
   <script src="firebase-auth.js?v=2"></script>
 </body>
 </html>

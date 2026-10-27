@@ -70,7 +70,7 @@ function context(extra = {}) {
   const emissions = [];
   const ioRooms = [];   /* io.to(room) 브로드캐스트를 방 ID와 함께 기록 */
   const c = vm.createContext({
-    structuredClone,
+    structuredClone, Buffer, crypto: require("crypto"),
     console: { log() {}, warn() {}, error(...args) { errors.push(args.join(" ")); } },
     playerCache: new Map(), socketNicks: new Map(), onlineNicks: new Map(),
     friendsMap: new Map(), friendRequests: new Map(),
@@ -124,7 +124,11 @@ function context(extra = {}) {
     "CHAT_ACCOUNT_RATE", "CHAT_RATE_MAX_ACCOUNTS",
     "ATTENDANCE_REWARD", "SHOP_POTION_PRICE", "SHOP_SHIELD_PRICE",
     "DAILY_MISSIONS", "WEEKLY_MISSIONS", "MONTHLY_MISSIONS",
-    "SHOP_TITLES", "SHOP_MULTIPLIER_PRICES", "missionCurrent", "ADMIN_EMAILS", "AI_PLAYER_ID"]) {
+    "SHOP_TITLES", "SHOP_MULTIPLIER_PRICES", "missionCurrent", "ADMIN_EMAILS", "AI_PLAYER_ID", "MONEY_TABLE", "MONEY_TOTAL_WEIGHT",
+    "TOURNAMENT_SIZE", "TOURNAMENT_QUEUE", "TOURNAMENT_QUEUE_MAP", "TOURNAMENT_RECENT",
+    "RECOVERY_PEPPER", "RECOVERY_ALPHABET", "RECOVERY_CODE_LENGTH", "LINK_CODE_LENGTH",
+    "LINK_CODE_TTL_MS", "RECOVERY_ATTEMPT_WINDOW_MS", "RECOVERY_ATTEMPT_MAX",
+    "LINK_CODES", "RECOVERY_ATTEMPTS"]) {
     vm.runInContext(constSource(name), c);
   }
   for (const name of [
@@ -159,6 +163,11 @@ function context(extra = {}) {
     "beginEconomyTx", "finishEconomyTx", "abortEconomyTx", "getEconomyHistory",
     "chatRateKey", "takeChatSlot", "renameEconomyAccount",
     "safeEconomyRequestId", "recordAchievementLedger", "getEconomySummary", "recordWelcomeLedger",
+    "isGhostRecord", "bumpSeasonFor", "computeMoneyReward", "rollMoney",
+    "normalizeRecoveryCode", "randomRecoveryCode", "hashRecoveryCode", "sameRecoveryHash",
+    "recoveryAttemptAllowed", "issueLinkCode", "redeemLinkCode", "adoptAccountForSocket",
+    "addToTournamentQueue", "removeFromTournamentQueue", "broadcastTournamentQueue",
+    "tryMatchTournament", "startTournamentGame", "settleTournamentGame",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions, ioRooms };
 }
@@ -2721,4 +2730,94 @@ test("startKeepAlivePing schedules fetch when PUBLIC_URL is set", () => {
   c.PUBLIC_URL = "https://example.onrender.com";
   c.startKeepAlivePing();
   assert.ok(intervalSet, "PUBLIC_URL이 있으면 setInterval이 호출된다");
+});
+
+test("four-player tournament queue starts one survival room", () => {
+  const { c } = context();
+  const sockets = [];
+  for (let i = 0; i < 4; i++) {
+    const s = socket(`tq-${i}`);
+    sockets.push(s);
+    c.io.sockets.sockets.set(s.id, s);
+    c.addToTournamentQueue(s.id, `tq${i}`, 1000 + i * 25);
+  }
+  c.tryMatchTournament();
+  assert.equal(c.ROOMS.size, 1, "4명이 한 방으로 묶인다");
+  const room = [...c.ROOMS.values()][0];
+  assert.equal(room.mode, "tournament");
+  assert.equal(room.tournament, true);
+  assert.equal(room.players.length, 4);
+  assert.equal(vm.runInContext("TOURNAMENT_QUEUE.length", c), 0, "대기열이 비워진다");
+  assert.equal(sockets.filter(s => s.emissions.some(([event]) => event === "tournament:matched")).length, 4);
+  assert.equal(c.roomCapacity(room), 4, "대회 방 정원은 4명");
+});
+
+test("recovery codes are account-bound and device link codes are single-use", () => {
+  const { c } = context();
+  const code = c.randomRecoveryCode(10);
+  assert.equal(code.length, 10);
+  assert.match(code, /^[A-Z2-9]+$/);
+  const hashed = c.hashRecoveryCode(code, "Alice");
+  assert.equal(hashed, c.hashRecoveryCode(code.toLowerCase(), "alice"));
+  assert.notEqual(hashed, c.hashRecoveryCode(code, "Bob"), "같은 코드라도 계정마다 해시가 다르다");
+  assert.equal(c.sameRecoveryHash(hashed, hashed), true);
+  assert.equal(c.sameRecoveryHash(hashed, ""), false);
+
+  const link = c.issueLinkCode("Alice");
+  assert.equal(link.length, 8);
+  assert.equal(c.redeemLinkCode(link), "alice");
+  assert.equal(c.redeemLinkCode(link), null, "연결 코드는 한 번만 사용된다");
+});
+
+test("account recovery adopts the target account with a valid code", async () => {
+  const { c } = context();
+  const target = seed(c, "recoverme", { money: 400000 });
+  target.recoveryHash = c.hashRecoveryCode("ABCD234567", "recoverme");
+  c.playerCache.set("recoverme", target);
+  const s = socket("recover-socket");
+  installHandler(c, "account:recover", s);
+  await s.handlers.get("account:recover")({ nickname: "recoverme", code: "abcd-234567" });
+  const result = s.emissions.find(([event]) => event === "account:recoverResult");
+  assert.ok(result);
+  assert.equal(result[1].ok, true, result[1].reason || "");
+  assert.equal(result[1].nickname, "recoverme");
+  assert.equal(c.socketNicks.get(s.id), "recoverme");
+  assert.ok(s.emissions.some(([event]) => event === "player:nameUpdated"));
+  assert.ok(s.emissions.some(([event]) => event === "account:recovered"));
+});
+
+test("tournament finish settles ranked results and pays the winner once", async () => {
+  const { c } = context();
+  const sockets = [];
+  for (let i = 0; i < 4; i++) {
+    const s = socket(`tp-${i}`);
+    sockets.push(s);
+    c.io.sockets.sockets.set(s.id, s);
+    seed(c, `tp${i}`, {
+      ranked: { rating: 1500 + i * 10, wins: 50, losses: 10, streak: 3, bestStreak: 8 }
+    });
+    c.registerOnline(s.id, `tp${i}`);
+  }
+  const room = {
+    id: "TR9", mode: "tournament", tournament: true, hostSocketId: "tp-0",
+    players: sockets.map((s, i) => ({
+      id: s.id, socketId: s.id, playerIndex: i, nickname: `tp${i}`,
+      isBot: false, connected: true, eliminated: false, hearts: 1, mistakes: 0, waiting: false
+    })),
+    history: [], usedWords: new Set(), started: true, finished: false,
+    turnPlayerIndex: 0, turnNumber: 5, gameSessionId: 2
+  };
+  c.ROOMS.set("TR9", room);
+  await c.finishGame(room, 0, 3);
+  const winner = c.playerCache.get("tp0");
+  assert.equal(winner.ranked.wins, 53, "4인 대회 우승은 남은 3명 각각에 승리로 정산");
+  assert.equal(winner.ranked.streak, 4, "대회 우승 연승은 한 번만 오른다");
+  for (const i of [1, 2, 3]) {
+    const loser = c.playerCache.get(`tp${i}`);
+    assert.equal(loser.ranked.losses, 11, `tp${i} 패배 기록`);
+  }
+  const ledger = await c.getEconomyHistory("tp0");
+  assert.ok(ledger.some(h => h.reason === "tournament_win"), "대회 우승 코인이 원장에 기록된다");
+  assert.equal(winner.recentGames.length, 1);
+  assert.equal(winner.recentGames[0].mode, "tournament");
 });

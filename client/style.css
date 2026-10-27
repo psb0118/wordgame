@@ -4605,3 +4605,57 @@ html.dark .acc-rename-info {
   .how-wrap { bottom: 86px; }
   .toast { bottom: 92px; }
 }
+
+/* --- 랭크 대회 --- */
+.tournament-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  margin: 10px 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(109, 40, 217, 0.14), rgba(245, 158, 11, 0.1));
+}
+.tournament-hero-badge {
+  width: 54px;
+  height: 54px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  background: var(--purple, #6d28d9);
+  color: #fff;
+  font-size: 1.6rem;
+  font-weight: 900;
+}
+.tournament-hero b { display: block; margin-bottom: 4px; }
+.tournament-hero p { margin: 0; color: var(--text-dim); font-size: 0.82rem; line-height: 1.5; }
+
+/* --- 계정 복구 / 기기 연결 --- */
+.acc-recovery {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+.recovery-code-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--card-soft);
+}
+.recovery-code-box code {
+  flex: 1;
+  min-width: 0;
+  font-size: 1.05rem;
+  letter-spacing: 0.14em;
+  font-weight: 800;
+  color: var(--gold, #d97706);
+  overflow-wrap: anywhere;
+}
+.acc-recovery .account-row { flex-wrap: wrap; }
+.acc-recovery .account-row input { min-width: 0; }
