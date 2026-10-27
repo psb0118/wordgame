@@ -199,6 +199,10 @@ async function main() {
   await db.query("BEGIN");
   try {
     for (const p of plan.players) await db.query(`DELETE FROM players WHERE id = $1`, [p.id]);
+    const purgeIds = plan.players.map((p) => p.id);
+    if (purgeIds.length) {
+      await db.query(`DELETE FROM economy_ledger WHERE account_id = ANY($1)`, [purgeIds]);
+    }
     for (const p of plan.recentScrub) {
       await db.query(`UPDATE players SET recent_games = $2, updated_at = NOW() WHERE id = $1`,
         [p.id, JSON.stringify(p.next)]);

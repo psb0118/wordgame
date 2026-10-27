@@ -79,6 +79,9 @@ const attendanceReward = (streak) => Math.min(10000, 2000 + (streak - 1) * 1000)
 let missionsGroups = { daily: [], weekly: [], monthly: [] };
 let missionPeriods = {};
 let recentGamesState = [];
+let economyHistoryState = [];
+let wordbookState = [];
+let wordDefCurrent = "";
 let dailyCounters = null;
 
 /* 실시간 랭킹 패널 상태 */
@@ -821,6 +824,11 @@ function initSocket() {
   });
 
   /* -- 상점 ------------------------------------------- */
+  socket.on("economy:history", (data) => {
+    economyHistoryState = data && Array.isArray(data.history) ? data.history : [];
+    renderEconomyHistory();
+  });
+
   socket.on("shop:info", (data) => {
     if (!data) return;
     shopInfo = data;
@@ -2741,6 +2749,7 @@ function renderItems() {
   }
   renderRatingChart();
   renderRecentGames();
+  renderEconomyHistory();
 }
 
 /* ---------------------------------------------------------
@@ -2845,16 +2854,47 @@ function renderRecentGames() {
   if (!list) return;
   if (!Array.isArray(recentGamesState) || recentGamesState.length === 0) { list.innerHTML = `<div class="items-empty">아직 기록이 없습니다.</div>`; return; }
   const modeLabel = { ranked: "랭크", online: "온라인", single: "싱글", ai: "싱글" };
-  list.innerHTML = recentGamesState.map(g => {
+  list.innerHTML = recentGamesState.map((g, index) => {
     const res = g.result === "win" ? "<span class='rec-win'>승</span>" : (g.result === "lose" ? "<span class='rec-lose'>패</span>" : "<span class='rec-draw'>무</span>");
     const date = String(g.date || "").slice(0, 16).replace("T", " ");
+    const canReplay = Array.isArray(g.flow) && g.flow.length >= 2;
     return `<div class="rec-row">
       <span class="rec-res">${res}</span>
       <span class="rec-mode">${modeLabel[g.mode] || g.mode || "-"}</span>
       <span class="rec-vs">vs ${escapeHtml(g.vs || "?")}</span>
       <span class="rec-words">단어 ${g.wordCount ?? 0}개</span>
       <span class="rec-len">평균 ${g.avgWordLen ?? 0}자</span>
+      ${canReplay ? `<button type="button" class="rec-replay" data-replay-index="${index}">리플레이</button>` : ""}
       <span class="rec-date">${date}</span>
+    </div>`;
+  }).join("");
+  list.querySelectorAll("[data-replay-index]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      showStoredReplay(recentGamesState[Number(btn.dataset.replayIndex)]);
+    });
+  });
+}
+
+function renderEconomyHistory() {
+  const list = $("#economyHistoryList");
+  if (!list) return;
+  if (!Array.isArray(economyHistoryState) || economyHistoryState.length === 0) {
+    list.innerHTML = `<div class="items-empty">아직 코인 내역이 없습니다.</div>`;
+    return;
+  }
+  const labels = {
+    attendance: "출석", mission: "미션", mail: "우편",
+    referral_join: "추천인 등록", referral_invite: "추천 보상"
+  };
+  list.innerHTML = economyHistoryState.map(entry => {
+    const delta = Number(entry.delta) || 0;
+    const sign = delta > 0 ? "+" : "";
+    const at = String(entry.at || "").slice(0, 16).replace("T", " ");
+    return `<div class="rec-row">
+      <span class="rec-res ${delta >= 0 ? "rec-win" : "rec-lose"}">${sign}${delta.toLocaleString("ko-KR")}</span>
+      <span class="rec-mode">${escapeHtml(labels[entry.reason] || entry.reason || "기타")}</span>
+      <span class="rec-vs">${escapeHtml(entry.ref || "")}</span>
+      <span class="rec-date">${at}</span>
     </div>`;
   }).join("");
 }
@@ -3934,6 +3974,7 @@ function buildGameResultText(data) {
   const winner = winnerIndex == null
     ? "무승부"
     : `${String((data && data.winnerName) || state.players?.find(player => player.playerIndex === winnerIndex)?.nickname || "승자")} 승리`;
+  const summary = data && data.summary ? String(data.summary) : `${winner} · 총 ${history.length}단어`;
   const wordLines = history.map(item => {
     if (!item || !item.word) return "";
     const isStart = item.player === -1 || item.nickname === "시작";
@@ -3941,7 +3982,7 @@ function buildGameResultText(data) {
     const player = isStart ? "시작" : `${turn}${String(item.nickname || "플레이어")}`;
     return `${player}: ${String(item.word)}`;
   }).filter(Boolean);
-  return `끝말잇기 게임 결과\n${winner} · 총 ${history.length}단어${wordLines.length ? `\n${wordLines.join("\n")}` : ""}`;
+  return `끝말잇기 게임 결과\n${summary}${wordLines.length ? `\n${wordLines.join("\n")}` : ""}`;
 }
 
 async function copyReplayResult() {
@@ -3974,16 +4015,19 @@ function showReplay(data) {
   const winnerIdx = data ? data.winner : (st ? st.winner : null);
   const winnerName = data && data.winnerName ? data.winnerName : "";
   if (head) {
-    head.textContent = winnerIdx == null
-      ? `무승부 · 총 ${hist.length}단어`
-      : `${winnerName || "승자"} 승리 · 총 ${hist.length}단어`;
+    head.textContent = data && data.summary
+      ? String(data.summary)
+      : (winnerIdx == null
+        ? `무승부 · 총 ${hist.length}단어`
+        : `${winnerName || "승자"} 승리 · 총 ${hist.length}단어`);
   }
   list.innerHTML = hist.map(item => {
     const isStart = item.player === -1 || item.nickname === "시작";
     const isWinner = winnerIdx != null && item.player === winnerIdx;
+    const isMine = !!(data && data.stored && item.mine);
     const depthBadge = item.depth != null ? `<span class="replay-depth">공격 ${item.depth}</span>` : "";
     const who = isStart ? "시작" : escapeHtml(item.nickname || "플레이어");
-    return `<div class="replay-row${isWinner ? " win" : ""}${isStart ? " start" : ""}">
+    return `<div class="replay-row${isWinner ? " win" : ""}${isMine ? " mine" : ""}${isStart ? " start" : ""}">
       <span class="replay-turn">${isStart ? "●" : (item.turn != null ? item.turn : "")}</span>
       <span class="replay-who">${who}</span>
       <span class="replay-word" data-def-word="${escapeHtml(item.word)}" title="클릭하면 뜻 보기">${escapeHtml(item.word)}</span>
@@ -3994,6 +4038,133 @@ function showReplay(data) {
     w.addEventListener("click", () => showWordDefinition(w.dataset.defWord));
   });
   modal.classList.remove("hidden");
+}
+
+/* 저장된 전적의 단어 흐름을 같은 리플레이 모달로 다시 본다 */
+function showStoredReplay(game) {
+  if (!game || !Array.isArray(game.flow) || game.flow.length < 2) return;
+  const history = game.flow.map(f => ({
+    word: String(f.w || ""),
+    nickname: String(f.n || "플레이어"),
+    player: f.n === "시작" ? -1 : (f.m ? 0 : 1),
+    mine: !!f.m,
+    depth: f.d == null ? null : f.d,
+    turn: f.t == null ? null : f.t,
+    oneShot: !!f.o
+  }));
+  const resultText = game.result === "win" ? "승리" : (game.result === "lose" ? "패배" : "무승부");
+  showReplay({
+    state: { history },
+    winner: null,
+    winnerName: "",
+    stored: true,
+    summary: `${resultText} · vs ${game.vs || "?"} · ${game.wordCount ?? history.length}단어`
+  });
+}
+
+/* ---------------------------------------------------------
+   단어장 — 뜻을 보다가 저장하고, 이 브라우저에서 다시 본다.
+--------------------------------------------------------- */
+const WORDBOOK_KEY = "kkWordbook";
+const WORDBOOK_MAX = 300;
+let wordbookLoaded = false;
+
+function loadWordbook() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(WORDBOOK_KEY) || "[]");
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set();
+    return raw.filter(item => {
+      const word = String(item && item.word || "").trim();
+      if (!word || seen.has(word)) return false;
+      seen.add(word);
+      return true;
+    }).slice(0, WORDBOOK_MAX).map(item => ({
+      word: String(item.word).trim().slice(0, 30),
+      at: String(item.at || "")
+    }));
+  } catch (e) { return []; }
+}
+
+function ensureWordbookLoaded() {
+  if (wordbookLoaded) return;
+  wordbookState = loadWordbook();
+  wordbookLoaded = true;
+}
+
+function persistWordbook() {
+  try { localStorage.setItem(WORDBOOK_KEY, JSON.stringify(wordbookState)); } catch (e) { /* 무시 */ }
+}
+
+function isInWordbook(word) {
+  ensureWordbookLoaded();
+  const w = String(word || "").trim();
+  return !!w && wordbookState.some(entry => entry.word === w);
+}
+
+function toggleWordbook(rawWord) {
+  ensureWordbookLoaded();
+  const word = String(rawWord || "").trim().slice(0, 30);
+  if (!word) return false;
+  const idx = wordbookState.findIndex(entry => entry.word === word);
+  if (idx >= 0) wordbookState.splice(idx, 1);
+  else {
+    wordbookState.unshift({ word, at: new Date().toISOString() });
+    if (wordbookState.length > WORDBOOK_MAX) wordbookState.length = WORDBOOK_MAX;
+  }
+  persistWordbook();
+  renderWordbook();
+  renderWordDefSave();
+  return idx < 0;
+}
+
+function removeWordFromBook(rawWord) {
+  ensureWordbookLoaded();
+  const word = String(rawWord || "").trim();
+  const before = wordbookState.length;
+  wordbookState = wordbookState.filter(entry => entry.word !== word);
+  if (wordbookState.length === before) return;
+  persistWordbook();
+  renderWordbook();
+  renderWordDefSave();
+}
+
+function renderWordDefSave() {
+  const btn = $("#wordDefSave");
+  if (!btn) return;
+  const saved = !!wordDefCurrent && isInWordbook(wordDefCurrent);
+  btn.textContent = saved ? "★ 단어장에서 빼기" : "☆ 단어장에 저장";
+  btn.classList.toggle("saved", saved);
+  const status = $("#wordDefSaveStatus");
+  if (status) status.textContent = "";
+}
+
+function renderWordbook() {
+  ensureWordbookLoaded();
+  const list = $("#wordbookList");
+  if (!list) return;
+  const q = String($("#wordbookSearch")?.value || "").trim().toLowerCase();
+  const rows = q ? wordbookState.filter(entry => entry.word.toLowerCase().includes(q)) : wordbookState;
+  const count = $("#wordbookCount");
+  if (count) count.textContent = q ? `${rows.length}/${wordbookState.length}개` : `${wordbookState.length}개`;
+  if (!rows.length) {
+    list.innerHTML = `<div class="items-empty">${wordbookState.length ? "검색 결과가 없습니다." : "뜻을 보다가 ☆ 버튼을 누르면 여기에 저장됩니다."}</div>`;
+    return;
+  }
+  list.innerHTML = rows.map(entry => {
+    const day = String(entry.at || "").slice(0, 10).replace(/-/g, ".");
+    return `<div class="wordbook-row">
+      <button type="button" class="wordbook-word" data-book-word="${escapeHtml(entry.word)}">${escapeHtml(entry.word)}</button>
+      <span class="wordbook-date">${day || "-"}</span>
+      <button type="button" class="wordbook-del" data-book-del="${escapeHtml(entry.word)}" aria-label="${escapeHtml(entry.word)} 삭제" title="단어장에서 삭제">✕</button>
+    </div>`;
+  }).join("");
+  list.querySelectorAll("[data-book-word]").forEach(btn => {
+    btn.addEventListener("click", () => showWordDefinition(btn.dataset.bookWord));
+  });
+  list.querySelectorAll("[data-book-del]").forEach(btn => {
+    btn.addEventListener("click", () => removeWordFromBook(btn.dataset.bookDel));
+  });
 }
 
 /* ---------------------------------------------------------
@@ -4007,6 +4178,8 @@ async function showWordDefinition(word) {
   const w = String(word || "").trim();
   if (!w) return;
   title.textContent = w;
+  wordDefCurrent = w;
+  renderWordDefSave();
   body.innerHTML = `<div class="word-def-loading">국어사전에서 뜻을 찾는 중...</div>`;
   modal.classList.remove("hidden");
   try {
@@ -4274,6 +4447,22 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#replayClose")?.addEventListener("click", () => $("#replayModal")?.classList.add("hidden"));
   $("#replayCopy")?.addEventListener("click", copyReplayResult);
   $("#wordDefClose")?.addEventListener("click", () => $("#wordDefModal")?.classList.add("hidden"));
+  $("#wordDefSave")?.addEventListener("click", () => {
+    if (!wordDefCurrent) return;
+    const added = toggleWordbook(wordDefCurrent);
+    const status = $("#wordDefSaveStatus");
+    if (status) status.textContent = added ? "단어장에 저장했습니다." : "단어장에서 삭제했습니다.";
+  });
+  $("#wordbookClear")?.addEventListener("click", () => {
+    ensureWordbookLoaded();
+    if (!wordbookState.length) return;
+    if (!window.confirm("단어장을 모두 비울까요?")) return;
+    wordbookState = [];
+    try { localStorage.removeItem(WORDBOOK_KEY); } catch (e) { /* 무시 */ }
+    wordbookLoaded = true;
+    renderWordbook();
+  });
+  $("#wordbookSearch")?.addEventListener("input", renderWordbook);
   $all("[data-ach-filter]").forEach(button => {
     button.addEventListener("click", () => {
       achievementFilter = button.dataset.achFilter || "all";
@@ -4323,9 +4512,14 @@ document.addEventListener("DOMContentLoaded", () => {
           socket.emit("word:list", { nickname: myNickname || undefined });
         }
       } else if (currentMode === "items") {
-        if (socket && socketConnected) socket.emit("shop:list");
+        if (socket && socketConnected) {
+          socket.emit("shop:list");
+          socket.emit("economy:history");
+        }
         renderItems();
-  } else if (currentMode === "season") {
+      } else if (currentMode === "wordbook") {
+        renderWordbook();
+      } else if (currentMode === "season") {
     refreshSeasonBar();
     if (socket && socketConnected) socket.emit("missions:status");
   } else if (currentMode === "achievements") {

@@ -26,6 +26,10 @@
 - Elo Rating 시스템
 - 랭크 등급 (Bronze ~ Challenger)
 - 랭크 매칭 대기 정보 (내 레이팅 근처 인원·최장 대기·최근 평균 매칭 시간)
+- 최근 10판 전적에 단어 흐름 저장 · 다시보기(리플레이)
+- 단어장 (뜻을 저장해 다시 보기, 브라우저 localStorage)
+- 계정 단위 채팅 속도 제한 (재접속해도 제한 유지)
+- 코인 원장(economy_ledger) 기반 지급 기록 · idem_key 중복 지급 방지
 - PostgreSQL 영구 저장 (JSON 파일 폴백)
 - 반응형 모바일/PC UI
 
@@ -53,7 +57,7 @@
 
 1. [Neon Console](https://console.neon.tech/)에서 프로젝트의 **Connect**를 눌러 브랜치, 데이터베이스, 역할을 선택하고 **pooled connection string**을 복사합니다. URL에는 보통 `-pooler`가 포함됩니다.
 2. 실행 환경의 비밀 환경 변수에 `DATABASE_URL`을 설정합니다. 연결 문자열은 소스 코드나 GitHub에 커밋하지 마세요.
-3. 서버가 시작될 때 `players`, `kv_store` 테이블을 자동 생성/보완합니다.
+3. 서버가 시작될 때 `players`, `kv_store`, `economy_ledger` 테이블을 자동 생성/보완합니다.
 4. 배포 후 `/api/health`의 `db` 값이 `"postgres"`인지 확인합니다.
 
 ### 로컬 개발
@@ -95,6 +99,10 @@ Render 등 **임시 파일 시스템** 환경에서는 기본 JSON 파일 저장
 4. 재배포 후 `https://<서비스주소>/api/health`를 열어 응답이 `"db":"postgres"`인지 확인합니다.
    - `"db":"json"`으로 나오면 환경변수가 안 들어갔거나 연결이 실패한 것이므로 Render 로그에서 `PostgreSQL 연결 실패` 오류를 확인하세요.
 - 이전에 임시 파일 시스템에만 있던 데이터는 복구할 수 없지만, 연결 이후에는 재배포/재시작에도 돈·점수·시즌·친구 등이 유지됩니다.
+
+### 다중 인스턴스 배포 시 주의
+방·접속자·랭크 대기열·최근 매칭 기록은 아직 프로세스 메모리에 있습니다. 여러 인스턴스를 동시에 띄우면 이용자가 서로 다른 인스턴스에 연결되어 방 목록·매칭·관전 상태가 어긋날 수 있습니다. 실제 수평 확장 전에는 방/대기열 상태를 PostgreSQL·Redis 같은 공유 저장소로 옮기고, Socket.IO Redis 어댑터와 sticky session(또는 WebSocket 전용 로드밸런서)을 함께 구성해야 합니다.
+코인 지급은 `economy_ledger`의 `UNIQUE(idem_key)`로 같은 보상 요청이 두 번 지급되지 않게 막지만, 플레이어 잔액 갱신 자체는 아직 계정 단위 직렬화가 아닙니다. 다중 인스턴스에서 재화를 다루기 전에는 지급·차감을 트랜잭션으로 묶는 작업이 필요합니다.
 
 ### 플레이어 데이터 삭제 (운영 도구)
 `node tools/purge-player.js <닉네임>`은 삭제 대상을 보고만 하고, `--apply`를 붙이면 JSON 백업 후 players·전적·friends·시즌 등 관련 데이터를 정리합니다. TLS는 시스템 CA로 검증하며 URL의 `sslmode=no-verify`/`disable`은 무시합니다. 사설 CA를 쓰는 DB는 `DATABASE_CA_CERT`에 PEM 문자열이나 인증서 파일 경로를 지정하세요.

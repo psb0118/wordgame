@@ -24,6 +24,7 @@
           <span class="nav-group-label">기록</span>
           <button data-mode="season">📅 시즌</button>
           <button data-mode="achievements">🏆 업적</button>
+          <button data-mode="wordbook">📖 단어장</button>
           <span class="nav-group-label">보관함</span>
           <button data-mode="items">🎭 칭호·아이템</button>
           <button data-mode="shop">🛒 상점</button>
@@ -337,9 +338,26 @@
         <div id="ratingChartBox" class="rating-chart-box"></div>
       </div>
       <div class="item-card item-card-wide">
+        <div class="item-card-head">🧾 최근 코인 내역</div>
+        <div id="economyHistoryList" class="acc-recent-list"></div>
+      </div>
+      <div class="item-card item-card-wide">
         <div class="item-card-head">📊 최근 10판 전적</div>
         <div id="recentGamesList" class="acc-recent-list"></div>
       </div>
+    </section>
+
+    <!-- 단어장 -->
+    <section id="wordbook" class="panel hidden">
+      <div class="season-panel-head">
+        <div class="guild-panel-title">📖 내 단어장 <span class="guild-panel-sub">뜻을 저장해 두고 다시 보세요 · 이 브라우저에 저장</span></div>
+        <button id="wordbookClear" class="secondary" type="button">전체 삭제</button>
+      </div>
+      <div class="wordbook-toolbar">
+        <input id="wordbookSearch" type="search" maxlength="30" placeholder="저장한 단어 검색" autocomplete="off">
+        <span id="wordbookCount" class="wordbook-count">0개</span>
+      </div>
+      <div id="wordbookList" class="wordbook-list"></div>
     </section>
 
     <!-- 시즌 -->
@@ -595,6 +613,10 @@
         <button class="modal-close" id="wordDefClose">✕</button>
       </div>
       <div id="wordDefBody" class="word-def-body"></div>
+      <div class="word-def-actions">
+        <button id="wordDefSave" class="secondary" type="button">☆ 단어장에 저장</button>
+        <span id="wordDefSaveStatus" class="word-def-save-status" role="status" aria-live="polite"></span>
+      </div>
     </div>
   </div>
 
@@ -647,7 +669,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="script.js?v=44"></script>
+  <script src="script.js?v=45"></script>
   <script src="firebase-auth.js?v=2"></script>
 </body>
 </html>

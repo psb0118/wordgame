@@ -337,6 +337,39 @@ function chatFilter(raw) {
   return { ok: true, clean: text };
 }
 
+/* 계정 단위 채팅 속도 제한 — 소켓을 바꿔 재접속해도 같은 계정이면 제한이 유지된다. */
+const CHAT_ACCOUNT_RATE = new Map();
+const CHAT_RATE_MAX_ACCOUNTS = 5000;
+
+function chatRateKey(uid, nickname) {
+  const u = String(uid || "").trim();
+  if (u) return `uid:${u}`;
+  return `nick:${normKey(nickname)}`;
+}
+
+function takeChatSlot(key, now = Date.now()) {
+  const k = String(key || "");
+  if (!k) return { ok: false, reason: "채팅 계정을 확인할 수 없습니다." };
+  const rec = CHAT_ACCOUNT_RATE.get(k) || { lastAt: 0, win: [] };
+  const win = (Array.isArray(rec.win) ? rec.win : []).filter(t => now - t < CHAT_WINDOW_MS);
+  if (now - Number(rec.lastAt || 0) < CHAT_COOLDOWN_MS) {
+    return { ok: false, reason: "조금 천천히 보내주세요." };
+  }
+  if (win.length >= CHAT_WINDOW_MAX) {
+    return { ok: false, reason: "짧은 시간에 메시지가 너무 많습니다." };
+  }
+  win.push(now);
+  CHAT_ACCOUNT_RATE.set(k, { lastAt: now, win });
+  if (CHAT_ACCOUNT_RATE.size > CHAT_RATE_MAX_ACCOUNTS) {
+    for (const old of CHAT_ACCOUNT_RATE.keys()) {
+      if (old === k) continue;
+      CHAT_ACCOUNT_RATE.delete(old);
+      if (CHAT_ACCOUNT_RATE.size <= CHAT_RATE_MAX_ACCOUNTS) break;
+    }
+  }
+  return { ok: true };
+}
+
 /* =========================================================
    관리자: 플레이어 계정 삭제 — 닉네임(정규화) 기준 전체 제거
    players 테이블/캐시 + 감시목록·친구 참조 + 온라인 접속까지 정리
@@ -361,7 +394,8 @@ async function deletePlayerAccount(nickname) {
         for (const row of r2.rows) all.add(row.id);
       }
       if (all.size) {
-        await dbPool.query(`DELETE FROM players WHERE id = ANY($1)`, [all]);
+        await dbPool.query(`DELETE FROM players WHERE id = ANY($1)`, [[...all]]);
+        await dbPool.query(`DELETE FROM economy_ledger WHERE account_id = ANY($1)`, [[...all]]);
         for (const id of all) { playerCache.delete(id); removed.add(id); }
       }
     } catch (err) {
@@ -1177,6 +1211,20 @@ async function initDatabase() {
           updated_at TIMESTAMP DEFAULT NOW()
         )
       `);
+      /* 코인 원장 — 지급/차감을 기록하고 idem_key로 중복 지급을 막는다 */
+      await dbPool.query(`
+        CREATE TABLE IF NOT EXISTS economy_ledger (
+          id BIGSERIAL PRIMARY KEY,
+          idem_key TEXT UNIQUE NOT NULL,
+          account_id TEXT NOT NULL,
+          delta BIGINT NOT NULL,
+          balance_after BIGINT,
+          reason TEXT NOT NULL,
+          ref TEXT DEFAULT '',
+          created_at TIMESTAMP DEFAULT NOW()
+        )
+      `);
+      await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_economy_ledger_account ON economy_ledger(account_id, created_at DESC)`);
       dbMode = "pg";
       console.log("데이터베이스: PostgreSQL 연결 완료");
       return;
@@ -1539,6 +1587,115 @@ async function savePlayerData(playerId, data) {
      격리 VM 테스트 하네스에는 이 함수가 없으므로 방어적으로 존재 여부를 확인한다. */
   if (typeof markFirebaseDirty === "function") markFirebaseDirty(key);
   if (key !== playerId && playerCache.has(playerId)) playerCache.delete(playerId);
+}
+
+/* =========================================================
+   코인 원장
+   - 지급/차감 전에 idem_key를 원장에 선점해 같은 요청의 중복 지급을 막는다.
+   - PG 모드에서는 UNIQUE(idem_key)로 다중 인스턴스에서도 1회만 통과한다.
+   - JSON/테스트 모드에서는 프로세스 메모리로 동일하게 막는다.
+========================================================= */
+const ECONOMY_MEMORY = [];
+const ECONOMY_IDEM = new Set();
+const ECONOMY_MAX_MEMORY = 500;
+
+async function beginEconomyTx({ accountId, idemKey, delta, reason, ref = "" }) {
+  const key = String(idemKey || "").trim().slice(0, 180);
+  const account = String(accountId || "").trim().slice(0, 80);
+  if (!key || !account) return { ok: false, reason: "원장 키가 없습니다." };
+  const amount = Math.trunc(Number(delta) || 0);
+  const why = String(reason || "reward").slice(0, 40);
+  const reference = String(ref || "").slice(0, 160);
+  if (dbMode === "pg" && dbPool) {
+    try {
+      const r = await dbPool.query(
+        `INSERT INTO economy_ledger (idem_key, account_id, delta, reason, ref)
+         VALUES ($1,$2,$3,$4,$5) ON CONFLICT (idem_key) DO NOTHING
+         RETURNING id`,
+        [key, account, amount, why, reference]
+      );
+      if (!r.rows.length) return { ok: false, duplicate: true, key };
+      return { ok: true, key, id: r.rows[0].id };
+    } catch (err) {
+      console.error("코인 원장 기록 오류:", err.message);
+      return { ok: false, reason: "보상 기록에 실패했습니다." };
+    }
+  }
+  if (ECONOMY_IDEM.has(key)) return { ok: false, duplicate: true, key };
+  ECONOMY_IDEM.add(key);
+  const row = {
+    idemKey: key, accountId: account, delta: amount, reason: why,
+    ref: reference, at: new Date().toISOString(), balanceAfter: null
+  };
+  ECONOMY_MEMORY.push(row);
+  if (ECONOMY_MEMORY.length > ECONOMY_MAX_MEMORY) {
+    ECONOMY_MEMORY.splice(0, ECONOMY_MEMORY.length - ECONOMY_MAX_MEMORY);
+  }
+  return { ok: true, key, row };
+}
+
+async function finishEconomyTx(tx, balanceAfter) {
+  if (!tx || !tx.ok) return;
+  const bal = Math.max(0, Math.floor(Number(balanceAfter) || 0));
+  if (tx.id != null && dbMode === "pg" && dbPool) {
+    try { await dbPool.query("UPDATE economy_ledger SET balance_after = $2 WHERE id = $1", [tx.id, bal]); }
+    catch (e) { console.warn("코인 원장 잔액 갱신 실패:", e.message); }
+    return;
+  }
+  if (tx.row) tx.row.balanceAfter = bal;
+}
+
+async function abortEconomyTx(tx) {
+  if (!tx || !tx.ok) return;
+  if (tx.id != null && dbMode === "pg" && dbPool) {
+    try { await dbPool.query("DELETE FROM economy_ledger WHERE id = $1", [tx.id]); }
+    catch (e) { console.warn("코인 원장 롤백 실패:", e.message); }
+    return;
+  }
+  if (tx.key) ECONOMY_IDEM.delete(tx.key);
+  const idx = ECONOMY_MEMORY.findIndex(r => r.idemKey === tx.key);
+  if (idx >= 0) ECONOMY_MEMORY.splice(idx, 1);
+}
+
+async function getEconomyHistory(accountId, limit = 20) {
+  const account = String(accountId || "").trim();
+  const max = Math.min(50, Math.max(1, Math.floor(Number(limit) || 20)));
+  if (!account) return [];
+  if (dbMode === "pg" && dbPool) {
+    try {
+      const r = await dbPool.query(
+        `SELECT delta, balance_after, reason, ref, created_at
+         FROM economy_ledger WHERE account_id = $1
+         ORDER BY id DESC LIMIT $2`,
+        [account, max]
+      );
+      return r.rows.map(x => ({
+        delta: Number(x.delta) || 0,
+        balanceAfter: x.balance_after == null ? null : Number(x.balance_after),
+        reason: x.reason,
+        ref: x.ref,
+        at: x.created_at ? new Date(x.created_at).toISOString() : ""
+      }));
+    } catch (e) {
+      console.warn("코인 내역 조회 실패:", e.message);
+      return [];
+    }
+  }
+  return ECONOMY_MEMORY.filter(r => r.accountId === account)
+    .slice(-max).reverse()
+    .map(r => ({ delta: r.delta, balanceAfter: r.balanceAfter, reason: r.reason, ref: r.ref, at: r.at }));
+}
+
+/* 개명 시 원장 계정 키도 함께 옮겨 코인 내역이 끊기지 않게 한다 */
+async function renameEconomyAccount(prevKey, newKey) {
+  const from = normKey(prevKey), to = normKey(newKey);
+  if (!from || !to || from === to) return;
+  if (dbMode === "pg" && dbPool) {
+    try { await dbPool.query("UPDATE economy_ledger SET account_id = $1 WHERE account_id = $2", [to, from]); }
+    catch (e) { console.warn("코인 원장 계정 이전 실패:", e.message); }
+    return;
+  }
+  for (const row of ECONOMY_MEMORY) if (row.accountId === from) row.accountId = to;
 }
 
 function updateSingleResult(playerId, won, socketId = playerId) {
@@ -2188,6 +2345,18 @@ async function recordMatchHistory(room, winnerIndex, loserIndex) {
         if (len > a.longest) a.longest = len;
       }
       const newAch = evaluateAchievements(pd);
+      /* 리플레이용 단어 흐름 — 최근 120수, 이 플레이어의 단어 여부(m) 포함 */
+      const flow = (room.history || [])
+        .filter(h => h && typeof h.word === "string" && h.word.length > 0)
+        .slice(-120)
+        .map(h => ({
+          w: h.word.slice(0, 30),
+          n: h.player === -1 ? "시작" : String((room.players.find(o => o.playerIndex === h.player) || {}).nickname || h.nickname || "플레이어").slice(0, 20),
+          o: !!h.oneShot,
+          d: h.depth == null ? null : h.depth,
+          t: Number.isFinite(h.turn) ? h.turn : null,
+          m: h.player === p.playerIndex
+        }));
       const list = Array.isArray(pd.recentGames) ? pd.recentGames : [];
       list.push({
         date: new Date().toISOString(),
@@ -2195,7 +2364,8 @@ async function recordMatchHistory(room, winnerIndex, loserIndex) {
         result,
         vs: opp ? opp.nickname : "AI",
         wordCount,
-        avgWordLen
+        avgWordLen,
+        flow
       });
       pd.recentGames = list.slice(-10);
       await savePlayerData(accountId, pd);
@@ -4348,10 +4518,25 @@ io.on("connection", (socket) => {
       const yesterday = getKstDate(Date.now() - 86400000);
       const streak = pd.lastCheckDate === yesterday ? (pd.attendanceStreak || 0) + 1 : 1;
       const reward = ATTENDANCE_REWARD(streak);
+      const accountId = normKey(pd.nickname) || normKey(socketNicks.get(socket.id)) || socket.id;
+      const tx = await beginEconomyTx({
+        accountId, idemKey: `attendance:${accountId}:${today}`,
+        delta: reward, reason: "attendance", ref: today
+      });
+      if (!tx.ok) {
+        socket.emit("attendance:result", { ok: false, reason: "이미 오늘 출석했습니다.", checkedToday: true, streak: pd.attendanceStreak || 0 });
+        return;
+      }
       pd.lastCheckDate = today;
       pd.attendanceStreak = streak;
       pd.money += reward;
-      await savePlayerData(socket.id, pd);
+      try {
+        await savePlayerData(socket.id, pd);
+        await finishEconomyTx(tx, pd.money);
+      } catch (e) {
+        await abortEconomyTx(tx);
+        throw e;
+      }
       socket.emit("attendance:result", { ok: true, reward, streak, money: pd.money, checkedToday: true });
       console.log(`[ATTENDANCE] ${String(pd.nickname || "플레이어")} ${today} ${streak}일차 +${reward}원`);
     } catch (err) { console.error("출석체크 오류:", err); }
@@ -4377,6 +4562,19 @@ io.on("connection", (socket) => {
         isAdmin: isAdminPd(pd)
       });
     } catch (err) { console.error("상점 조회 오류:", err); }
+  });
+
+  /* -- 코인 원장 내역 ---------------------------------- */
+  socket.on("economy:history", async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const accountId = normKey(pd.nickname) || normKey(socketNicks.get(socket.id)) || socket.id;
+      const history = await getEconomyHistory(accountId, 20);
+      socket.emit("economy:history", { ok: true, history });
+    } catch (err) {
+      console.error("코인 내역 오류:", err);
+      socket.emit("economy:history", { ok: false, reason: "코인 내역을 불러오지 못했습니다." });
+    }
   });
 
   socket.on("shop:buyTitle", async (data) => {
@@ -4486,6 +4684,18 @@ io.on("connection", (socket) => {
       if (store.claimed.includes(missionId)) { socket.emit("missions:result", { ok: false, reason: "이미 수령한 보상입니다." }); return; }
       if (missionCurrent(mission, store) < mission.target) { socket.emit("missions:result", { ok: false, reason: "아직 달성하지 못했습니다." }); return; }
 
+      const accountId = normKey(pd.nickname) || normKey(socketNicks.get(socket.id)) || socket.id;
+      const tx = mission.coin
+        ? await beginEconomyTx({
+            accountId, idemKey: `mission:${accountId}:${group}:${periodKey}:${missionId}`,
+            delta: mission.coin, reason: "mission", ref: `${group}:${missionId}`
+          })
+        : null;
+      if (tx && !tx.ok) {
+        socket.emit("missions:result", { ok: false, reason: "이미 수령한 보상입니다." });
+        return;
+      }
+
       store.claimed.push(missionId);
       pd[group] = store;
       let message = "보상을 수령했습니다.";
@@ -4498,7 +4708,13 @@ io.on("connection", (socket) => {
         if (!pd.currentTitle) pd.currentTitle = mission.title.name;
         message += ` 칭호 '${mission.title.name}'을 획득했습니다.`;
       }
-      await savePlayerData(socket.id, pd);
+      try {
+        await savePlayerData(socket.id, pd);
+        if (tx) await finishEconomyTx(tx, pd.money);
+      } catch (e) {
+        if (tx) await abortEconomyTx(tx);
+        throw e;
+      }
       const afterDaily = initDailyData(pd.daily, getKstDate());
       socket.emit("missions:result", {
         ok: true, message, group,
@@ -5244,19 +5460,15 @@ io.on("connection", (socket) => {
 
       const now = Date.now();
       const sd = socket.data || (socket.data = {});
-      const last = Number(sd.chatLastAt || 0);
-      if (now - last < CHAT_COOLDOWN_MS) {
-        socket.emit("chat:error", { reason: "조금 천천히 보내주세요." });
+      /* 계정(UID 우선) 단위 제한 — 새 소켓/재접속으로 제한을 우회할 수 없다 */
+      const rate = takeChatSlot(
+        chatRateKey(socketFirebaseUid.get(socket.id) || "", nickname),
+        now
+      );
+      if (!rate.ok) {
+        socket.emit("chat:error", { reason: rate.reason });
         return;
       }
-      const win = (Array.isArray(sd.chatWin) ? sd.chatWin : []).filter(t => now - t < CHAT_WINDOW_MS);
-      if (win.length >= CHAT_WINDOW_MAX) {
-        socket.emit("chat:error", { reason: "짧은 시간에 메시지가 너무 많습니다." });
-        return;
-      }
-      sd.chatLastAt = now;
-      win.push(now);
-      sd.chatWin = win;
 
       const payload = {
         from: nickname,
@@ -5419,12 +5631,39 @@ io.on("connection", (socket) => {
         socket.emit("referral:result", { ok: false, reason: "이미 추천인이 등록되어 있습니다.", referredBy: myPd.referredBy });
         return;
       }
+      const myAccountId = normKey(myPd.nickname) || myId;
+      const refAccountId = normKey(refPd.nickname) || normKey(String(refId));
+      const txMine = await beginEconomyTx({
+        accountId: myAccountId, idemKey: `referral:join:${myAccountId}`,
+        delta: REFERRAL_JOIN_COIN, reason: "referral_join", ref: refNick
+      });
+      if (!txMine.ok) {
+        socket.emit("referral:result", { ok: false, reason: "이미 추천인 보상을 받았습니다." });
+        return;
+      }
+      const txRef = await beginEconomyTx({
+        accountId: refAccountId, idemKey: `referral:invite:${myAccountId}`,
+        delta: REFERRAL_INVITE_COIN, reason: "referral_invite", ref: myNick
+      });
+      if (!txRef.ok) {
+        await abortEconomyTx(txMine);
+        socket.emit("referral:result", { ok: false, reason: "추천 보상을 이미 지급했습니다." });
+        return;
+      }
       myPd.referredBy = refNick;
       myPd.referredAt = new Date().toISOString();
       myPd.money = Math.max(0, (Number(myPd.money) || 0) + REFERRAL_JOIN_COIN);
       refPd.referralCount = Math.max(0, Math.floor(Number(refPd.referralCount) || 0)) + 1;
       refPd.money = Math.max(0, (Number(refPd.money) || 0) + REFERRAL_INVITE_COIN);
-      await Promise.all([savePlayerData(myId, myPd), savePlayerData(refId, refPd)]);
+      try {
+        await Promise.all([savePlayerData(myId, myPd), savePlayerData(refId, refPd)]);
+        await finishEconomyTx(txMine, myPd.money);
+        await finishEconomyTx(txRef, refPd.money);
+      } catch (e) {
+        await abortEconomyTx(txMine);
+        await abortEconomyTx(txRef);
+        throw e;
+      }
 
       /* 추천인이 지금 온라인이면 보상 알림을 바로 보낸다 */
       const refSid = onlineNicks.get(normKey(refNick));
@@ -5500,11 +5739,22 @@ io.on("connection", (socket) => {
       const entry = mail.find(m => String(m?.id || "") === mailId);
       if (!entry) { socket.emit("mail:claim", { ok: false, reason: "찾을 수 없는 쪽지입니다." }); return; }
       if (entry.read) { socket.emit("mail:claim", { ok: false, reason: "이미 수령한 쪽지입니다." }); return; }
-      entry.read = true;
       const coin = Math.min(MAIL_COIN_MAX, Math.max(0, Math.floor(Number(entry.coin) || 0)));
+      const tx = await beginEconomyTx({
+        accountId: myId, idemKey: `mail:${myId}:${mailId}`,
+        delta: coin, reason: "mail", ref: `mail:${mailId}`
+      });
+      if (!tx.ok) { socket.emit("mail:claim", { ok: false, reason: "이미 수령한 쪽지입니다." }); return; }
+      entry.read = true;
       myPd.money = Math.max(0, (Number(myPd.money) || 0) + coin);
       myPd.mail = mail;
-      await savePlayerData(myId, myPd);
+      try {
+        await savePlayerData(myId, myPd);
+        await finishEconomyTx(tx, myPd.money);
+      } catch (e) {
+        await abortEconomyTx(tx);
+        throw e;
+      }
       const unread = mail.filter(m => !m?.read).length;
       socket.emit("mail:claim", {
         ok: true, id: mailId, coin,
@@ -5769,6 +6019,7 @@ io.on("connection", (socket) => {
         /* 친구/초대/길드에 남은 옛 키를 새 계정 키로 치환 — 키를 갱신하지 않으면
            목록 조회 시 옛 행을 못 찾아 친구·길드가 사라진다 */
         renameAccountRefs(prevKey, claim.key, nickname);
+        await renameEconomyAccount(prevKey, claim.key);
       }
       registerOnline(socket.id, nickname);
       socket.emit("player:nameUpdated", { ok: true, nickname, renamed: isRename && prevOwned, nameChanges: Number(playerData.nameChanges || 0) });

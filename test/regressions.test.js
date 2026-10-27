@@ -120,6 +120,8 @@ function context(extra = {}) {
     "CHAT_MAX_LEN", "CHAT_COOLDOWN_MS", "CHAT_WINDOW_MS", "CHAT_WINDOW_MAX",
     "CHAT_AUTO_MUTE_REPORTS", "CHAT_AUTO_MUTE_MINUTES",
     "GLOBAL_CHAT_HISTORY", "GLOBAL_CHAT_MAX",
+    "ECONOMY_MEMORY", "ECONOMY_IDEM", "ECONOMY_MAX_MEMORY",
+    "CHAT_ACCOUNT_RATE", "CHAT_RATE_MAX_ACCOUNTS",
     "ATTENDANCE_REWARD", "SHOP_POTION_PRICE", "SHOP_SHIELD_PRICE",
     "DAILY_MISSIONS", "WEEKLY_MISSIONS", "MONTHLY_MISSIONS",
     "SHOP_TITLES", "SHOP_MULTIPLIER_PRICES", "missionCurrent", "ADMIN_EMAILS", "AI_PLAYER_ID"]) {
@@ -154,6 +156,8 @@ function context(extra = {}) {
     "getRankingPayload", "isAdminEmail", "isAdminPd",
     "listAllPlayers", "saveSeasonStore", "closeSeason", "ensureSeasonRollover",
     "chatFilter", "createRoomId", "createRoom",
+    "beginEconomyTx", "finishEconomyTx", "abortEconomyTx", "getEconomyHistory",
+    "chatRateKey", "takeChatSlot", "renameEconomyAccount",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions, ioRooms };
 }
@@ -354,6 +358,28 @@ test("AI finish stores history then statistics, even if UI restarts immediately"
   assert.equal(after.recentGames[0].wordCount, 1);
   assert.equal(after.recentGames[0].result, "win");
   assert.equal(errors.length, 0);
+});
+
+test("recent match history keeps a compact replay flow with my words", async () => {
+  const { c, errors } = context();
+  seed(c, "flow-user");
+  seed(c, "flow-opp");
+  const r = room(c, 2);
+  r.mode = "online";
+  r.players[0].nickname = "flow-user";
+  r.players[1].nickname = "flow-opp";
+  r.history = [
+    { word: "가방", player: -1, nickname: "시작", turn: 0, depth: null },
+    { word: "방패", player: 0, nickname: "flow-user", turn: 1, depth: 2 },
+    { word: "패션", player: 1, nickname: "flow-opp", turn: 2, depth: null }
+  ];
+  await c.recordMatchHistory(r, 0, 1);
+  const game = c.playerCache.get("flow-user").recentGames[0];
+  assert.equal(game.flow.length, 3);
+  assert.equal(game.flow[1].w, "방패");
+  assert.equal(game.flow[1].m, true, "내 단어는 리플레이에서 구분된다");
+  assert.equal(game.flow[2].m, false);
+  assert.equal(errors.length, 0, errors.join(" | "));
 });
 
 test("ranked finish uses stable account keys after disconnect and room cleanup", async () => {
@@ -1090,7 +1116,7 @@ test("empty title inventory offers a direct jump to the shop", () => {
       if (selector === ".tabs button[data-mode='shop']") return tabs;
       return null;
     },
-    escapeHtml: String, renderRatingChart() {}, renderRecentGames() {},
+    escapeHtml: String, renderRatingChart() {}, renderRecentGames() {}, renderEconomyHistory() {},
   });
   vm.runInContext(`${clientFunctionSource("renderItems")}`, context);
   context.renderItems();
@@ -1974,6 +2000,40 @@ test("missions claim pays coins and titles once, rejecting unmet and duplicate c
   assert.equal(errors.length, 0, errors.join(" | "));
 });
 
+test("economy ledger accepts an idempotency key once and records the balance", async () => {
+  const { c, errors } = context();
+  const first = await c.beginEconomyTx({
+    accountId: "coin-user", idemKey: "attendance:coin-user:2026-10-04",
+    delta: 2000, reason: "attendance", ref: "2026-10-04"
+  });
+  assert.equal(first.ok, true);
+  await c.finishEconomyTx(first, 92000);
+  const again = await c.beginEconomyTx({
+    accountId: "coin-user", idemKey: "attendance:coin-user:2026-10-04",
+    delta: 2000, reason: "attendance", ref: "2026-10-04"
+  });
+  assert.equal(again.ok, false);
+  assert.equal(again.duplicate, true, "같은 요청은 두 번 지급되지 않는다");
+  const hist = await c.getEconomyHistory("coin-user");
+  assert.equal(hist.length, 1);
+  assert.equal(hist[0].delta, 2000);
+  assert.equal(hist[0].balanceAfter, 92000);
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("rename moves the coin ledger to the new account key", async () => {
+  const { c } = context();
+  await c.beginEconomyTx({
+    accountId: "old-name", idemKey: "attendance:old-name:2026-10-04",
+    delta: 2000, reason: "attendance", ref: "2026-10-04"
+  });
+  await c.renameEconomyAccount("old-name", "new-name");
+  assert.equal((await c.getEconomyHistory("old-name")).length, 0);
+  const moved = await c.getEconomyHistory("new-name");
+  assert.equal(moved.length, 1);
+  assert.equal(moved[0].delta, 2000);
+});
+
 test("season rollover closes the previous season, pays rewards, and archives standings", async () => {
   const { c, errors } = context({ seasonStore: { lastClosed: "2026-09", history: [] } });
   const champ = seed(c, "champ", {
@@ -2200,7 +2260,7 @@ test("chat goes global without a room, stays inside a multiplayer room, global a
   c.registerOnline(s.id, "말쟁이");
   c.socketFirebaseUid.set(s.id, "uid-chat");
   installHandler(c, "chat:send", s);
-  const reset = () => { s.data.chatLastAt = 0; s.data.chatWin = []; };
+  const reset = () => { vm.runInContext("CHAT_ACCOUNT_RATE.clear()", c); s.data.chatLastAt = 0; s.data.chatWin = []; };
 
   /* 방 없음 → 전체 채팅 */
   await s.handlers.get("chat:send")({ text: "대기실입니다" });
@@ -2269,6 +2329,24 @@ test("chat rate limit keeps only the first message inside the window", async () 
   assert.match(String(err[1].reason || ""), /천천히/);
 });
 
+test("chat throttle follows the account across new sockets", async () => {
+  const { c, emissions } = context();
+  const a = socket("acc-a");
+  const b = socket("acc-b");
+  c.registerOnline(a.id, "계정유저");
+  c.registerOnline(b.id, "계정유저");
+  c.socketFirebaseUid.set(a.id, "uid-shared");
+  c.socketFirebaseUid.set(b.id, "uid-shared");
+  installHandler(c, "chat:send", a);
+  installHandler(c, "chat:send", b);
+  await a.handlers.get("chat:send")({ text: "첫 소켓" });
+  await b.handlers.get("chat:send")({ text: "새 소켓" });
+  assert.equal(emissions.filter(([event]) => event === "chat:message").length, 1, "새 소켓으로 우회할 수 없다");
+  const err = b.emissions.find(([event]) => event === "chat:error");
+  assert.ok(err);
+  assert.match(String(err[1].reason || ""), /천천히/);
+});
+
 test("mute blocks chat until its expiry; an expired mute passes again", async () => {
   const { c, emissions } = context();
   const s = socket("muted");
@@ -2286,6 +2364,7 @@ test("mute blocks chat until its expiry; an expired mute passes again", async ()
 
   /* 만료 시각이 지난 뮤트는 자동으로 무시된다 */
   c.mutedMap.set(normKey("조용이"), { nick: "조용이", by: "admin", at: new Date().toISOString(), reason: "도배", uid: "", until: new Date(Date.now() - 1000).toISOString() });
+  vm.runInContext("CHAT_ACCOUNT_RATE.clear()", c);
   s.data.chatLastAt = 0;
   s.data.chatWin = [];
   await s.handlers.get("chat:send")({ text: "다시" });
