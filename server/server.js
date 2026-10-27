@@ -1698,6 +1698,31 @@ async function renameEconomyAccount(prevKey, newKey) {
   for (const row of ECONOMY_MEMORY) if (row.accountId === from) row.accountId = to;
 }
 
+/* 구매 요청 ID — 반복 구매(보호 티켓·물약)의 중복 청구를 막는다 */
+function safeEconomyRequestId(value, prefix = "req") {
+  const clean = String(value || "").replace(/[^a-zA-Z0-9:_-]/g, "").slice(0, 80);
+  return clean || `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/* 업적 해금 코인은 evaluateAchievements가 동기적으로 지급하므로,
+   저장이 끝난 뒤 원장에 감사 기록만 남긴다. 업적 ID 자체가 멱등 키다. */
+async function recordAchievementLedger(accountId, unlocked, balanceAfter) {
+  if (!accountId || !Array.isArray(unlocked) || unlocked.length === 0) return;
+  for (const def of unlocked) {
+    if (!def || !def.id || !(Number(def.coin) > 0)) continue;
+    try {
+      const tx = await beginEconomyTx({
+        accountId, idemKey: `achievement:${accountId}:${def.id}`,
+        delta: Number(def.coin), reason: "achievement", ref: def.id
+      });
+      if (tx.ok) await finishEconomyTx(tx, balanceAfter);
+      else if (!tx.duplicate) console.warn("업적 원장 기록 실패:", def.id, tx.reason || "");
+    } catch (e) {
+      console.warn("업적 원장 기록 오류:", e.message);
+    }
+  }
+}
+
 function updateSingleResult(playerId, won, socketId = playerId) {
   return (async () => {
     const pd = await getPlayerData(playerId);
@@ -2248,13 +2273,26 @@ async function closeSeason(key) {
     for (const r of rows) {
       const rew = seasonRewardFor(r.rank);
       const pd = await getPlayerData(r.id);
-      pd.money += rew.amount;
+      const tx = rew.amount > 0
+        ? await beginEconomyTx({
+            accountId: r.id, idemKey: `season:${key}:${r.id}`,
+            delta: rew.amount, reason: "season", ref: key
+          })
+        : null;
+      const alreadyPaid = !!(tx && tx.duplicate);
+      if (!alreadyPaid) pd.money += rew.amount;
       if (rew.title && !pd.titles.some(t => t && t.id === rew.title.id)) {
         pd.titles.push({ id: rew.title.id, name: rew.title.name });
         if (!pd.currentTitle) pd.currentTitle = rew.title.name;
       }
       pd.season = null;
-      await savePlayerData(r.id, pd);
+      try {
+        await savePlayerData(r.id, pd);
+        if (tx && tx.ok) await finishEconomyTx(tx, pd.money);
+      } catch (e) {
+        if (tx && tx.ok) await abortEconomyTx(tx);
+        throw e;
+      }
       awarded++;
     }
     const store = getSeasonStore();
@@ -2369,6 +2407,7 @@ async function recordMatchHistory(room, winnerIndex, loserIndex) {
       });
       pd.recentGames = list.slice(-10);
       await savePlayerData(accountId, pd);
+      if (newAch.length) await recordAchievementLedger(accountId, newAch, pd.money);
       if (newAch.length) {
         const as = p.socketId ? io.sockets.sockets.get(p.socketId) : null;
         if (as) as.emit("achievements:unlocked", {
@@ -2925,10 +2964,27 @@ async function finishGame(room, winnerIndex, loserIndex) {
           const winnerData = await getPlayerData(winnerAccountId);
           const base = rollMoney();
           const earned = computeMoneyReward(base, winnerData);
-          winnerData.money += earned;
-          await savePlayerData(winnerAccountId, winnerData);
-          const ws = io.sockets.sockets.get(w.socketId);
-          if (ws) ws.emit("money:received", { amount: earned, base, multiplier: Math.round(earned / base), roomId: room.id });
+          const tx = earned > 0
+            ? await beginEconomyTx({
+                accountId: winnerAccountId,
+                idemKey: `game:${room.id}:${room.gameSessionId}:${winnerAccountId}`,
+                delta: earned, reason: "game_win", ref: room.id
+              })
+            : null;
+          if (tx && tx.duplicate) {
+            console.warn("이미 지급된 게임 보상 — 중복 지급 생략:", room.id, winnerAccountId);
+          } else {
+            winnerData.money += earned;
+            try {
+              await savePlayerData(winnerAccountId, winnerData);
+              if (tx && tx.ok) await finishEconomyTx(tx, winnerData.money);
+            } catch (e) {
+              if (tx && tx.ok) await abortEconomyTx(tx);
+              throw e;
+            }
+            const ws = io.sockets.sockets.get(w.socketId);
+            if (ws) ws.emit("money:received", { amount: earned, base, multiplier: Math.round(earned / base), roomId: room.id });
+          }
         }
 
         /* 시즌 참가 누적 — 승/패 각각 현재 시즌에 기록 */
@@ -4585,10 +4641,25 @@ io.on("connection", (socket) => {
       const pd = await getPlayerData(socket.id);
       if (pd.titles.some(t => t.id === titleId)) { socket.emit("shop:result", { ok: false, reason: "이미 보유한 칭호입니다." }); return; }
       if (pd.money < title.price) { socket.emit("shop:result", { ok: false, reason: "돈이 부족합니다." }); return; }
+      const accountId = normKey(pd.nickname) || normKey(socketNicks.get(socket.id)) || socket.id;
+      const tx = await beginEconomyTx({
+        accountId, idemKey: `shop:title:${accountId}:${title.id}`,
+        delta: -title.price, reason: "shop_title", ref: title.id
+      });
+      if (!tx.ok) {
+        socket.emit("shop:result", { ok: false, reason: tx.duplicate ? "이미 구매한 칭호입니다." : "구매 기록에 실패했습니다." });
+        return;
+      }
       pd.money -= title.price;
       pd.titles.push({ id: title.id, name: title.name });
       pd.currentTitle = title.name;
-      await savePlayerData(socket.id, pd);
+      try {
+        await savePlayerData(socket.id, pd);
+        await finishEconomyTx(tx, pd.money);
+      } catch (e) {
+        await abortEconomyTx(tx);
+        throw e;
+      }
       socket.emit("shop:result", { ok: true, message: `칭호 '${title.name}'을 구매했습니다.`, money: pd.money, titles: pd.titles, currentTitle: pd.currentTitle });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("칭호 구매 오류:", err); }
@@ -4635,8 +4706,9 @@ io.on("connection", (socket) => {
       const accountId = normKey(nickname);
       const pd = await getPlayerData(accountId);
       achievementStats(pd);
-      evaluateAchievements(pd);   /* 로그인 중 미션/승수 변화로 해금이 밀린 경우 보완 */
+      const newAch = evaluateAchievements(pd);   /* 로그인 중 미션/승수 변화로 해금이 밀린 경우 보완 */
       await savePlayerData(accountId, pd);
+      if (newAch.length) await recordAchievementLedger(accountId, newAch, pd.money);
       socket.emit("achievements:list", {
         ok: true,
         list: achievementDefs().map(d => ({ ...d, unlockedAt: pd.achievements[d.id] || null })),
@@ -4740,25 +4812,57 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("미션 보상 수령 오류:", err); }
   });
 
-  socket.on("shop:buyShield", async () => {
+  socket.on("shop:buyShield", async (data) => {
     try {
       const pd = await getPlayerData(socket.id);
       if (pd.money < SHOP_SHIELD_PRICE) { socket.emit("shop:result", { ok: false, reason: "돈이 부족합니다." }); return; }
+      const accountId = normKey(pd.nickname) || normKey(socketNicks.get(socket.id)) || socket.id;
+      const requestId = safeEconomyRequestId(data?.requestId, "shield");
+      const tx = await beginEconomyTx({
+        accountId, idemKey: `shop:shield:${accountId}:${requestId}`,
+        delta: -SHOP_SHIELD_PRICE, reason: "shop_shield", ref: requestId
+      });
+      if (!tx.ok) {
+        socket.emit("shop:result", { ok: false, reason: tx.duplicate ? "이미 처리한 구매입니다." : "구매 기록에 실패했습니다." });
+        return;
+      }
       pd.money -= SHOP_SHIELD_PRICE;
       pd.shieldTickets = (pd.shieldTickets || 0) + 1;
-      await savePlayerData(socket.id, pd);
+      try {
+        await savePlayerData(socket.id, pd);
+        await finishEconomyTx(tx, pd.money);
+      } catch (e) {
+        await abortEconomyTx(tx);
+        throw e;
+      }
       socket.emit("shop:result", { ok: true, message: "랭크 보호 티켓 1장을 구매했습니다. (랭크 패배 1회 방어)", money: pd.money, shieldTickets: pd.shieldTickets });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("보호 티켓 구매 오류:", err); }
   });
 
-  socket.on("shop:buyPotion", async () => {
+  socket.on("shop:buyPotion", async (data) => {
     try {
       const pd = await getPlayerData(socket.id);
       if (pd.money < SHOP_POTION_PRICE) { socket.emit("shop:result", { ok: false, reason: "돈이 부족합니다." }); return; }
+      const accountId = normKey(pd.nickname) || normKey(socketNicks.get(socket.id)) || socket.id;
+      const requestId = safeEconomyRequestId(data?.requestId, "potion");
+      const tx = await beginEconomyTx({
+        accountId, idemKey: `shop:potion:${accountId}:${requestId}`,
+        delta: -SHOP_POTION_PRICE, reason: "shop_potion", ref: requestId
+      });
+      if (!tx.ok) {
+        socket.emit("shop:result", { ok: false, reason: tx.duplicate ? "이미 처리한 구매입니다." : "구매 기록에 실패했습니다." });
+        return;
+      }
       pd.money -= SHOP_POTION_PRICE;
       pd.ratingBoostGames += 10;
-      await savePlayerData(socket.id, pd);
+      try {
+        await savePlayerData(socket.id, pd);
+        await finishEconomyTx(tx, pd.money);
+      } catch (e) {
+        await abortEconomyTx(tx);
+        throw e;
+      }
       socket.emit("shop:result", { ok: true, message: "다음 10판 동안 레이팅 2배 물약을 구매했습니다.", money: pd.money, ratingBoostGames: pd.ratingBoostGames });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("물약 구매 오류:", err); }
@@ -4772,9 +4876,24 @@ io.on("connection", (socket) => {
       const pd = await getPlayerData(socket.id);
       if ((pd.moneyMultiplier || 1) >= target) { socket.emit("shop:result", { ok: false, reason: `이미 ${pd.moneyMultiplier}배 이상 보유 중입니다.` }); return; }
       if (pd.money < row.price) { socket.emit("shop:result", { ok: false, reason: "돈이 부족합니다." }); return; }
+      const accountId = normKey(pd.nickname) || normKey(socketNicks.get(socket.id)) || socket.id;
+      const tx = await beginEconomyTx({
+        accountId, idemKey: `shop:multiplier:${accountId}:${target}`,
+        delta: -row.price, reason: "shop_multiplier", ref: String(target)
+      });
+      if (!tx.ok) {
+        socket.emit("shop:result", { ok: false, reason: tx.duplicate ? "이미 구매한 배율입니다." : "구매 기록에 실패했습니다." });
+        return;
+      }
       pd.money -= row.price;
       pd.moneyMultiplier = target;
-      await savePlayerData(socket.id, pd);
+      try {
+        await savePlayerData(socket.id, pd);
+        await finishEconomyTx(tx, pd.money);
+      } catch (e) {
+        await abortEconomyTx(tx);
+        throw e;
+      }
       socket.emit("shop:result", { ok: true, message: `영구 돈 ${target}배를 구매했습니다.`, money: pd.money, moneyMultiplier: pd.moneyMultiplier });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("배율 구매 오류:", err); }

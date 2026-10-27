@@ -158,6 +158,7 @@ function context(extra = {}) {
     "chatFilter", "createRoomId", "createRoom",
     "beginEconomyTx", "finishEconomyTx", "abortEconomyTx", "getEconomyHistory",
     "chatRateKey", "takeChatSlot", "renameEconomyAccount",
+    "safeEconomyRequestId", "recordAchievementLedger",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions, ioRooms };
 }
@@ -402,6 +403,9 @@ test("ranked finish uses stable account keys after disconnect and room cleanup",
   assert.equal(c.playerCache.get("p0").money, 101000);
   assert.equal(c.playerCache.get("p0").recentGames.length, 1);
   assert.equal(c.ROOMS.has(r.id), false);
+  const p0Ledger = await c.getEconomyHistory("p0");
+  assert.equal(p0Ledger.find(h => h.reason === "game_win").delta, 5000);
+  assert.equal(p0Ledger.filter(h => h.reason === "achievement").length, 2);
   assert.equal(errors.length, 0);
 });
 
@@ -1958,6 +1962,41 @@ test("shop purchases deduct money and stack tickets, boosts, and multipliers", a
   await s.handlers.get("shop:buyMultiplier")({ multiplier: 2 });
   res = lastShop();
   assert.equal(res.ok, false, "이미 보유한 배율은 중복 구매가 거부된다");
+
+  const buyerLedger = await c.getEconomyHistory("buyer");
+  assert.equal(buyerLedger.find(h => h.reason === "shop_shield").delta, -2000000);
+  assert.equal(buyerLedger.find(h => h.reason === "shop_potion").delta, -1000000);
+  const richLedger = await c.getEconomyHistory("rich");
+  assert.equal(richLedger.find(h => h.reason === "shop_multiplier").delta, -5000000);
+
+  /* 같은 요청 ID를 재전송해도 보호 티켓은 한 번만 차감된다 */
+  c.socketNicks.set(s.id, "retry-buyer");
+  seed(c, "retry-buyer", { money: 5000000 });
+  await s.handlers.get("shop:buyShield")({ requestId: "same-request" });
+  await s.handlers.get("shop:buyShield")({ requestId: "same-request" });
+  const retryPd = c.playerCache.get("retry-buyer");
+  assert.equal(retryPd.money, 3000000, "중복 요청은 두 번 차감하지 않는다");
+  assert.equal(retryPd.shieldTickets, 1);
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("title purchase is recorded once in the coin ledger", async () => {
+  const { c, errors } = context();
+  const s = socket("s-title");
+  c.socketNicks.set(s.id, "title-buyer");
+  seed(c, "title-buyer", { money: 100000, titles: [] });
+  installHandler(c, "shop:buyTitle", s);
+  await s.handlers.get("shop:buyTitle")({ titleId: "t_rookie", requestId: "title-1" });
+  let res = s.emissions.filter(([event]) => event === "shop:result").at(-1);
+  assert.equal(res[1].ok, true);
+  assert.equal(c.playerCache.get("title-buyer").money, 80000);
+  await s.handlers.get("shop:buyTitle")({ titleId: "t_rookie", requestId: "title-2" });
+  res = s.emissions.filter(([event]) => event === "shop:result").at(-1);
+  assert.equal(res[1].ok, false, "이미 보유한 칭호는 재구매할 수 없다");
+  assert.equal(c.playerCache.get("title-buyer").money, 80000);
+  const hist = await c.getEconomyHistory("title-buyer");
+  assert.equal(hist.filter(h => h.reason === "shop_title").length, 1);
+  assert.equal(hist.find(h => h.reason === "shop_title").delta, -20000);
   assert.equal(errors.length, 0, errors.join(" | "));
 });
 
@@ -2066,6 +2105,9 @@ test("season rollover closes the previous season, pays rewards, and archives sta
   assert.equal(champAfter.season.games, 0, "시즌 기록이 초기화된다");
   assert.equal(c.playerCache.get("runner").money, 590000, "2위 보상 50만 코인 지급");
   assert.equal(c.playerCache.get("bystander").money, 90000, "미참가자에게는 보상이 없다");
+  assert.equal((await c.getEconomyHistory("champ")).find(h => h.reason === "season").delta, 1000000);
+  assert.equal((await c.getEconomyHistory("runner")).find(h => h.reason === "season").delta, 500000);
+  assert.equal((await c.getEconomyHistory("bystander")).length, 0);
 });
 
 /* =========================================================

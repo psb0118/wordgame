@@ -2644,6 +2644,15 @@ function renderAttendance() {
   }
 }
 
+function newPurchaseRequestId(prefix) {
+  try {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return `${prefix}-${window.crypto.randomUUID()}`;
+    }
+  } catch (e) { /* 무시 */ }
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function renderShop() {
   const body = $("#shopBody");
   if (!body || !shopInfo) return;
@@ -2683,10 +2692,11 @@ function renderShop() {
   body.querySelectorAll("[id^='buyTitle:'],[id^='buyPotion'],[id^='buyShield'],[id^='buyMultiplier']").forEach(btn => {
     btn.addEventListener("click", () => {
       const [kind, val] = btn.id.split(":");
-      if (kind === "buyTitle") socket.emit("shop:buyTitle", { titleId: val });
-      else if (kind === "buyPotion") socket.emit("shop:buyPotion");
-      else if (kind === "buyShield") socket.emit("shop:buyShield");
-      else if (kind === "buyMultiplier") socket.emit("shop:buyMultiplier", { multiplier: Number(val) });
+      const requestId = newPurchaseRequestId(kind || "shop");
+      if (kind === "buyTitle") socket.emit("shop:buyTitle", { titleId: val, requestId });
+      else if (kind === "buyPotion") socket.emit("shop:buyPotion", { requestId });
+      else if (kind === "buyShield") socket.emit("shop:buyShield", { requestId });
+      else if (kind === "buyMultiplier") socket.emit("shop:buyMultiplier", { multiplier: Number(val), requestId });
     });
   });
   renderItems();
@@ -2884,7 +2894,9 @@ function renderEconomyHistory() {
   }
   const labels = {
     attendance: "출석", mission: "미션", mail: "우편",
-    referral_join: "추천인 등록", referral_invite: "추천 보상"
+    referral_join: "추천인 등록", referral_invite: "추천 보상",
+    shop_title: "칭호 구매", shop_shield: "보호 티켓", shop_potion: "물약",
+    shop_multiplier: "돈 배율", game_win: "게임 승리", achievement: "업적", season: "시즌"
   };
   list.innerHTML = economyHistoryState.map(entry => {
     const delta = Number(entry.delta) || 0;
