@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=38">
+  <link rel="stylesheet" href="style.css?v=39">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -339,6 +339,12 @@
       </div>
       <div class="item-card item-card-wide">
         <div class="item-card-head">🧾 최근 코인 내역</div>
+        <div id="economySummary" class="coin-summary"></div>
+        <div class="coin-filter" role="group" aria-label="코인 내역 필터">
+          <button type="button" class="secondary active" data-coin-filter="all" aria-pressed="true">전체</button>
+          <button type="button" class="secondary" data-coin-filter="in" aria-pressed="false">수입</button>
+          <button type="button" class="secondary" data-coin-filter="out" aria-pressed="false">지출</button>
+        </div>
         <div id="economyHistoryList" class="acc-recent-list"></div>
       </div>
       <div class="item-card item-card-wide">
@@ -669,7 +675,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="script.js?v=46"></script>
+  <script src="script.js?v=47"></script>
   <script src="firebase-auth.js?v=2"></script>
 </body>
 </html>

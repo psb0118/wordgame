@@ -1698,6 +1698,47 @@ async function renameEconomyAccount(prevKey, newKey) {
   for (const row of ECONOMY_MEMORY) if (row.accountId === from) row.accountId = to;
 }
 
+/* 최근 코인 수입/지출 요약 — KST 기준 오늘/최근 7일 (원장 화면 상단용) */
+async function getEconomySummary(accountId) {
+  const account = String(accountId || "").trim();
+  const empty = () => ({ income: 0, expense: 0, net: 0, count: 0 });
+  if (!account) return { today: empty(), week: empty() };
+  const nowKst = new Date(Date.now() + 9 * 3600 * 1000);
+  const todayStart = Date.UTC(nowKst.getUTCFullYear(), nowKst.getUTCMonth(), nowKst.getUTCDate()) - 9 * 3600 * 1000;
+  const weekStart = todayStart - 6 * 86400000;
+  let rows = [];
+  if (dbMode === "pg" && dbPool) {
+    try {
+      const r = await dbPool.query(
+        `SELECT delta, EXTRACT(EPOCH FROM created_at) * 1000 AS at_ms
+         FROM economy_ledger
+         WHERE account_id = $1 AND created_at >= NOW() - interval '8 days'`,
+        [account]
+      );
+      rows = r.rows.map(x => ({ delta: Number(x.delta) || 0, at: Number(x.at_ms) || 0 }));
+    } catch (e) {
+      console.warn("코인 요약 조회 실패:", e.message);
+      return { today: empty(), week: empty() };
+    }
+  } else {
+    rows = ECONOMY_MEMORY
+      .filter(r => r.accountId === account)
+      .map(r => ({ delta: Number(r.delta) || 0, at: Date.parse(r.at) || 0 }));
+  }
+  const calc = (since) => {
+    const out = empty();
+    for (const row of rows) {
+      if (row.at < since) continue;
+      out.count++;
+      if (row.delta > 0) out.income += row.delta;
+      else if (row.delta < 0) out.expense += -row.delta;
+    }
+    out.net = out.income - out.expense;
+    return out;
+  };
+  return { today: calc(todayStart), week: calc(weekStart) };
+}
+
 /* 구매 요청 ID — 반복 구매(보호 티켓·물약)의 중복 청구를 막는다 */
 function safeEconomyRequestId(value, prefix = "req") {
   const clean = String(value || "").replace(/[^a-zA-Z0-9:_-]/g, "").slice(0, 80);
@@ -4625,8 +4666,11 @@ io.on("connection", (socket) => {
     try {
       const pd = await getPlayerData(socket.id);
       const accountId = normKey(pd.nickname) || normKey(socketNicks.get(socket.id)) || socket.id;
-      const history = await getEconomyHistory(accountId, 20);
-      socket.emit("economy:history", { ok: true, history });
+      const [history, summary] = await Promise.all([
+        getEconomyHistory(accountId, 20),
+        getEconomySummary(accountId)
+      ]);
+      socket.emit("economy:history", { ok: true, history, summary });
     } catch (err) {
       console.error("코인 내역 오류:", err);
       socket.emit("economy:history", { ok: false, reason: "코인 내역을 불러오지 못했습니다." });

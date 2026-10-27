@@ -158,7 +158,7 @@ function context(extra = {}) {
     "chatFilter", "createRoomId", "createRoom",
     "beginEconomyTx", "finishEconomyTx", "abortEconomyTx", "getEconomyHistory",
     "chatRateKey", "takeChatSlot", "renameEconomyAccount",
-    "safeEconomyRequestId", "recordAchievementLedger",
+    "safeEconomyRequestId", "recordAchievementLedger", "getEconomySummary",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions, ioRooms };
 }
@@ -2057,6 +2057,11 @@ test("economy ledger accepts an idempotency key once and records the balance", a
   assert.equal(hist.length, 1);
   assert.equal(hist[0].delta, 2000);
   assert.equal(hist[0].balanceAfter, 92000);
+  const summary = await c.getEconomySummary("coin-user");
+  assert.equal(summary.today.income, 2000);
+  assert.equal(summary.today.expense, 0);
+  assert.equal(summary.today.net, 2000);
+  assert.equal(summary.week.count, 1);
   assert.equal(errors.length, 0, errors.join(" | "));
 });
 

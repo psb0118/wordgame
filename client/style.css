@@ -4536,3 +4536,36 @@ html.dark .acc-rename-info {
 
 .rec-replay:hover { border-color: var(--accent); color: var(--accent); }
 .replay-row.mine .replay-who { color: var(--accent); font-weight: 700; }
+
+/* --- 코인 요약 / 필터 --- */
+.coin-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 10px;
+  font-size: 0.78rem;
+}
+
+.coin-sum-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card-soft);
+}
+
+.coin-sum-label { min-width: 58px; color: var(--text-dim); font-weight: 700; }
+.coin-sum-in { color: #059669; font-weight: 700; }
+.coin-sum-out { color: #dc2626; font-weight: 700; }
+.coin-sum-net { margin-left: auto; color: var(--text-dim); white-space: nowrap; }
+
+.coin-filter { display: flex; gap: 6px; margin-bottom: 8px; }
+.coin-filter button {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  box-shadow: none;
+}
+.coin-filter button.active { border-color: var(--accent); color: var(--accent); font-weight: 700; }

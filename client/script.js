@@ -80,6 +80,8 @@ let missionsGroups = { daily: [], weekly: [], monthly: [] };
 let missionPeriods = {};
 let recentGamesState = [];
 let economyHistoryState = [];
+let economySummaryState = null;
+let economyFilter = "all";
 let wordbookState = [];
 let wordDefCurrent = "";
 let dailyCounters = null;
@@ -826,6 +828,7 @@ function initSocket() {
   /* -- 상점 ------------------------------------------- */
   socket.on("economy:history", (data) => {
     economyHistoryState = data && Array.isArray(data.history) ? data.history : [];
+    economySummaryState = data && data.summary ? data.summary : null;
     renderEconomyHistory();
   });
 
@@ -2885,11 +2888,36 @@ function renderRecentGames() {
   });
 }
 
+function renderEconomySummary() {
+  const el = $("#economySummary");
+  if (!el) return;
+  const s = economySummaryState || {};
+  const today = s.today || {};
+  const week = s.week || {};
+  const num = v => Number(v) || 0;
+  const fmt = v => Math.abs(num(v)).toLocaleString("ko-KR");
+  const net = v => (num(v) >= 0 ? "+" : "-") + fmt(v);
+  const row = (label, data) => `<div class="coin-sum-row">
+    <span class="coin-sum-label">${label}</span>
+    <span class="coin-sum-in">+ ${fmt(data.income)}</span>
+    <span class="coin-sum-out">- ${fmt(data.expense)}</span>
+    <span class="coin-sum-net">순 ${net(data.net)}</span>
+  </div>`;
+  el.innerHTML = row("오늘", today) + row("최근 7일", week);
+}
+
 function renderEconomyHistory() {
   const list = $("#economyHistoryList");
   if (!list) return;
-  if (!Array.isArray(economyHistoryState) || economyHistoryState.length === 0) {
-    list.innerHTML = `<div class="items-empty">아직 코인 내역이 없습니다.</div>`;
+  renderEconomySummary();
+  const all = Array.isArray(economyHistoryState) ? economyHistoryState : [];
+  const rows = economyFilter === "in"
+    ? all.filter(entry => Number(entry.delta) > 0)
+    : economyFilter === "out"
+      ? all.filter(entry => Number(entry.delta) < 0)
+      : all;
+  if (rows.length === 0) {
+    list.innerHTML = `<div class="items-empty">${all.length ? "해당하는 코인 내역이 없습니다." : "아직 코인 내역이 없습니다."}</div>`;
     return;
   }
   const labels = {
@@ -2898,7 +2926,7 @@ function renderEconomyHistory() {
     shop_title: "칭호 구매", shop_shield: "보호 티켓", shop_potion: "물약",
     shop_multiplier: "돈 배율", game_win: "게임 승리", achievement: "업적", season: "시즌"
   };
-  list.innerHTML = economyHistoryState.map(entry => {
+  list.innerHTML = rows.map(entry => {
     const delta = Number(entry.delta) || 0;
     const sign = delta > 0 ? "+" : "";
     const at = String(entry.at || "").slice(0, 16).replace("T", " ");
@@ -4475,6 +4503,17 @@ document.addEventListener("DOMContentLoaded", () => {
     renderWordbook();
   });
   $("#wordbookSearch")?.addEventListener("input", renderWordbook);
+  $all("[data-coin-filter]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      economyFilter = btn.dataset.coinFilter || "all";
+      $all("[data-coin-filter]").forEach(other => {
+        const selected = other === btn;
+        other.classList.toggle("active", selected);
+        other.setAttribute("aria-pressed", String(selected));
+      });
+      renderEconomyHistory();
+    });
+  });
   $all("[data-ach-filter]").forEach(button => {
     button.addEventListener("click", () => {
       achievementFilter = button.dataset.achFilter || "all";
