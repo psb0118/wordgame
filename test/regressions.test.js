@@ -158,7 +158,7 @@ function context(extra = {}) {
     "chatFilter", "createRoomId", "createRoom",
     "beginEconomyTx", "finishEconomyTx", "abortEconomyTx", "getEconomyHistory",
     "chatRateKey", "takeChatSlot", "renameEconomyAccount",
-    "safeEconomyRequestId", "recordAchievementLedger", "getEconomySummary",
+    "safeEconomyRequestId", "recordAchievementLedger", "getEconomySummary", "recordWelcomeLedger",
   ]) vm.runInContext(functionSource(name), c);
   return { c, errors, timers, emissions, ioRooms };
 }
@@ -2063,6 +2063,17 @@ test("economy ledger accepts an idempotency key once and records the balance", a
   assert.equal(summary.today.net, 2000);
   assert.equal(summary.week.count, 1);
   assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("welcome ledger records a reward once per day", async () => {
+  const { c } = context();
+  await c.recordWelcomeLedger("welcome-user", 4000, 94000);
+  await c.recordWelcomeLedger("welcome-user", 4000, 94000);
+  const hist = await c.getEconomyHistory("welcome-user");
+  assert.equal(hist.length, 1);
+  assert.equal(hist[0].delta, 4000);
+  assert.equal(hist[0].reason, "welcome");
+  assert.equal(hist[0].balanceAfter, 94000);
 });
 
 test("rename moves the coin ledger to the new account key", async () => {

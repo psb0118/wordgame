@@ -1145,7 +1145,10 @@ function initSocket() {
     updateChatScopeLabel();
     renderGameState(gameState);
     /* 싱글(AI) 방은 재접속 유예 대상이 아니므로 기록하지 않는다 */
-    if (data.state && data.state.mode !== "ai") storeLastRoomId(data.roomId);
+    if (data.state && data.state.mode !== "ai") {
+      storeLastRoomId(data.roomId);
+      setRoomUrlParam(data.roomId);
+    }
     if (currentMode === "online") {
       showMessage(`방이 생성되었습니다. 방 코드: ${data.roomId}`, "success");
     }
@@ -1154,7 +1157,10 @@ function initSocket() {
   socket.on("room:joined", (data) => {
     if (!data.ok) return;
     if (isStaleAIEvent(null, data.state)) return;
-    if (data.state && data.state.mode !== "ai") storeLastRoomId(data.roomId);
+    if (data.state && data.state.mode !== "ai") {
+      storeLastRoomId(data.roomId);
+      setRoomUrlParam(data.roomId);
+    }
     /* 새 소켓으로 재접속됨 — 방의 실제 모드에 맞게 탭을 전환한다
        (파티는 별도 탭이 없으므로 온라인 탭으로 복원) */
     if (data.reconnect && data.state && data.state.mode) {
@@ -2145,6 +2151,41 @@ function createOnlineRoom() {
   showMessage("방을 만드는 중...", "waiting");
 }
 
+function roomInviteUrl(id) {
+  return `${location.origin}${location.pathname}?room=${encodeURIComponent(id)}`;
+}
+
+function setRoomUrlParam(id) {
+  try {
+    const url = new URL(location.href);
+    if (id) url.searchParams.set("room", id);
+    else url.searchParams.delete("room");
+    history.replaceState(null, "", url);
+  } catch (e) { /* 무시 */ }
+}
+
+async function copyRoomInviteLink() {
+  if (!roomId) { showMessage("방을 만들거나 입장한 뒤 초대 링크를 복사할 수 있습니다.", "error"); return; }
+  const url = roomInviteUrl(roomId);
+  try {
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") throw new Error("clipboard");
+    await navigator.clipboard.writeText(url);
+    showMessage(`초대 링크를 복사했습니다. (방 코드 ${roomId})`, "success");
+  } catch (e) {
+    window.prompt("아래 초대 링크를 복사하세요.", url);
+  }
+}
+
+function readRoomInviteFromUrl() {
+  let code = "";
+  try { code = normalizeWord(new URLSearchParams(location.search).get("room") || ""); } catch (e) { /* 무시 */ }
+  if (!code) return;
+  const input = $("#roomCode");
+  if (input) input.value = code;
+  $(".tabs button[data-mode='online']")?.click();
+  showMessage(`초대 링크로 접속했습니다. 방 코드 ${code} — '방 참가'를 눌러 입장하세요.`, "info");
+}
+
 function joinOnlineRoom() {
   if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
   if (!requireNickname()) return;
@@ -2371,6 +2412,7 @@ function leaveRoom() {
   rankedRematchReq = false;
   showRankedRematchBar(false, false);
   clearLastRoomId();
+  setRoomUrlParam(null);
   if (!socket || !socketConnected) return;
   socket.emit("room:leave");
   roomId = null;
@@ -2924,7 +2966,8 @@ function renderEconomyHistory() {
     attendance: "출석", mission: "미션", mail: "우편",
     referral_join: "추천인 등록", referral_invite: "추천 보상",
     shop_title: "칭호 구매", shop_shield: "보호 티켓", shop_potion: "물약",
-    shop_multiplier: "돈 배율", game_win: "게임 승리", achievement: "업적", season: "시즌"
+    shop_multiplier: "돈 배율", game_win: "게임 승리", achievement: "업적", season: "시즌",
+    welcome: "복귀 보상", admin_adjust: "관리자 조절", guild_create: "길드 생성"
   };
   list.innerHTML = rows.map(entry => {
     const delta = Number(entry.delta) || 0;
@@ -4776,6 +4819,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#onlineInviteBtn")?.addEventListener("click", () => {
     inviteByNickname($("#onlineInviteInput")?.value ?? "");
   });
+  $("#copyInviteLink")?.addEventListener("click", copyRoomInviteLink);
+  setTimeout(readRoomInviteFromUrl, 0);
   $("#onlineInviteInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); $("#onlineInviteBtn")?.click(); }
   });

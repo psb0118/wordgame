@@ -4569,3 +4569,39 @@ html.dark .acc-rename-info {
   box-shadow: none;
 }
 .coin-filter button.active { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+
+/* --- 모바일 하단 내비게이션 --- */
+@media (max-width: 860px) {
+  body { padding-bottom: 76px; }
+
+  .nav-shell {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 80;
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+    background: var(--card);
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -8px 24px -18px rgba(15, 23, 42, 0.5);
+  }
+
+  .nav-shell .tabs {
+    position: static;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+    padding: 0;
+  }
+
+  .nav-shell .tabs button {
+    padding: 8px 9px;
+    font-size: 0.76rem;
+  }
+
+  .nav-scroll-hint { display: none !important; }
+  .chat-wrap { bottom: 86px; }
+  .how-wrap { bottom: 86px; }
+  .toast { bottom: 92px; }
+}
