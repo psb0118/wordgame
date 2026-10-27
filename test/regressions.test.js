@@ -2115,6 +2115,62 @@ test("ranked queue/rematch/invite require a Google session", async () => {
   assert.equal(emissions.length, 0, "게스트는 매칭·초대 동작이 일어나지 않는다");
 });
 
+test("ranked queue broadcasts nearby counts and records recent matches", () => {
+  const now = Date.now();
+  const queue = [
+    { socketId: "rank-q1", nickname: "가", rating: 1000, joinedAt: now - 10000 },
+    { socketId: "rank-q2", nickname: "나", rating: 1050, joinedAt: now - 2000 },
+    { socketId: "rank-q3", nickname: "다", rating: 2000, joinedAt: now - 500 },
+  ];
+  const sent = new Map();
+  const globalEmits = [];
+  const c = vm.createContext({
+    RANKED_QUEUE: queue,
+    RANKED_QUEUE_MAP: new Map(queue.map(q => [q.socketId, true])),
+    RANKED_RECENT_MATCHES: [{ at: now, waitMs: 5000 }],
+    io: {
+      to: (id) => ({ emit: (event, payload) => sent.set(id, { event, payload }) }),
+      emit: (event, payload) => globalEmits.push({ event, payload }),
+    },
+  });
+  vm.runInContext(`${functionSource("broadcastRankedQueue")}\nbroadcastRankedQueue`, c);
+  c.broadcastRankedQueue();
+  const first = sent.get("rank-q1");
+  assert.equal(first.event, "ranked:queueSize");
+  assert.equal(first.payload.size, 3);
+  assert.equal(first.payload.nearbyCount, 1, "레이팅 ±100 이내 인원만 센다");
+  assert.equal(sent.get("rank-q3").payload.nearbyCount, 0);
+  assert.equal(first.payload.averageWaitMs, 5000);
+  assert.ok(first.payload.oldestWaitMs >= 9000, "가장 오래 기다린 시간을 포함한다");
+
+  queue.length = 0;
+  c.RANKED_QUEUE_MAP.clear();
+  c.broadcastRankedQueue();
+  assert.equal(globalEmits.at(-1).payload.size, 0, "빈 큐는 전체 브로드캐스트");
+});
+
+test("ranked matching records the wait time of the matched pair", () => {
+  const now = Date.now();
+  const queue = [
+    { socketId: "match-a", nickname: "가", rating: 1200, joinedAt: now - 8000 },
+    { socketId: "match-b", nickname: "나", rating: 1210, joinedAt: now - 1000 },
+  ];
+  const started = [];
+  const c = vm.createContext({
+    RANKED_QUEUE: queue,
+    RANKED_QUEUE_MAP: new Map(queue.map(q => [q.socketId, true])),
+    RANKED_RECENT_MATCHES: [],
+    io: { sockets: { sockets: new Map([["match-a", {}], ["match-b", {}]]) } },
+    startRankedGame: (a, b) => started.push([a.socketId, b.socketId]),
+    broadcastRankedQueue() {},
+  });
+  vm.runInContext(`${functionSource("tryMatchRanked")}\ntryMatchRanked`, c);
+  c.tryMatchRanked();
+  assert.equal(started.length, 1);
+  assert.equal(c.RANKED_RECENT_MATCHES.length, 1);
+  assert.ok(c.RANKED_RECENT_MATCHES[0].waitMs >= 7000, "오래 기다린 쪽 기준 대기 시간");
+});
+
 test("chat send/report require a Google session; history is readable by anyone", async () => {
   const { c, emissions } = context();
   const s = socket("guest-chat");

@@ -25,6 +25,7 @@
 - 하트 시스템 (2개)
 - Elo Rating 시스템
 - 랭크 등급 (Bronze ~ Challenger)
+- 랭크 매칭 대기 정보 (내 레이팅 근처 인원·최장 대기·최근 평균 매칭 시간)
 - PostgreSQL 영구 저장 (JSON 파일 폴백)
 - 반응형 모바일/PC UI
 

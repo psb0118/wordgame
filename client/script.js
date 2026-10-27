@@ -57,6 +57,8 @@ let ownedTitles = [];
 let currentTitle = "";
 let shopInfo = null;
 let rankedQueued = false;
+let rankedQueueStats = null;
+let rankedQueueTicker = null;
 let rankedMatchInfo = null;
 let rankedAutoLeave = null;
 let rankedRematchReq = false;
@@ -590,6 +592,8 @@ function initSocket() {
     submitting = false;
     startingGame = false;
     rankedQueued = false;
+    rankedQueueStats = null;
+    stopRankedQueueTicker();
     updateRankedQueueUI();
     stopCountdown();
     updateInputState();
@@ -665,6 +669,8 @@ function initSocket() {
     clearTimeout(rankedAutoLeave);
     rankedAutoLeave = null;
     rankedQueued = false;
+    rankedQueueStats = null;
+    stopRankedQueueTicker();
     rankedRematchReq = false;
     rankedInvitePending = false;
     rankedInviteIncoming = null;
@@ -691,17 +697,20 @@ function initSocket() {
   socket.on("ranked:queueStatus", (data) => {
     if (!data) return;
     rankedQueued = !!data.queued;
+    if (!rankedQueued) {
+      rankedQueueStats = null;
+      stopRankedQueueTicker();
+    }
     updateRankedQueueUI();
     if (data.ok && data.reason) showMessage(data.reason, "warning");
     if (data.ok === false && data.reason) showMessage(data.reason, "error");
   });
 
   socket.on("ranked:queueSize", (data) => {
-    const info = $("#rankedQueueInfo");
-    if (info && rankedQueued) {
-      info.textContent = `매칭 대기 중... (대기 인원: ${data?.size ?? 0}명)`;
-      info.dataset.active = "true";
-    }
+    if (!data || !rankedQueued) return;
+    rankedQueueStats = { ...data, receivedAt: Date.now() };
+    renderRankedQueueInfo();
+    startRankedQueueTicker();
   });
 
   /* -- 랭크 복수전 (다시 대결) -------------------------- */
@@ -1700,6 +1709,7 @@ function initSocket() {
           if (gameState && gameState.finished && (!gameState.roomId || gameState.roomId === roomId)) {
             resetRankedBoard();
             rankedQueued = true;
+            rankedQueueStats = null;
             updateRankedQueueUI();
             if (socket && socketConnected) socket.emit("ranked:queue");
           }
@@ -2443,6 +2453,51 @@ function resetOnlineBoard() {
   if (timerBox) timerBox.dataset.urgent = "false";
 }
 
+function formatRankedWait(ms) {
+  const seconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  if (seconds < 60) return `${seconds}초`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest ? `${minutes}분 ${rest}초` : `${minutes}분`;
+}
+
+function stopRankedQueueTicker() {
+  if (rankedQueueTicker) {
+    clearInterval(rankedQueueTicker);
+    rankedQueueTicker = null;
+  }
+}
+
+function renderRankedQueueInfo() {
+  const info = $("#rankedQueueInfo");
+  if (!info) return;
+  if (!rankedQueued) {
+    info.textContent = "";
+    info.dataset.active = "false";
+    return;
+  }
+  info.dataset.active = "true";
+  if (!rankedQueueStats) {
+    info.textContent = "매칭 대기 중...";
+    return;
+  }
+  const elapsed = Math.max(0, Date.now() - (rankedQueueStats.receivedAt || Date.now()));
+  const parts = [`대기 ${Number(rankedQueueStats.size) || 0}명`];
+  if (Number.isFinite(Number(rankedQueueStats.nearbyCount))) {
+    parts.push(`근처 ${Number(rankedQueueStats.nearbyCount)}명`);
+  }
+  parts.push(`최장 ${formatRankedWait((Number(rankedQueueStats.oldestWaitMs) || 0) + elapsed)}`);
+  if (rankedQueueStats.averageWaitMs != null) {
+    parts.push(`평균 매칭 ${formatRankedWait(rankedQueueStats.averageWaitMs)}`);
+  }
+  info.textContent = `매칭 대기 중 · ${parts.join(" · ")}`;
+}
+
+function startRankedQueueTicker() {
+  if (rankedQueueTicker) return;
+  rankedQueueTicker = setInterval(renderRankedQueueInfo, 1000);
+}
+
 function updateRankedQueueUI() {
   const queueBtn = $("#rankedQueueBtn");
   const cancelBtn = $("#rankedCancelBtn");
@@ -2451,8 +2506,10 @@ function updateRankedQueueUI() {
   if (cancelBtn) cancelBtn.classList.toggle("hidden", !rankedQueued);
   if (info) {
     info.dataset.active = rankedQueued ? "true" : "false";
-    if (!rankedQueued) info.textContent = "";
+    if (rankedQueued) renderRankedQueueInfo();
+    else info.textContent = "";
   }
+  if (!rankedQueued) stopRankedQueueTicker();
 }
 
 /* 랭크 종료 후 복수전/취소 버튼 표시 */
@@ -4375,6 +4432,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (!requireNickname()) return;
     rankedQueued = true;
+    rankedQueueStats = null;
     rankedInvitePending = false;
     hideRankedInviteBar();
     updateRankedInviteUI();
@@ -4383,6 +4441,8 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#rankedCancelBtn")?.addEventListener("click", () => {
     rankedQueued = false;
+    rankedQueueStats = null;
+    stopRankedQueueTicker();
     updateRankedQueueUI();
     socket.emit("ranked:cancel");
   });

@@ -1718,6 +1718,8 @@ const RANKED_QUEUE_MAP = new Map(); /* socketId -> true */
 /* 랭크 복수전 — socketId -> 상대 socketId. 한쪽이 신청하면 대기, 양쪽이
    같은 상대를 신청하면 즉시 그 둘끼리 새 랭크 매치를 시작한다 */
 const REMATCHES = new Map();
+/* 최근 성사된 매칭의 대기 시간 — 대기실 안내 문구에 사용 */
+const RANKED_RECENT_MATCHES = [];
 
 /* 랭크 대결 초대(2인전) — inviterSocketId -> { targetSocketId, from, fromRating, at }.
    친구에게 지명 랭크 대결을 신청하고 수락하면 그 둘끼리 새 랭크 매치를 시작한다 */
@@ -1755,7 +1757,26 @@ function removeFromRankedQueue(socketId) {
 }
 
 function broadcastRankedQueue() {
-  io.emit("ranked:queueSize", { size: RANKED_QUEUE.length, inQueue: [...RANKED_QUEUE_MAP.keys()] });
+  const now = Date.now();
+  const size = RANKED_QUEUE.length;
+  const inQueue = [...RANKED_QUEUE_MAP.keys()];
+  const oldestWaitMs = size
+    ? Math.max(0, now - RANKED_QUEUE.reduce((min, q) => Math.min(min, q.joinedAt), now))
+    : 0;
+  const recent = RANKED_RECENT_MATCHES.slice(-5);
+  const averageWaitMs = recent.length
+    ? Math.round(recent.reduce((sum, m) => sum + m.waitMs, 0) / recent.length)
+    : null;
+
+  /* 개인화된 근접 인원은 소켓별로 보내고, 아무도 없으면 전체에 크기만 알린다 */
+  for (const q of RANKED_QUEUE) {
+    const nearbyCount = RANKED_QUEUE.reduce(
+      (count, other) => count + (other !== q && Math.abs(other.rating - q.rating) <= 100 ? 1 : 0), 0);
+    io.to(q.socketId).emit("ranked:queueSize", {
+      size, inQueue, nearbyCount, oldestWaitMs, averageWaitMs,
+    });
+  }
+  if (size === 0) io.emit("ranked:queueSize", { size: 0, inQueue: [] });
 }
 
 async function getRankingPayload(socketId) {
@@ -2204,6 +2225,13 @@ function tryMatchRanked() {
     if (!io.sockets.sockets.has(a.socketId) || !io.sockets.sockets.has(b.socketId)) {
       continue;
     }
+
+    const matchedAt = Date.now();
+    RANKED_RECENT_MATCHES.push({
+      at: matchedAt,
+      waitMs: Math.max(0, matchedAt - Math.min(a.joinedAt, b.joinedAt)),
+    });
+    if (RANKED_RECENT_MATCHES.length > 10) RANKED_RECENT_MATCHES.shift();
 
     startRankedGame(a, b);
   }
