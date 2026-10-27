@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=36">
+  <link rel="stylesheet" href="style.css?v=37">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -640,11 +640,14 @@
     <button id="practiceQuit" class="secondary" type="button">나가기</button>
   </div>
 
+  <!-- 전역 알림 — 현재 탭에 메시지 영역이 없거나 숨겨져 있을 때 사용 -->
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="script.js?v=41"></script>
+  <script src="script.js?v=43"></script>
   <script src="firebase-auth.js?v=2"></script>
 </body>
 </html>

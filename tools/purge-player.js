@@ -3,6 +3,11 @@
      DATABASE_URL=<External Database URL> node tools/purge-player.js 정재           # dry-run (보고만)
      DATABASE_URL=<External Database URL> node tools/purge-player.js 정재 --apply   # 백업 후 실제 삭제
 
+   TLS는 기본적으로 시스템 CA로 서버 인증서를 검증한다. URL에 sslmode=no-verify /
+   disable이 있어도 무시하고 항상 검증한다. 사설 CA를 쓰는 DB라면
+   DATABASE_CA_CERT에 PEM 문자열 또는 인증서 파일 경로를 지정한다.
+     DATABASE_CA_CERT=./ca.pem DATABASE_URL=... node tools/purge-player.js 정재
+
    삭제 대상:
      - players 테이블: id/nickname 정규화 일치 행 + 같은 firebase_uid 행
      - players.recent_games(타 유저 전적)에서 해당 유저와의 경기 기록
@@ -41,8 +46,38 @@ const filterArrays = (obj) => {           /* 객체의 모든 배열에서 대�
   return { value: out, changed };
 };
 
+function resolveSslConfig() {
+  const caInput = String(process.env.DATABASE_CA_CERT || process.env.PGSSLROOTCERT || "").trim();
+  if (!caInput) return true;   /* 시스템 CA로 검증 (rejectUnauthorized 기본값 true) */
+  const ca = caInput.includes("BEGIN CERTIFICATE")
+    ? caInput
+    : fs.readFileSync(path.resolve(caInput), "utf8");
+  return { ca, rejectUnauthorized: true };
+}
+
+/* pg는 connectionString의 sslmode를 파싱해 명시한 ssl 설정을 덮어쓴다.
+   sslmode=no-verify/disable로 검증을 끄지 못하도록 SSL 관련 쿼리를 제거한다. */
+function secureConnectionString(connectionString) {
+  try {
+    const url = new URL(connectionString);
+    for (const key of ["sslmode", "sslrootcert", "sslcert", "sslkey", "ssl", "sslnegotiation"]) {
+      url.searchParams.delete(key);
+    }
+    return url.toString();
+  } catch (error) {
+    return connectionString;   /* Unix 소켓 경로 등 URL이 아닌 형식 */
+  }
+}
+
 async function main() {
-  const db = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+  let ssl;
+  try {
+    ssl = resolveSslConfig();
+  } catch (error) {
+    console.error("DATABASE_CA_CERT 인증서를 읽지 못했습니다:", error.message);
+    process.exit(2);
+  }
+  const db = new Client({ connectionString: secureConnectionString(process.env.DATABASE_URL), ssl });
   await db.connect();
   const plan = { players: [], recentScrub: [], kv: {}, kvOtherHits: [] };
 

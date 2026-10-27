@@ -33,7 +33,7 @@ const DUEUM = {
   "륜": ["륜", "윤"], "륭": ["륭", "융"],
   "르": ["르", "느"], "른": ["른", "는"],
   "릇": ["릇", "늣"], "룩": ["룩", "눅"], "룅": ["룅", "뇡"], "럿": ["럿", "엇", "넛"],
-  "럼": ["럼", "엄", "넘"], "름": ["름", "늠"],
+  "럼": ["럼", "엄", "넘"],
   "륨": ["륨", "늄", "윰"], "늉": ["늉", "융"],
   "늄": ["늄", "윰"], "윰": ["윰", "늄"],
   "렁": ["렁", "엉"], "렴": ["렴", "염"],
@@ -365,17 +365,20 @@ function isAttackWord(word, ATTACK_DEPTH) {
   return getAttackDepth(word, ATTACK_DEPTH) !== null;
 }
 
-let _syllableRarityCache = null;
+/* 단어 인덱스별 캐시 — 커스텀 단어 승인으로 WORD_INDEX가 교체돼도
+   이전 인덱스의 희귀도가 새 인덱스에 재사용되지 않는다 (WeakMap) */
+const _syllableRarityCaches = new WeakMap();
 function syllableRarity(WORD_INDEX) {
-  if (!_syllableRarityCache) {
-    const count = new Map();
-    for (const [ch] of WORD_INDEX) {
-      const bucket = WORD_INDEX.get(ch);
-      if (bucket) count.set(ch, bucket.length);
+  if (!WORD_INDEX || typeof WORD_INDEX !== "object") return new Map();
+  let cache = _syllableRarityCaches.get(WORD_INDEX);
+  if (!cache) {
+    cache = new Map();
+    for (const [ch, bucket] of WORD_INDEX) {
+      if (bucket) cache.set(ch, bucket.length);
     }
-    _syllableRarityCache = count;
+    _syllableRarityCaches.set(WORD_INDEX, cache);
   }
-  return _syllableRarityCache;
+  return cache;
 }
 
 function getCandidates(previousWord, usedWords, WORD_INDEX, limit) {

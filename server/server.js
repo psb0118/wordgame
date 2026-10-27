@@ -18,6 +18,9 @@ const {
 ========================================================= */
 
 const app = express();
+/* Render 같은 리버스 프록시 뒤에서 req.ip가 실제 클라이언트 IP가 되게 한다.
+   직접 노출되는 환경이라면 프록시 홉 수에 맞게 조정해야 한다. */
+app.set("trust proxy", 1);
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
@@ -1039,9 +1042,20 @@ function unregisterOnline(socketId) {
   for (const [k, v] of onlineNicks) if (v === socketId) onlineNicks.delete(k);
 }
 
-function nicknameKnown(nickname) {
+async function nicknameKnown(nickname) {
   const key = normKey(nickname);
   if (!key) return false;
+  /* PG 모드는 playerCache에 아직 올라오지 않은 오프라인 계정도 있으므로 DB에서 찾는다.
+     계정 키(id)는 닉네임 정규화 값이므로 id 조회로 충분하다. */
+  if (dbMode === "pg" && dbPool) {
+    try {
+      const r = await dbPool.query("SELECT 1 FROM players WHERE id = $1 LIMIT 1", [key]);
+      return r.rows.length > 0;
+    } catch (e) {
+      console.error("닉네임 조회 오류:", e.message);
+      return false;
+    }
+  }
   for (const p of playerCache.values()) {
     if (normKey(p?.nickname) === key) return true;
   }
@@ -2177,9 +2191,11 @@ async function recordMatchHistory(room, winnerIndex, loserIndex) {
 
 function tryMatchRanked() {
   while (RANKED_QUEUE.length >= 2) {
-    /* 레이팅이 가까운 상대끼리 매칭되도록 정렬 후 2명 선택 */
-    RANKED_QUEUE.sort((a, b) => a.joinedAt - b.joinedAt);
-    RANKED_QUEUE.sort((a, b) => Math.abs(a.rating - b.rating) - Math.abs(a.rating - b.rating));
+    /* 레이팅 순으로 정렬한 뒤 앞에서부터 두 명씩 매칭한다. 정렬된 목록에서
+       인접한 두 명을 짝지으면 전체 레이팅 격차 합이 최소가 된다.
+       동률이면 먼저 기다린 사람(joinedAt)을 앞에 둔다. */
+    RANKED_QUEUE.sort((a, b) =>
+      (a.rating - b.rating) || (a.joinedAt - b.joinedAt) || String(a.socketId).localeCompare(String(b.socketId)));
     const a = RANKED_QUEUE.shift();
     const b = RANKED_QUEUE.shift();
     RANKED_QUEUE_MAP.delete(a.socketId);
@@ -3122,6 +3138,41 @@ app.get("/", (req, res) => {
   res.status(404).send("index.html을 찾을 수 없습니다.");
 });
 
+/* 우리말샘 쿼터 보호 — 캐시 적중 여부와 무관하게 IP당 분당 요청 수를 제한한다.
+   라우트 미들웨어로 분리해 핸들러 단위 테스트에는 영향을 주지 않는다. */
+const DICTIONARY_RATE_WINDOW_MS = 60 * 1000;
+const DICTIONARY_RATE_MAX = 60;
+const dictionaryRateBuckets = new Map();
+let dictionaryRateSweepAt = 0;
+
+function dictionaryRateLimit(req, res, next) {
+  const now = Date.now();
+  if (now >= dictionaryRateSweepAt) {
+    for (const [key, bucket] of dictionaryRateBuckets) {
+      if (now - bucket.startedAt >= DICTIONARY_RATE_WINDOW_MS) dictionaryRateBuckets.delete(key);
+    }
+    dictionaryRateSweepAt = now + DICTIONARY_RATE_WINDOW_MS;
+  }
+
+  const key = String(req.ip || req.socket?.remoteAddress || "unknown");
+  let bucket = dictionaryRateBuckets.get(key);
+  if (!bucket || now - bucket.startedAt >= DICTIONARY_RATE_WINDOW_MS) {
+    bucket = { startedAt: now, count: 0 };
+    dictionaryRateBuckets.set(key, bucket);
+  }
+  bucket.count += 1;
+
+  if (bucket.count > DICTIONARY_RATE_MAX) {
+    const retryAfter = Math.max(1, Math.ceil((bucket.startedAt + DICTIONARY_RATE_WINDOW_MS - now) / 1000));
+    res.set("Retry-After", String(retryAfter));
+    return res.status(429).json({
+      ok: false,
+      reason: `뜻 조회 요청이 너무 많습니다. ${retryAfter}초 후 다시 시도해 주세요.`,
+    });
+  }
+  return next();
+}
+
 async function handleDictionaryDefinition(req, res) {
   const word = normalizeWord(String(req.query.word || ""));
   if (!/^[가-힣]{2,40}$/.test(word)) {
@@ -3162,7 +3213,7 @@ async function handleDictionaryDefinition(req, res) {
   }
 }
 
-app.get("/api/dictionary/definition", handleDictionaryDefinition);
+app.get("/api/dictionary/definition", dictionaryRateLimit, handleDictionaryDefinition);
 
 app.get("/api/health", (req, res) => {
   res.json({
@@ -4946,10 +4997,12 @@ io.on("connection", (socket) => {
         }
         /* 같은 uid의 다른 온라인 소켓도 함께 차단 */
         if (uid) {
-          for (const [sid, nickKey] of onlineNicks) {
-            if (sid === r.key || normKey(nickKey) === r.key) continue;
-            const other = io.sockets.sockets.get(sid);
+          /* onlineNicks는 닉네임키 → 소켓ID 맵이다. 같은 UID로 접속한 다른 소켓만 끊는다 */
+          for (const [nickKey, socketId] of [...onlineNicks]) {
+            if (nickKey === r.key) continue;
+            const other = io.sockets.sockets.get(socketId);
             if (!other) continue;
+            if (String(socketFirebaseUid.get(socketId) || "") !== uid) continue;
             try { leaveRoomForSocket(other, "ban"); other.disconnect(true); } catch (e) { /* 무시 */ }
           }
         }
@@ -5286,7 +5339,7 @@ io.on("connection", (socket) => {
       const me = getPlayerBySocket(room, socket.id);
       const nickname = (me && me.nickname) || socketNicks.get(socket.id) || "";
       if (!nickname) { socket.emit("react:error", { reason: "닉네임을 먼저 설정해주세요." }); return; }
-      const mute = getMute(nickname);
+      const mute = getMute(nickname, socketFirebaseUid.get(socket.id) || "");
       if (mute) {
         socket.emit("react:error", { reason: `리액션이 차단되었습니다${mute.reason ? ` (${mute.reason})` : ""}. 관리자에게 문의하세요.` });
         return;
@@ -5864,7 +5917,7 @@ io.on("connection", (socket) => {
       if (!me || !myNick) { await emitFriendsUpdated(socket, false, "닉네임을 먼저 설정해주세요."); return; }
       if (!target) { await emitFriendsUpdated(socket, false, "친구로 추가할 이름을 입력해주세요."); return; }
       if (target === me) { await emitFriendsUpdated(socket, false, "자기 자신은 친구로 추가할 수 없습니다."); return; }
-      if (!nicknameKnown(target)) { await emitFriendsUpdated(socket, false, `'${String(data?.nickname).trim()}' 닉네임을 찾을 수 없습니다.`); return; }
+      if (!(await nicknameKnown(target))) { await emitFriendsUpdated(socket, false, `'${String(data?.nickname).trim()}' 닉네임을 찾을 수 없습니다.`); return; }
       if ((friendsMap.get(me) || new Set()).has(target)) { await emitFriendsUpdated(socket, false, "이미 친구입니다."); return; }
       if ((friendRequests.get(me) || new Set()).has(target)) { await emitFriendsUpdated(socket, false, "이미 친구 신청을 보냈습니다. 상대가 수락할 때까지 기다려주세요."); return; }
 

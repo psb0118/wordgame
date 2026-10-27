@@ -1,10 +1,15 @@
 # 끝말잇기 — AI + 온라인 2인 + 랭킹
 
 ## 데이터
-- `data/word.txt`: 전체 단어 목록 (548,575개)
-- `data/attack.txt`: 공격 단어 및 깊이 (3,595개)
+서버가 시작할 때 `data/`에서 직접 읽는 파일:
+- `word.txt`: 전체 단어 목록 (548,575개)
+- `attack.txt`: 공격 단어 및 깊이 (4,098개 단어)
+- `끄글_주요 루트 단어_*.txt`: AI 루트 단어
+- `끄글_희귀 루트 단어_*.txt`: AI 희귀 루트 단어
+- `끄글_방어 단어_*.txt`: AI 방어 단어
+- `끄글_돌림 단어_*.txt`: AI 돌림 단어
 
-서버가 이 두 파일을 시작할 때 직접 읽습니다.
+`끄글_음절 목록_*.txt`, `끄글_필수 공격 단어_*.txt`는 단어 목록을 분석·생성할 때 쓰는 참고 자료이며 서버 런타임에서는 읽지 않습니다.
 
 ## 기능
 - 끝말잇기 기본 규칙 + 두음법칙
@@ -26,14 +31,14 @@
 ## 랭크 등급
 | Rating | 등급 |
 |--------|------|
-| 0~999 | Bronze III~I |
-| 1000~1199 | Silver III~I |
-| 1200~1399 | Gold III~I |
-| 1400~1599 | Platinum III~I |
-| 1600~1799 | Diamond III~I |
-| 1800~1999 | Master |
-| 2000~2199 | Grandmaster |
-| 2200+ | Challenger |
+| 0~999 | Bronze 5~1 |
+| 1000~1399 | Silver 5~1 |
+| 1400~1799 | Gold 5~1 |
+| 1800~2199 | Platinum 5~1 |
+| 2200~2599 | Diamond 5~1 |
+| 2600~2999 | Master 5~1 |
+| 3000~3399 | Grandmaster 5~1 |
+| 3400+ | Challenger |
 
 ## Windows 실행
 1. Node.js LTS를 설치합니다.
@@ -61,7 +66,7 @@ npm run dev:neon
 또는 `.env.local`의 `DATABASE_URL`을 Neon pooled connection string으로 직접 설정하고 `npm start`를 실행해도 됩니다. Neon의 **direct** 연결을 써야 하는 경우가 아니라면 애플리케이션 트래픽에는 pooled URL을 권장합니다.
 
 ## 우리말샘 단어 뜻 조회
-단어 클릭 시 공식 [우리말샘 Open API](https://opendict.korean.go.kr/service/openApiInfo)를 통해 뜻풀이를 조회합니다. API 키를 발급받아 서버 비밀 환경 변수 `OPENDICT_API_KEY`에 설정하세요. 키는 브라우저에 전달되지 않으며, 정의가 있는 조회는 서버 메모리에 최대 6시간, 빈 결과는 10분 동안 캐시됩니다. 동시 요청은 같은 API 조회를 공유하고, 캐시는 최대 500개를 최근 사용 순으로 유지합니다. 우리말샘에 항목이 없는 단어는 직접 검색 링크를 표시합니다.
+단어 클릭 시 공식 [우리말샘 Open API](https://opendict.korean.go.kr/service/openApiInfo)를 통해 뜻풀이를 조회합니다. API 키를 발급받아 서버 비밀 환경 변수 `OPENDICT_API_KEY`에 설정하세요. 키는 브라우저에 전달되지 않으며, 정의가 있는 조회는 서버 메모리에 최대 6시간, 빈 결과는 10분 동안 캐시됩니다. 동시 요청은 같은 API 조회를 공유하고, 캐시는 최대 500개를 최근 사용 순으로 유지합니다. 쿼터 보호를 위해 IP당 분당 60회로 요청을 제한하며, 초과 시 `429`와 `Retry-After`를 반환합니다. 우리말샘에 항목이 없는 단어는 직접 검색 링크를 표시합니다.
 
 - 로컬: `.env.local`에 `OPENDICT_API_KEY=발급받은키`를 설정한 뒤 `npm run dev:neon` 실행
 - Render: 웹 서비스의 Environment에 `OPENDICT_API_KEY`를 비밀 변수로 추가하고 재배포
@@ -80,7 +85,7 @@ Render 등 **임시 파일 시스템** 환경에서는 기본 JSON 파일 저장
 - **`DATABASE_URL` 지정 시 (권장)**: 모든 데이터를 PostgreSQL `players` 테이블과 `kv_store` 테이블에 저장합니다. JSON 파일 저장과 자동 동기화됩니다.
 - **`KK_DATA_DIR` 지정 시**: 설정한 디렉터리에 JSON 파일들을 보존합니다. (예: `/app/data`)
 - 두 설정이 모두 없으면 기본 JSON 파일(`data/*.json`)에 저장하며, 안정성을 위해 `.bak` 파일이 자동 생성되고 원본 손상 시 복원됩니다.
-- 단어 목록(`word.txt`, `attack.txt`)은 git에 포함되어 있어 초기화되지 않습니다.
+- 단어·AI 목록 파일(`data/*.txt`)은 git에 포함되어 있어 초기화되지 않습니다.
 
 ### Render에서 PostgreSQL 연결하기 (무료)
 1. Render 대시보드 → **New** → **PostgreSQL** → 무료 인스턴스 생성.
@@ -89,3 +94,6 @@ Render 등 **임시 파일 시스템** 환경에서는 기본 JSON 파일 저장
 4. 재배포 후 `https://<서비스주소>/api/health`를 열어 응답이 `"db":"postgres"`인지 확인합니다.
    - `"db":"json"`으로 나오면 환경변수가 안 들어갔거나 연결이 실패한 것이므로 Render 로그에서 `PostgreSQL 연결 실패` 오류를 확인하세요.
 - 이전에 임시 파일 시스템에만 있던 데이터는 복구할 수 없지만, 연결 이후에는 재배포/재시작에도 돈·점수·시즌·친구 등이 유지됩니다.
+
+### 플레이어 데이터 삭제 (운영 도구)
+`node tools/purge-player.js <닉네임>`은 삭제 대상을 보고만 하고, `--apply`를 붙이면 JSON 백업 후 players·전적·friends·시즌 등 관련 데이터를 정리합니다. TLS는 시스템 CA로 검증하며 URL의 `sslmode=no-verify`/`disable`은 무시합니다. 사설 CA를 쓰는 DB는 `DATABASE_CA_CERT`에 PEM 문자열이나 인증서 파일 경로를 지정하세요.

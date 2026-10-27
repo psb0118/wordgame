@@ -275,6 +275,39 @@ button:disabled {
 .message[data-type="opponent-turn"] { color: #b45309; }
 .message[data-type="warning"] { color: #ea580c; }
 
+/* 전역 알림 토스트 — 메시지 영역이 없는 탭에서도 피드백을 보여준다 */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 84px;
+  z-index: 5000;
+  max-width: min(92vw, 520px);
+  padding: 12px 18px;
+  border-radius: 12px;
+  background: rgba(17, 24, 39, 0.94);
+  color: #fff;
+  font-weight: 600;
+  text-align: center;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+  transform: translateX(-50%);
+  animation: toastIn 0.18s ease-out;
+}
+.toast[hidden] { display: none; }
+.toast[data-type="error"] { background: #b91c1c; }
+.toast[data-type="success"],
+.toast[data-type="win"] { background: #047857; }
+.toast[data-type="warning"] { background: #b45309; }
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
+}
+
 @keyframes winPop {
   0% { transform: scale(0.6); opacity: 0; }
   60% { transform: scale(1.12); opacity: 1; }

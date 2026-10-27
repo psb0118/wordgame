@@ -2,6 +2,8 @@ node_modules/
 .DS_Store
 player-data.json
 custom-words.json
+# 런타임 데이터(플레이어/채팅/제재/길드/버그 제보 등) — 커밋 금지
+data/*.json
 data/admin-config.json
 data/friends.json
 data/custom-words.json
@@ -17,6 +19,7 @@ entry/
 *-firebase-adminsdk-*.json
 serviceAccountKey.json
 firebase-service-account.json
+.env
 .env.*
 !.env.example
 .neon

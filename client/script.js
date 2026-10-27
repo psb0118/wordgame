@@ -31,7 +31,19 @@ let lastRoomId = sessionStorage.getItem("kkLastRoom") || null;
 /* 싱글 AI 난이도 (easy/normal/hard) */
 let aiDifficulty = localStorage.getItem("kkAiDiff") || "normal";
 
-const localStats = JSON.parse(localStorage.getItem("kkStats") || '{"wins":0,"losses":0,"games":0,"totalLength":0}');
+/* 손상된 localStorage 값 하나 때문에 전체 클라이언트가 죽지 않도록 방어적으로 읽는다 */
+const localStats = (() => {
+  const base = { wins: 0, losses: 0, games: 0, totalLength: 0 };
+  try {
+    const saved = JSON.parse(localStorage.getItem("kkStats") || "null");
+    if (!saved || typeof saved !== "object") return base;
+    for (const key of Object.keys(base)) {
+      const n = Number(saved[key]);
+      if (Number.isFinite(n) && n >= 0) base[key] = n;
+    }
+  } catch (e) { /* 손상된 저장값은 기본값으로 복구 */ }
+  return base;
+})();
 let localUsedWords = new Set();
 let achievementFilter = "all";
 let achievementData = null;
@@ -185,13 +197,27 @@ function setDisabled(selectors, disabled) {
   }
 }
 
+let toastTimer = null;
+function showToast(text, type) {
+  const el = $("#toast");
+  if (!el || !text) return;
+  el.textContent = text;
+  el.dataset.type = type || "";
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, 3200);
+}
+
 function showMessage(text, type) {
   const el = modeGet("message") || (currentMode === "single" ? $("#message") : $("#onlineMessage"));
-  if (el) {
+  /* 현재 탭에 보이는 메시지 영역이 있으면 그곳에, 없거나 숨겨져 있으면(상점·시즌 등)
+     화면 어디서든 보이는 전역 토스트에 표시한다. */
+  if (el && el.offsetParent !== null) {
     el.textContent = text;
     el.dataset.type = type || "";
     return;
   }
+  showToast(text, type);
 }
 
 /* ---------------------------------------------------------
@@ -294,7 +320,7 @@ const DUEUM = {
   "륜": ["륜", "윤"], "륭": ["륭", "융"],
   "르": ["르", "느"], "른": ["른", "는"],
   "릇": ["릇", "늣"], "룩": ["룩", "눅"], "룅": ["룅", "뇡"],
-  "럼": ["럼", "엄", "넘"], "름": ["름", "늠"],
+  "럼": ["럼", "엄", "넘"], "름": ["름", "늠", "음"],
   "륨": ["륨", "늄", "윰"], "늉": ["늉", "융"],
   "늄": ["늄", "윰"], "윰": ["윰", "늄"],
   "력": ["력", "역"], "역": ["역", "력"],
@@ -304,7 +330,9 @@ const DUEUM = {
   "릊": ["릊", "늦", "읒"], "늦": ["늦", "릊", "읒"], "읒": ["읒", "릊", "늦"],
   "릅": ["릅", "늡"], "늡": ["늡", "릅"],
   "닢": ["닢", "잎"], "잎": ["잎", "닢"],
-  "놉": ["놉", "롭"]
+  "놉": ["놉", "롭"],
+  "늠": ["늠", "름", "음"], "음": ["음", "름", "늠"],
+  "뤠": ["뤠", "눼", "웨"], "눼": ["눼", "뤠", "웨"], "웨": ["웨", "뤠", "눼"]
 };
 
 /* 자동 두음법칙 확장 — 서버 game.js와 동일 로직
