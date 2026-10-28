@@ -9,6 +9,7 @@ const { Server } = require("socket.io");
 const { createCluster } = require("./cluster.js");
 const rankSeason = require("./rank-season.js");
 const guildWeek = require("./guild-week.js");
+const guildDuel = require("./guild-duel.js");
 const { createPushManager, shouldNotifyTurn } = require("./push.js");
 const wordbookStore = require("./wordbook.js");
 const replayShare = require("./replay-share.js");
@@ -1060,13 +1061,19 @@ function applyGuilds(data) {
         leaderNick: String(v.leaderNick || ""),
         createdAt: String(v.createdAt || ""),
         members,
-        /* 주간 대항전 점수는 길드 객체에 함께 영속한다. */
-        week: v.week && typeof v.week === "object" ? v.week : null
+        /* 주간 대항전 점수·1:1 대항전 기록은 길드 객체에 함께 영속한다. */
+        week: v.week && typeof v.week === "object" ? v.week : null,
+        duel: v.duel && typeof v.duel === "object" ? v.duel : null,
+        duelWins: v.duelWins,
+        duelLosses: v.duelLosses,
+        duelDraws: v.duelDraws,
+        duelHistory: Array.isArray(v.duelHistory) ? v.duelHistory : []
       };
       if (!members.some(m => m.key === g.leader)) g.leader = members[0].key;
       const leaderMember = members.find(m => m.key === g.leader);
       if (leaderMember) g.leaderNick = leaderMember.nick;
       guildWeek.normalizeGuildWeek(g);
+      if (typeof guildDuel !== "undefined") guildDuel.normalizeDuel(g);
       out[key] = g;
     }
   }
@@ -1129,6 +1136,7 @@ function buildGuildWeekBoard(nickname) {
       return mon.getTime() + 7 * 86400000 - 9 * 3600 * 1000;
     })(),
     top,
+    duel: g && typeof guildDuel !== "undefined" ? guildDuel.duelView(g, guildCache, weekKey) : null,
     myGuild: g ? {
       key: g.key,
       name: g.name,
@@ -1140,6 +1148,74 @@ function buildGuildWeekBoard(nickname) {
         ? guildWeek.guildWeekRewardFor(myRank) : 0
     } : null
   };
+}
+
+async function settleGuildDuels(key) {
+  try {
+    if (guildDuel.ensurePairings(guildCache, key)) saveGuilds();
+    const done = new Set();
+    for (const g of Object.values(guildCache || {})) {
+      if (!g || !g.duel || g.duel.week !== key || g.duel.settled || !g.duel.opponentKey) continue;
+      if (done.has(g.key)) continue;
+      const opp = guildCache[g.duel.opponentKey];
+      if (!opp || !opp.duel || opp.duel.week !== key) {
+        g.duel.settled = true;
+        continue;
+      }
+      done.add(g.key);
+      done.add(opp.key);
+      const base = guildDuel.settleDuel({ weekKey: key, guild: g, opponent: opp });
+      const sides = [
+        { g, other: opp, result: base.result, my: base.myPoints, their: base.theirPoints },
+        { g: opp, other: g, result: base.result === "win" ? "loss" : base.result === "loss" ? "win" : "draw", my: base.theirPoints, their: base.myPoints }
+      ];
+      for (const side of sides) {
+        const amount = guildDuel.duelRewardFor(side.result);
+        const members = guildWeek.guildWeekRewardMembers(side.g);
+        for (const member of members) {
+          try {
+            const pd = await getPlayerData(member.key);
+            const tx = await beginEconomyTx({
+              accountId: member.key,
+              idemKey: "guildduel:" + key + ":" + side.g.key + ":" + member.key,
+              delta: amount, reason: "guild_duel", ref: side.other.key
+            });
+            if (!tx.ok) {
+              if (!tx.duplicate) console.warn("길드 대항전 보상 실패:", member.key);
+              continue;
+            }
+            if (!tx.duplicate) pd.money = Math.max(0, (Number(pd.money) || 0) + amount);
+            try {
+              await savePlayerData(member.key, pd);
+              await finishEconomyTx(tx, pd.money);
+            } catch (e) {
+              await abortEconomyTx(tx);
+              throw e;
+            }
+            const resultText = side.result === "win" ? "승리" : side.result === "draw" ? "무승부" : "패배";
+            notifyPush(member.key, {
+              title: "길드 대항전 보상",
+              body: side.g.name + " vs " + side.other.name + " — " + resultText + " +" + amount.toLocaleString() + "코인",
+              url: "/", tag: "guildduel:" + key + ":" + side.g.key
+            });
+          } catch (e) {
+            console.error("길드 대항전 보상 오류:", e.message);
+          }
+        }
+        guildDuel.applyDuelRecord(side.g, {
+          weekKey: key, result: side.result, myPoints: side.my, theirPoints: side.their,
+          opponentKey: side.other.key, opponentName: side.other.name, amount
+        });
+        if (members.length) {
+          const resultText = side.result === "win" ? "승리" : side.result === "draw" ? "무승부" : "패배";
+          notifyGuildMembers(side.g, "길드 대항전 vs " + side.other.name + " — " + resultText + " (기여자 +" + amount.toLocaleString() + "코인)", null);
+        }
+      }
+    }
+    saveGuilds();
+  } catch (e) {
+    console.error("길드 대항전 정산 오류:", e.message);
+  }
 }
 
 /* 주간 정산 — 상위 3개 길드원 전원에게 코인을 1회씩 지급한다.
@@ -1193,6 +1269,7 @@ async function closeGuildWeek(key) {
         notifyGuildMembers(g, "주간 대항전 " + row.rank + "위! 기여한 길드원에게 +" + amount.toLocaleString() + "코인", null);
       }
     }
+    await settleGuildDuels(key);
     /* 일부 지급이 실패하면 마커를 전진시키지 않고 다음 주기에 재시도한다.
        이미 지급된 길드원은 economy_ledger 멱등 키로 중복 지급되지 않는다. */
     if (failed) return false;
@@ -1255,6 +1332,7 @@ async function awardGuildWeekPoints(accountId, points, ref) {
       memberKey: key, points, now: Date.now(), weekKey
     });
     if (reset || result.ok) saveGuilds();
+    if (guildDuel.ensurePairings(guildCache, weekKey)) saveGuilds();
     return result;
   } catch (e) {
     console.warn("길드 주간 점수 오류:", e.message);
@@ -7353,6 +7431,7 @@ io.on("connection", (socket) => {
       if (!nick) { socket.emit("guild:state", { ok: false, reason: "먼저 닉네임을 설정해주세요." }); return; }
       await ensureGuildWeekRollover();
       await loadGuilds();
+      if (guildDuel.ensurePairings(guildCache, getKstWeek())) saveGuilds();
       socket.emit("guild:state", buildGuildState(nick));
     } catch (err) { console.error("길드 조회 오류:", err); socket.emit("guild:state", { ok: false, reason: "길드 정보를 불러오지 못했습니다." }); }
   });
@@ -7362,6 +7441,7 @@ io.on("connection", (socket) => {
     try {
       await ensureGuildWeekRollover();
       await loadGuilds();
+      if (guildDuel.ensurePairings(guildCache, getKstWeek())) saveGuilds();
       const nick = socketNicks.get(socket.id) || "";
       socket.emit("guild:weekly", { ok: true, ...buildGuildWeekBoard(nick) });
     } catch (err) {

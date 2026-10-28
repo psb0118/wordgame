@@ -4011,11 +4011,43 @@ function renderGuildWeekly(weekly) {
       <span class="guild-weekly-members">${Number(r.memberCount) || 0}명</span>
     </li>`).join("");
   const mine = weekly.myGuild;
+  const duel = weekly.duel;
+  let duelHtml = "";
+  if (duel) {
+    if (!duel.opponent) {
+      duelHtml = `<div class="guild-duel-card bye">
+        <div class="guild-duel-title">⚔️ 주간 1:1 대항전</div>
+        <div class="guild-duel-wait">상대를 기다리는 중입니다. 다른 길드가 점수를 내면 점수가 가까운 길드와 자동으로 매칭됩니다.</div>
+      </div>`;
+    } else {
+      const stateLabel = duel.state === "settled" ? "정산 완료" : duel.state === "winning" ? "우세" : duel.state === "losing" ? "열세" : "동점";
+      const stateClass = duel.state === "winning" ? "win" : duel.state === "losing" ? "loss" : "draw";
+      const history = (duel.history || []).slice().reverse().map(row => `
+        <li><span>${escapeHtml(String(row.week || ""))}</span><b>${row.result === "win" ? "승" : row.result === "loss" ? "패" : "무"}</b> vs ${escapeHtml(String(row.opponentName || "?"))} <em>${Number(row.myPoints) || 0}:${Number(row.theirPoints) || 0}</em></li>`).join("");
+      duelHtml = `<div class="guild-duel-card">
+        <div class="guild-duel-title">⚔️ 주간 1:1 대항전 <span class="guild-duel-state ${stateClass}">${stateLabel}</span></div>
+        <div class="guild-duel-score">
+          <span class="guild-duel-side"><b>${escapeHtml(String(duel.myName || (mine && mine.name) || "내 길드"))}</b><em>${Number(duel.myPoints) || 0}</em></span>
+          <span class="guild-duel-vs">VS</span>
+          <span class="guild-duel-side"><b>${escapeHtml(String(duel.opponent.name || "상대 길드"))}</b><em>${Number(duel.opponent.points) || 0}</em></span>
+        </div>
+        <div class="guild-duel-record">통산 ${Number(duel.record && duel.record.wins) || 0}승 ${Number(duel.record && duel.record.losses) || 0}패 ${Number(duel.record && duel.record.draws) || 0}무</div>
+        ${history ? `<ul class="guild-duel-history">${history}</ul>` : ""}
+      </div>`;
+    }
+  } else {
+    duelHtml = `<div class="guild-duel-card bye">
+      <div class="guild-duel-title">⚔️ 주간 1:1 대항전</div>
+      <div class="guild-duel-wait">이번 주 점수를 내면 1:1 대항전 상대가 정해집니다.</div>
+    </div>`;
+  }
   box.innerHTML = `
     <div class="guild-weekly-head">🏆 주간 대항전 <span>${escapeHtml(String(weekly.weekKey || ""))}</span></div>
     <div class="guild-weekly-sub">랭크·대회 승리로 점수를 쌓습니다. 길드 가입 24시간 뒤부터 반영되며, 1~3위 길드는 주간 종료 시 이번 주에 기여한 길드원에게 코인을 지급합니다.</div>
+    ${duelHtml}
     ${mine ? `<div class="guild-weekly-mine">내 길드 <b>${escapeHtml(String(mine.name || ""))}</b> · ${Number(mine.points) || 0}점 · ${mine.rank ? `${mine.rank}위` : "순위권 밖"} · 내 기여 ${Number(mine.myPoints) || 0}점${mine.reward ? ` · 예상 보상 ${Number(mine.reward).toLocaleString()}코인` : ""}</div>` : ""}
     <ol class="guild-weekly-list">${rows || '<li class="guild-weekly-empty">이번 주 기록이 아직 없습니다.</li>'}</ol>`;
+
 }
 
 function renderGuildState(data) {
