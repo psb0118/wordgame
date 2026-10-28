@@ -26,6 +26,8 @@ const {
 ========================================================= */
 
 const app = express();
+/* Render가 주입하는 배포 커밋 — health/metrics에서 실제 배포본을 확인한다. */
+const BUILD_COMMIT = String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").slice(0, 40);
 /* Render 같은 리버스 프록시 뒤에서 req.ip가 실제 클라이언트 IP가 되게 한다.
    직접 노출되는 환경이라면 프록시 홉 수에 맞게 조정해야 한다. */
 app.set("trust proxy", 1);
@@ -4407,6 +4409,7 @@ app.get("/api/metrics", (req, res) => {
   res.set("cache-control", "no-store");
   res.json({
     ok: true,
+    commit: BUILD_COMMIT,
     uptime: process.uptime(),
     rooms: ROOMS.size,
     online: onlineNicks.size,
@@ -4453,7 +4456,8 @@ app.get("/api/cluster/status", async (req, res) => {
 
 app.get("/api/health", (req, res) => {
   res.json({
-    ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length,
+    ok: true, commit: BUILD_COMMIT,
+    words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length,
     rooms: ROOMS.size, customApproved: customWords.approved.length,
     customPending: customWords.pending.length, seasonId: currentSeasonKey(),
     db: dbMode === "pg" ? "postgres" : "json",
@@ -7997,6 +8001,7 @@ initDatabase().then(async () => {
   server.listen(PORT, "0.0.0.0", () => {
     console.log("========================================");
     console.log(`끝말잇기 서버 실행 중: http://localhost:${PORT}`);
+    console.log(`빌드 커밋: ${BUILD_COMMIT || "로컬"}`);
     console.log(`단어: ${WORD_SET.size.toLocaleString()}개`);
     console.log(`공격 단어: ${Object.keys(ATTACK_DEPTH).length.toLocaleString()}개`);
     console.log(`방어 단어: ${DEFENSE_WORDS.size.toLocaleString()}개`);
@@ -8016,6 +8021,7 @@ initDatabase().then(async () => {
   console.error("서버 시작 실패:", err);
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`끝말잇기 서버 실행 중 (DB 없음): http://localhost:${PORT}`);
+    console.log(`빌드 커밋: ${BUILD_COMMIT || "로컬"}`);
   });
 });
 
