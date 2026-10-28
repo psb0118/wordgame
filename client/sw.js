@@ -2,7 +2,7 @@
 
 /* 끝말잇기 오프라인 셸 — 게임 자체는 서버가 필요하지만,
    앱을 다시 열거나 단어장 화면을 확인할 수 있게 정적 자원만 캐시한다. */
-const CACHE = "kkeul-shell-v4";
+const CACHE = "kkeul-shell-v5";
 const SHELL = [
   "./offline.html",
   "./style.css",

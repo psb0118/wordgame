@@ -7,7 +7,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=42">
+  <link rel="stylesheet" href="style.css?v=43">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -386,14 +386,22 @@
     <!-- 단어장 -->
     <section id="wordbook" class="panel hidden">
       <div class="season-panel-head">
-        <div class="guild-panel-title">📖 내 단어장 <span class="guild-panel-sub">뜻을 저장해 두고 다시 보세요 · 이 브라우저에 저장</span></div>
-        <button id="wordbookClear" class="secondary" type="button">전체 삭제</button>
+        <div class="guild-panel-title">📖 내 단어장 <span class="guild-panel-sub">계정에 저장 · 기기를 바꿔도 유지</span></div>
+        <div class="wordbook-head-actions">
+          <button id="wordbookQuizBtn" class="secondary" type="button">🧠 복습 퀴즈</button>
+          <button id="wordbookClear" class="secondary" type="button">전체 삭제</button>
+        </div>
+      </div>
+      <div class="wordbook-sync">
+        <span class="wordbook-sync-badge">☁️ 계정 동기화</span>
+        <span id="wordbookSyncState">계정과 동기화 중...</span>
       </div>
       <div class="wordbook-toolbar">
         <input id="wordbookSearch" type="search" maxlength="30" placeholder="저장한 단어 검색" autocomplete="off">
         <span id="wordbookCount" class="wordbook-count">0개</span>
       </div>
       <div id="wordbookList" class="wordbook-list"></div>
+      <div id="wordbookQuizBox" class="wordbook-quiz-box hidden" aria-live="polite"></div>
     </section>
 
     <!-- 시즌 -->
@@ -476,6 +484,7 @@
       <div class="acc-pw-help">이름은 계정 탭에서만 변경합니다 — <b>첫 1회 무료</b>, 이후 1회당 <b>1,000,000 코인</b>. 변경해도 전적·코인은 그대로 유지됩니다.</div>
       <div id="accRenameInfo" class="acc-rename-info hidden"></div>
       <div id="accountMsg"></div>
+      <div id="accApplied" class="acc-applied hidden" role="status" aria-live="polite"></div>
       <div id="fbBox" class="acc-fb hidden">
         <div class="acc-fb-title">🔗 Google 로그인</div>
         <div class="acc-fb-desc">Google 계정으로 로그인하면 전적이 계정에 안전하게 연결됩니다. (닉네임·전적 그대로 유지)</div>
@@ -676,7 +685,9 @@
       <div id="replayList" class="replay-list"></div>
       <div class="replay-actions">
         <button id="replayCopy" class="secondary" type="button">결과 복사</button>
+        <button id="replayShare" class="secondary" type="button">공유 링크</button>
         <span id="replayCopyStatus" class="replay-copy-status" role="status" aria-live="polite"></span>
+        <span id="replayShareStatus" class="replay-share-status" role="status" aria-live="polite"></span>
       </div>
       <div class="replay-hint">단어를 클릭하면 뜻을 볼 수 있어요.</div>
     </div>

@@ -585,6 +585,7 @@ function initSocket() {
     socket.emit("client:visibility", { visible: document.visibilityState !== "hidden" });
     /* 저장된 이름으로 재등록 (Google 세션이 있으면 서버가 연결을 복원한다) */
     if (myNickname) socket.emit("player:setName", { nickname: myNickname });
+    if (myNickname) socket.emit("wordbook:list");
     socket.emit("admin:getRole");
     /* 연결이 늦어져 싱글 게임 자동 시작 타이머를 놓친 경우를 대비해 재시도 */
     if (currentMode === "single" && !roomId && !gameState && !startingGame) {
@@ -1199,8 +1200,13 @@ function initSocket() {
       localStorage.setItem("kkNickname", myNickname);
       updateNicknameUI();
       renderAccountInfo();
-      showMessage(renamed ? "이름이 변경되었습니다. 전적·코인은 그대로 유지됩니다." : "이름이 저장되었습니다.", "success");
-      accountMsg(renamed ? "이름이 변경되었습니다." : "적용되었습니다.", "ok");
+      showNicknameApplied(data.nickname, data.appliedAt);
+      showMessage(renamed
+        ? `닉네임이 '${data.nickname}'(으)로 변경되었습니다. 전적·코인은 그대로 유지됩니다.`
+        : `닉네임이 '${data.nickname}'(으)로 적용되었습니다.`, "success");
+      accountMsg(`✅ '${data.nickname}'(으)로 적용 완료`, "ok");
+      updateNicknameUI();
+      socket.emit("wordbook:list");
       socket.emit("admin:getRole");
       socket.emit("friends:list");
       socket.emit("player:getRanking");
@@ -1209,6 +1215,44 @@ function initSocket() {
     } else if (data.reason) {
       showMessage(data.reason, "error");
       accountMsg(data.reason, "error");
+    }
+  });
+
+  socket.on("wordbook:listResult", (data) => {
+    if (!data || !data.ok) {
+      if (data && data.reason) console.warn("[WORDBOOK]", data.reason);
+      return;
+    }
+    const items = sanitizeWordbookItems(data.items);
+    ensureWordbookLoaded();
+    const localOnly = wordbookState.filter(entry => !items.some(item => item.word === entry.word));
+    wordbookSynced = true;
+    applyWordbookItems(items);
+    if (localOnly.length) socket.emit("wordbook:merge", { items: localOnly });
+  });
+
+  socket.on("wordbook:updated", (data) => {
+    if (!data || !data.ok || !Array.isArray(data.items)) return;
+    wordbookSynced = true;
+    applyWordbookItems(data.items);
+  });
+
+  socket.on("replay:shareResult", async (data) => {
+    const status = $("#replayShareStatus");
+    if (!data || !data.ok) {
+      if (status) {
+        status.textContent = (data && data.reason) || "공유에 실패했습니다.";
+        status.className = "replay-share-status no";
+      }
+      return;
+    }
+    const url = location.origin + (data.path || ("/?replay=" + data.token));
+    try {
+      await navigator.clipboard.writeText(url);
+      if (status) { status.textContent = "공유 링크를 복사했습니다."; status.className = "replay-share-status ok"; }
+      showMessage("리플레이 공유 링크를 만들었습니다.", "success");
+    } catch (e) {
+      if (status) { status.textContent = url; status.className = "replay-share-status ok"; }
     }
   });
 
@@ -3792,6 +3836,31 @@ function accountMsg(text, type) {
   el.className = "account-msg" + (type === "ok" ? " ok" : type === "error" ? " error" : "");
 }
 
+function showNicknameApplied(nickname, appliedAt) {
+  const nick = String(nickname || "").trim();
+  if (!nick) return false;
+  const el = $("#accApplied");
+  if (el) {
+    const at = appliedAt ? new Date(appliedAt) : new Date();
+    const stamp = Number.isNaN(at.getTime()) ? "" : at.toLocaleString("ko-KR", {
+      month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit"
+    });
+    el.innerHTML = `✅ 현재 닉네임: <b>${escapeHtml(nick)}</b> — 적용 완료${stamp ? ` (${escapeHtml(stamp)})` : ""}`;
+    el.classList.remove("hidden");
+  }
+  const input = $("#accNickInput");
+  if (input) input.value = nick;
+  document.title = `${nick} · 끝말잇기`;
+  if (Array.isArray(gameState && gameState.players) && playerIndex != null) {
+    const me = gameState.players.find(entry => entry.playerIndex === playerIndex);
+    if (me) me.nickname = nick;
+    renderGameState(gameState);
+  }
+  try { updateChatScopeLabel(); } catch (e) { /* 무시 */ }
+  if (socket && socketConnected) socket.emit("room:state");
+  return true;
+}
+
 /* ---------------------------------------------------------
  웹 푸시 알림
 --------------------------------------------------------- */
@@ -4391,6 +4460,8 @@ function showReplay(data) {
   lastReplayData = data || { state: st, winner: st && st.winner };
   const copyStatus = $("#replayCopyStatus");
   if (copyStatus) copyStatus.textContent = "";
+  const shareStatus = $("#replayShareStatus");
+  if (shareStatus) { shareStatus.textContent = ""; shareStatus.className = "replay-share-status"; }
 
   const winnerIdx = data ? data.winner : (st ? st.winner : null);
   const winnerName = data && data.winnerName ? data.winnerName : "";
@@ -4438,7 +4509,7 @@ function showStoredReplay(game) {
     winner: null,
     winnerName: "",
     stored: true,
-    summary: `${resultText} · vs ${game.vs || "?"} · ${game.wordCount ?? history.length}단어`
+    summary: game.summary || `${resultText} · vs ${game.vs || "?"} · ${game.wordCount ?? history.length}단어`
   });
 }
 
@@ -4448,22 +4519,11 @@ function showStoredReplay(game) {
 const WORDBOOK_KEY = "kkWordbook";
 const WORDBOOK_MAX = 300;
 let wordbookLoaded = false;
+let wordbookSynced = false;
 
 function loadWordbook() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(WORDBOOK_KEY) || "[]");
-    if (!Array.isArray(raw)) return [];
-    const seen = new Set();
-    return raw.filter(item => {
-      const word = String(item && item.word || "").trim();
-      if (!word || seen.has(word)) return false;
-      seen.add(word);
-      return true;
-    }).slice(0, WORDBOOK_MAX).map(item => ({
-      word: String(item.word).trim().slice(0, 30),
-      at: String(item.at || "")
-    }));
-  } catch (e) { return []; }
+  try { return sanitizeWordbookItems(JSON.parse(localStorage.getItem(WORDBOOK_KEY) || "[]")); }
+  catch (e) { return []; }
 }
 
 function ensureWordbookLoaded() {
@@ -4487,15 +4547,20 @@ function toggleWordbook(rawWord) {
   const word = String(rawWord || "").trim().slice(0, 30);
   if (!word) return false;
   const idx = wordbookState.findIndex(entry => entry.word === word);
-  if (idx >= 0) wordbookState.splice(idx, 1);
-  else {
+  const adding = idx < 0;
+  if (adding) {
     wordbookState.unshift({ word, at: new Date().toISOString() });
     if (wordbookState.length > WORDBOOK_MAX) wordbookState.length = WORDBOOK_MAX;
+  } else {
+    wordbookState.splice(idx, 1);
   }
   persistWordbook();
   renderWordbook();
   renderWordDefSave();
-  return idx < 0;
+  if (socket && socketConnected && myNickname) {
+    socket.emit(adding ? "wordbook:add" : "wordbook:remove", { word });
+  }
+  return adding;
 }
 
 function removeWordFromBook(rawWord) {
@@ -4507,6 +4572,7 @@ function removeWordFromBook(rawWord) {
   persistWordbook();
   renderWordbook();
   renderWordDefSave();
+  if (socket && socketConnected && myNickname) socket.emit("wordbook:remove", { word });
 }
 
 function renderWordDefSave() {
@@ -4521,6 +4587,7 @@ function renderWordDefSave() {
 
 function renderWordbook() {
   ensureWordbookLoaded();
+  updateWordbookSyncUI();
   const list = $("#wordbookList");
   if (!list) return;
   const q = String($("#wordbookSearch")?.value || "").trim().toLowerCase();
@@ -4545,6 +4612,190 @@ function renderWordbook() {
   list.querySelectorAll("[data-book-del]").forEach(btn => {
     btn.addEventListener("click", () => removeWordFromBook(btn.dataset.bookDel));
   });
+}
+
+/* ---------- 단어장 동기화 상태 ---------- */
+function updateWordbookSyncUI() {
+  const el = $("#wordbookSyncState");
+  if (!el) return;
+  if (!myNickname) el.textContent = "닉네임을 저장하면 계정에 동기화됩니다";
+  else if (wordbookSynced) el.textContent = "계정에 동기화됨 · 기기를 바꿔도 유지";
+  else el.textContent = "계정과 동기화 중...";
+}
+
+/* ---------- 단어장 계정 동기화 ---------- */
+function sanitizeWordbookItems(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  return raw.filter(item => {
+    const word = String(item && item.word || "").trim().slice(0, 30);
+    if (!word || seen.has(word)) return false;
+    seen.add(word);
+    return true;
+  }).slice(0, WORDBOOK_MAX).map(item => ({
+    word: String(item.word).trim().slice(0, 30),
+    at: String(item.at || "")
+  }));
+}
+
+function applyWordbookItems(items) {
+  wordbookState = sanitizeWordbookItems(items);
+  wordbookLoaded = true;
+  persistWordbook();
+  renderWordbook();
+  renderWordDefSave();
+  updateWordbookSyncUI();
+}
+
+/* ---------- 단어장 복습 퀴즈 (초성 힌트) ---------- */
+const WORDBOOK_QUIZ_SIZE = 8;
+const HANGUL_CHOSEONG = ["ㄱ", "ㄲ", "ㄴ", "ㄷ", "ㄸ", "ㄹ", "ㅁ", "ㅂ", "ㅃ", "ㅅ", "ㅆ", "ㅇ", "ㅈ", "ㅉ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"];
+let wordbookQuiz = null;
+
+function wordChoseong(word) {
+  return Array.from(String(word || "")).map(ch => {
+    const code = ch.charCodeAt(0);
+    if (code >= 0xAC00 && code <= 0xD7A3) return HANGUL_CHOSEONG[Math.floor((code - 0xAC00) / 588)];
+    return ch;
+  }).join("");
+}
+
+function shuffleArray(list) {
+  const arr = list.slice();
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function startWordbookQuiz() {
+  ensureWordbookLoaded();
+  const box = $("#wordbookQuizBox");
+  if (!box) return;
+  const words = wordbookState.map(entry => entry.word).filter(Boolean);
+  if (words.length < 4) {
+    box.classList.remove("hidden");
+    box.innerHTML = `<div class="wordbook-quiz-head"><span>🧠 복습 퀴즈</span></div>
+      <div class="wordbook-quiz-result no">단어를 4개 이상 저장하면 퀴즈를 풀 수 있어요.</div>`;
+    return;
+  }
+  const targets = shuffleArray(words).slice(0, Math.min(WORDBOOK_QUIZ_SIZE, words.length));
+  const questions = targets.map(word => ({
+    word,
+    hint: wordChoseong(word),
+    choices: shuffleArray([word, ...shuffleArray(words.filter(w => w !== word)).slice(0, 3)])
+  }));
+  wordbookQuiz = { questions, idx: 0, score: 0, answered: false };
+  box.classList.remove("hidden");
+  renderWordbookQuiz();
+}
+
+function renderWordbookQuiz() {
+  const box = $("#wordbookQuizBox");
+  if (!box || !wordbookQuiz) return;
+  const total = wordbookQuiz.questions.length;
+  const q = wordbookQuiz.questions[wordbookQuiz.idx];
+  if (!q) {
+    const pct = total ? Math.round((wordbookQuiz.score / total) * 100) : 0;
+    box.innerHTML = `<div class="wordbook-quiz-head"><span>🧠 복습 퀴즈 완료</span><span>${wordbookQuiz.score}/${total} · ${pct}%</span></div>
+      <div class="wordbook-quiz-result ok">${wordbookQuiz.score === total ? "완벽해요! 🎉" : wordbookQuiz.score >= total * 0.6 ? "좋아요! 계속 복습해봐요." : "조금 더 복습해볼까요?"}</div>
+      <div class="wordbook-quiz-actions">
+        <button type="button" class="secondary" id="wordbookQuizRestart">다시 풀기</button>
+        <button type="button" class="secondary" id="wordbookQuizClose">닫기</button>
+      </div>`;
+    $("#wordbookQuizRestart")?.addEventListener("click", startWordbookQuiz);
+    $("#wordbookQuizClose")?.addEventListener("click", () => {
+      wordbookQuiz = null;
+      box.classList.add("hidden");
+      box.innerHTML = "";
+    });
+    return;
+  }
+  box.innerHTML = `<div class="wordbook-quiz-head"><span>🧠 복습 퀴즈</span><span>${wordbookQuiz.idx + 1}/${total} · ${wordbookQuiz.score}점</span></div>
+    <div class="wordbook-quiz-hint" aria-label="초성 힌트">${escapeHtml(q.hint)}</div>
+    <div class="wordbook-quiz-choices">${q.choices.map(choice => `<button type="button" class="wordbook-quiz-choice" data-quiz-choice="${escapeHtml(choice)}">${escapeHtml(choice)}</button>`).join("")}</div>
+    <div id="wordbookQuizResult" class="wordbook-quiz-result" role="status" aria-live="polite"></div>
+    <div class="wordbook-quiz-actions"><button type="button" class="secondary hidden" id="wordbookQuizNext">다음 문제</button></div>`;
+  box.querySelectorAll("[data-quiz-choice]").forEach(btn => {
+    btn.addEventListener("click", () => answerWordbookQuiz(btn.dataset.quizChoice, btn));
+  });
+}
+
+function answerWordbookQuiz(choice, btn) {
+  if (!wordbookQuiz || wordbookQuiz.answered) return;
+  const q = wordbookQuiz.questions[wordbookQuiz.idx];
+  if (!q) return;
+  wordbookQuiz.answered = true;
+  const ok = String(choice) === q.word;
+  if (ok) wordbookQuiz.score++;
+  const box = $("#wordbookQuizBox");
+  box?.querySelectorAll("[data-quiz-choice]").forEach(choiceBtn => {
+    choiceBtn.disabled = true;
+    if (choiceBtn.dataset.quizChoice === q.word) choiceBtn.classList.add("correct");
+    else if (choiceBtn === btn) choiceBtn.classList.add("wrong");
+  });
+  const result = $("#wordbookQuizResult");
+  if (result) {
+    result.textContent = ok ? `정답입니다! '${q.word}'` : `아쉬워요 — 정답은 '${q.word}'`;
+    result.className = "wordbook-quiz-result " + (ok ? "ok" : "no");
+  }
+  const next = $("#wordbookQuizNext");
+  if (next) {
+    next.classList.remove("hidden");
+    next.textContent = wordbookQuiz.idx >= wordbookQuiz.questions.length - 1 ? "결과 보기" : "다음 문제";
+    next.addEventListener("click", () => {
+      wordbookQuiz.idx++;
+      wordbookQuiz.answered = false;
+      renderWordbookQuiz();
+    }, { once: true });
+  }
+}
+
+/* ---------- 리플레이 공유 링크 ---------- */
+function shareCurrentReplay() {
+  const status = $("#replayShareStatus");
+  const hist = lastReplayData && lastReplayData.state && Array.isArray(lastReplayData.state.history)
+    ? lastReplayData.state.history : [];
+  if (hist.length < 2) {
+    if (status) { status.textContent = "공유할 리플레이가 없습니다."; status.className = "replay-share-status no"; }
+    return;
+  }
+  if (!socket || !socketConnected) {
+    if (status) { status.textContent = "서버 연결 후 다시 시도해주세요."; status.className = "replay-share-status no"; }
+    return;
+  }
+  const flow = hist.map(item => ({
+    w: item.word, n: item.nickname, m: !!item.mine,
+    d: item.depth, t: item.turn, o: !!item.oneShot
+  }));
+  if (status) { status.textContent = "공유 링크를 만드는 중..."; status.className = "replay-share-status"; }
+  socket.emit("replay:share", { flow });
+}
+
+async function loadSharedReplayFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const token = params.get("replay");
+  if (!token) return;
+  try {
+    const res = await fetch(`/api/replay/${encodeURIComponent(token)}`, { cache: "no-store" });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || !data.ok || !data.replay) {
+      showMessage((data && data.reason) || "리플레이를 불러오지 못했습니다.", "error");
+      return;
+    }
+    showStoredReplay({
+      flow: data.replay.flow, vs: "공유된 리플레이", result: "",
+      wordCount: data.replay.flow.length,
+      summary: `공유된 리플레이 · ${data.replay.flow.length}단어`
+    });
+  } catch (e) {
+    showMessage("리플레이를 불러오지 못했습니다.", "error");
+  } finally {
+    params.delete("replay");
+    const query = params.toString();
+    history.replaceState(null, "", location.pathname + (query ? `?${query}` : "") + location.hash);
+  }
 }
 
 /* ---------------------------------------------------------
@@ -4826,6 +5077,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#tutorialReplayBtn")?.addEventListener("click", () => showTutorial(true));
   $("#replayClose")?.addEventListener("click", () => $("#replayModal")?.classList.add("hidden"));
   $("#replayCopy")?.addEventListener("click", copyReplayResult);
+  $("#replayShare")?.addEventListener("click", shareCurrentReplay);
   $("#wordDefClose")?.addEventListener("click", () => $("#wordDefModal")?.classList.add("hidden"));
   $("#wordDefSave")?.addEventListener("click", () => {
     if (!wordDefCurrent) return;
@@ -4836,12 +5088,15 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#wordbookClear")?.addEventListener("click", () => {
     ensureWordbookLoaded();
     if (!wordbookState.length) return;
-    if (!window.confirm("단어장을 모두 비울까요?")) return;
+    if (!window.confirm("단어장을 모두 비울까요? 계정에 저장된 단어도 함께 삭제됩니다.")) return;
     wordbookState = [];
     try { localStorage.removeItem(WORDBOOK_KEY); } catch (e) { /* 무시 */ }
     wordbookLoaded = true;
     renderWordbook();
+    if (socket && socketConnected && myNickname) socket.emit("wordbook:clear");
   });
+  $("#wordbookQuizBtn")?.addEventListener("click", startWordbookQuiz);
+  setTimeout(loadSharedReplayFromUrl, 0);
   $("#wordbookSearch")?.addEventListener("input", renderWordbook);
   $all("[data-coin-filter]").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -5258,6 +5513,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#myNickChip")?.addEventListener("click", () => openAccountPanel(true));
   $("#accountClose")?.addEventListener("click", () => openAccountPanel(false));
   $("#accApply")?.addEventListener("click", saveAccount);
+  $("#accNickInput")?.addEventListener("input", () => $("#accApplied")?.classList.add("hidden"));
   $("#pushToggle")?.addEventListener("click", () => {
     if (pushState.count > 0) disablePushNotifications();
     else enablePushNotifications();

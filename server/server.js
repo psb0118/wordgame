@@ -10,6 +10,8 @@ const { createCluster } = require("./cluster.js");
 const rankSeason = require("./rank-season.js");
 const guildWeek = require("./guild-week.js");
 const { createPushManager, shouldNotifyTurn } = require("./push.js");
+const wordbookStore = require("./wordbook.js");
+const replayShare = require("./replay-share.js");
 const {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
   loadData, hasWord, getAttackDepth, isAttackWord,
@@ -1606,6 +1608,20 @@ function migratePlayerData(p) {
   p.attendanceStreak = Number.isFinite(p.attendanceStreak) ? Math.max(0, Math.floor(p.attendanceStreak)) : 0;
   if (!Array.isArray(p.recentGames)) p.recentGames = [];
   else p.recentGames = p.recentGames.slice(-10).filter(g => g && typeof g === "object");
+  /* 단어장은 migratePlayerData만 따로 평가하는 테스트가 있어 외부 모듈 없이 정리한다. */
+  if (!Array.isArray(p.wordbook)) p.wordbook = [];
+  else {
+    const seenWords = new Set();
+    p.wordbook = p.wordbook.filter(item => {
+      const word = String(item && item.word || "").replace(/\s+/g, "").trim().slice(0, 30);
+      if (!word || seenWords.has(word)) return false;
+      seenWords.add(word);
+      return true;
+    }).slice(0, 300).map(item => ({
+      word: String(item.word || "").replace(/\s+/g, "").trim().slice(0, 30),
+      at: String(item.at || "").slice(0, 40)
+    }));
+  }
   p.shieldTickets = Number.isFinite(p.shieldTickets) ? Math.max(0, Math.floor(p.shieldTickets)) : 0;
   if (!Array.isArray(p.ratingHistory)) p.ratingHistory = [];
   else p.ratingHistory = p.ratingHistory.slice(-60).filter(e => e && typeof e === "object" && Number.isFinite(Number(e.r)));
@@ -4271,6 +4287,83 @@ async function handleDictionaryDefinition(req, res) {
 
 app.get("/api/dictionary/definition", dictionaryRateLimit, handleDictionaryDefinition);
 
+/* ---------------------------------------------------------
+   리플레이 공유 저장소 — PG kv_store + JSON 파일 미러
+--------------------------------------------------------- */
+const REPLAY_SHARE_LIMIT = 500;
+const REPLAY_SHARE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const REPLAY_SHARE_PATH = path.join(RUNTIME_DATA_DIR || path.join(ROOT_DIR, "data"), "replay-shares.json");
+const replayShareCache = { loaded: false, map: new Map() };
+
+async function loadReplayShares() {
+  if (replayShareCache.loaded) return replayShareCache.map;
+  replayShareCache.loaded = true;
+  try {
+    const raw = await loadStoreJSON("replayShares", REPLAY_SHARE_PATH, {});
+    const now = Date.now();
+    for (const [token, entry] of Object.entries(raw && typeof raw === "object" ? raw : {})) {
+      if (!replayShare.isToken(token) || !entry || typeof entry !== "object") continue;
+      if (!(Number(entry.expiresAt) > now) || !Array.isArray(entry.flow)) continue;
+      replayShareCache.map.set(token, entry);
+    }
+  } catch (err) {
+    console.warn("리플레이 공유 저장소 읽기 실패:", err.message);
+  }
+  return replayShareCache.map;
+}
+
+function persistReplayShares() {
+  const raw = {};
+  for (const [token, entry] of replayShareCache.map) raw[token] = entry;
+  try {
+    fs.mkdirSync(path.dirname(REPLAY_SHARE_PATH), { recursive: true });
+    fs.writeFileSync(REPLAY_SHARE_PATH, JSON.stringify(raw));
+  } catch (err) {
+    console.warn("리플레이 공유 저장소 쓰기 실패:", err.message);
+  }
+  if (dbMode === "pg") pgStoreSet("replayShares", raw);
+}
+
+/* 운영 지표 — 외부 모니터링이 방/대기열/메모리를 한 번에 볼 수 있게 한다. */
+app.get("/api/metrics", (req, res) => {
+  res.set("cache-control", "no-store");
+  res.json({
+    ok: true,
+    uptime: process.uptime(),
+    rooms: ROOMS.size,
+    online: onlineNicks.size,
+    players: playerCache.size,
+    rankedQueue: RANKED_QUEUE.length,
+    tournamentQueue: TOURNAMENT_QUEUE.length,
+    db: dbMode,
+    push: pushManager.isEnabled(),
+    cluster: cluster.health(),
+    memory: process.memoryUsage()
+  });
+});
+
+/* 공유 리플레이 조회 — 토큰은 30일 뒤 만료되며 내부 ID는 저장하지 않는다. */
+app.get("/api/replay/:token", async (req, res) => {
+  try {
+    const token = String(req.params.token || "");
+    if (!replayShare.isToken(token)) {
+      res.status(400).json({ ok: false, reason: "잘못된 링크입니다." });
+      return;
+    }
+    const shares = await loadReplayShares();
+    const entry = shares.get(token);
+    if (!entry || !(Number(entry.expiresAt) > Date.now())) {
+      res.status(404).json({ ok: false, reason: "만료되었거나 없는 리플레이입니다." });
+      return;
+    }
+    res.set("cache-control", "no-store");
+    res.json({ ok: true, replay: { flow: entry.flow, createdAt: entry.createdAt } });
+  } catch (err) {
+    console.error("리플레이 조회 오류:", err.message);
+    res.status(500).json({ ok: false });
+  }
+});
+
 app.get("/api/cluster/status", async (req, res) => {
   res.set("cache-control", "no-store");
   res.json({
@@ -6100,6 +6193,118 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("추방 오류:", err); }
   });
 
+  /* -- 단어장 (계정 동기화) ---------------------------- */
+  const loadWordbookForSocket = async () => {
+    if (!socketNicks.has(socket.id)) return { ok: false, reason: "닉네임을 먼저 설정해주세요." };
+    const pd = await getPlayerData(socket.id);
+    if (!pd) return { ok: false, reason: "계정을 찾을 수 없습니다." };
+    return { ok: true, pd };
+  };
+
+  socket.on("wordbook:list", async () => {
+    try {
+      const loaded = await loadWordbookForSocket();
+      if (!loaded.ok) {
+        socket.emit("wordbook:listResult", { ok: false, reason: loaded.reason, items: [] });
+        return;
+      }
+      const items = wordbookStore.sanitize(loaded.pd.wordbook);
+      const rawLength = Array.isArray(loaded.pd.wordbook) ? loaded.pd.wordbook.length : 0;
+      if (items.length !== rawLength) {
+        loaded.pd.wordbook = items;
+        await savePlayerData(socket.id, loaded.pd);
+      }
+      socket.emit("wordbook:listResult", { ok: true, items });
+    } catch (err) {
+      console.error("단어장 조회 오류:", err);
+      socket.emit("wordbook:listResult", { ok: false, reason: "단어장을 불러오지 못했습니다.", items: [] });
+    }
+  });
+
+  socket.on("wordbook:add", async (data) => {
+    try {
+      const loaded = await loadWordbookForSocket();
+      if (!loaded.ok) { socket.emit("wordbook:updated", { ok: false, reason: loaded.reason }); return; }
+      loaded.pd.wordbook = wordbookStore.add(loaded.pd.wordbook, data && data.word, data && data.at);
+      await savePlayerData(socket.id, loaded.pd);
+      socket.emit("wordbook:updated", { ok: true, items: loaded.pd.wordbook });
+    } catch (err) {
+      console.error("단어장 저장 오류:", err);
+      socket.emit("wordbook:updated", { ok: false, reason: "단어장 저장에 실패했습니다." });
+    }
+  });
+
+  socket.on("wordbook:remove", async (data) => {
+    try {
+      const loaded = await loadWordbookForSocket();
+      if (!loaded.ok) { socket.emit("wordbook:updated", { ok: false, reason: loaded.reason }); return; }
+      loaded.pd.wordbook = wordbookStore.remove(loaded.pd.wordbook, data && data.word);
+      await savePlayerData(socket.id, loaded.pd);
+      socket.emit("wordbook:updated", { ok: true, items: loaded.pd.wordbook });
+    } catch (err) {
+      console.error("단어장 삭제 오류:", err);
+      socket.emit("wordbook:updated", { ok: false, reason: "단어장 삭제에 실패했습니다." });
+    }
+  });
+
+  socket.on("wordbook:clear", async () => {
+    try {
+      const loaded = await loadWordbookForSocket();
+      if (!loaded.ok) { socket.emit("wordbook:updated", { ok: false, reason: loaded.reason }); return; }
+      loaded.pd.wordbook = [];
+      await savePlayerData(socket.id, loaded.pd);
+      socket.emit("wordbook:updated", { ok: true, items: [] });
+    } catch (err) {
+      console.error("단어장 비우기 오류:", err);
+      socket.emit("wordbook:updated", { ok: false, reason: "단어장을 비우지 못했습니다." });
+    }
+  });
+
+  socket.on("wordbook:merge", async (data) => {
+    try {
+      const loaded = await loadWordbookForSocket();
+      if (!loaded.ok) { socket.emit("wordbook:updated", { ok: false, reason: loaded.reason }); return; }
+      loaded.pd.wordbook = wordbookStore.merge(loaded.pd.wordbook, data && data.items);
+      await savePlayerData(socket.id, loaded.pd);
+      socket.emit("wordbook:updated", { ok: true, items: loaded.pd.wordbook, merged: true });
+    } catch (err) {
+      console.error("단어장 동기화 오류:", err);
+      socket.emit("wordbook:updated", { ok: false, reason: "단어장 동기화에 실패했습니다." });
+    }
+  });
+
+  /* -- 리플레이 공유 링크 ------------------------------ */
+  socket.on("replay:share", async (data) => {
+    try {
+      const now = Date.now();
+      if (socket.data && socket.data.replayShareAt && now - socket.data.replayShareAt < 4000) {
+        socket.emit("replay:shareResult", { ok: false, reason: "잠시 후 다시 시도해주세요." });
+        return;
+      }
+      const flow = replayShare.sanitizeFlow(data && data.flow);
+      if (!flow) {
+        socket.emit("replay:shareResult", { ok: false, reason: "공유할 리플레이가 없습니다." });
+        return;
+      }
+      const shares = await loadReplayShares();
+      for (const [token, entry] of shares) {
+        if (!(Number(entry && entry.expiresAt) > now)) shares.delete(token);
+      }
+      while (shares.size >= REPLAY_SHARE_LIMIT) {
+        const oldest = shares.keys().next().value;
+        shares.delete(oldest);
+      }
+      const token = replayShare.createToken();
+      shares.set(token, { flow, createdAt: new Date(now).toISOString(), expiresAt: now + REPLAY_SHARE_TTL_MS });
+      persistReplayShares();
+      if (socket.data) socket.data.replayShareAt = now;
+      socket.emit("replay:shareResult", { ok: true, token, path: "/?replay=" + token });
+    } catch (err) {
+      console.error("리플레이 공유 오류:", err);
+      socket.emit("replay:shareResult", { ok: false, reason: "공유 링크를 만들지 못했습니다." });
+    }
+  });
+
   socket.on("player:getRanking", async () => {
     try {
       /* setName 등록이 아직 안 끝난 새 소켓에서 오면 초기(0) 화면이 잠깐 보일 수 있다.
@@ -7372,7 +7577,12 @@ io.on("connection", (socket) => {
         await pushManager.renameAccount(prevKey, claim.key);
       }
       registerOnline(socket.id, nickname);
-      socket.emit("player:nameUpdated", { ok: true, nickname, renamed: isRename && prevOwned, nameChanges: Number(playerData.nameChanges || 0) });
+      socket.emit("player:nameUpdated", {
+        ok: true, nickname, previousNickname: prevNick || "",
+        renamed: isRename && prevOwned, nameChanges: Number(playerData.nameChanges || 0),
+        cost: renameCost, money: Number(playerData.money || 0),
+        appliedAt: new Date().toISOString()
+      });
       if (room) broadcastRoomState(room);
       /* 개명을 전체에 알림 — 친구·길드·채팅 화면의 옛 이름이 즉시 새 이름으로 바뀐다.
          (이 알림이 없으면 다른 유저 화면은 새로고침 전까지 옛 이름을 유지한다) */

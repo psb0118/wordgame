@@ -4714,3 +4714,95 @@ html.dark .acc-rename-info {
 }
 .acc-recovery .account-row { flex-wrap: wrap; }
 .acc-recovery .account-row input { min-width: 0; }
+
+/* 닉네임 적용 확인 배너 — 변경 직후 화면에 확실히 남는다 */
+.acc-applied {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(34, 197, 94, 0.5);
+  background: rgba(34, 197, 94, 0.12);
+  color: #166534;
+  font-weight: 700;
+  line-height: 1.45;
+}
+.dark .acc-applied { color: #86efac; background: rgba(34, 197, 94, 0.16); }
+.acc-applied.hidden { display: none; }
+
+/* 단어장 계정 동기화 · 복습 퀴즈 */
+.wordbook-sync {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  color: var(--muted, #6b7280);
+  font-size: 13px;
+}
+.wordbook-sync-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(109, 40, 217, 0.12);
+  color: var(--accent, #6d28d9);
+  font-weight: 700;
+}
+.wordbook-quiz-box {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line, rgba(148, 163, 184, 0.35));
+  background: var(--panel, rgba(148, 163, 184, 0.08));
+}
+.wordbook-quiz-box.hidden { display: none; }
+.wordbook-quiz-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+.wordbook-quiz-hint {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 6px;
+  text-align: center;
+  padding: 14px 8px;
+  margin-bottom: 10px;
+  border-radius: 12px;
+  background: rgba(109, 40, 217, 0.08);
+}
+.wordbook-quiz-choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.wordbook-quiz-choice {
+  padding: 10px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--line, rgba(148, 163, 184, 0.35));
+  background: var(--bg, #fff);
+  color: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.wordbook-quiz-choice:disabled { cursor: default; opacity: 0.85; }
+.wordbook-quiz-choice.correct { border-color: #22c55e; background: rgba(34, 197, 94, 0.16); }
+.wordbook-quiz-choice.wrong { border-color: #ef4444; background: rgba(239, 68, 68, 0.14); }
+.wordbook-quiz-result {
+  margin-top: 10px;
+  min-height: 22px;
+  font-weight: 700;
+  text-align: center;
+}
+.wordbook-quiz-result.ok { color: #16a34a; }
+.wordbook-quiz-result.no { color: #dc2626; }
+.wordbook-quiz-actions { display: flex; justify-content: center; gap: 8px; margin-top: 10px; }
+@media (max-width: 520px) {
+  .wordbook-quiz-choices { grid-template-columns: 1fr; }
+}
+
+/* 리플레이 공유 */
+.replay-share-status { font-size: 13px; font-weight: 700; }
+.replay-share-status.ok { color: #16a34a; }
+.replay-share-status.no { color: #dc2626; }
