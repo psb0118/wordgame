@@ -11,6 +11,7 @@ const {
   isSocketIoPath,
   isApiPath,
   isLocalApiPath,
+  canTakeOverLease,
   RELAY_HEADER
 } = require("../server/cluster.js");
 
@@ -182,4 +183,50 @@ test("web relay rejects proxying to its own origin", async (t) => {
 
   const loop = await request(port, "/api/leaderboard");
   assert.equal(loop.status, 508);
+});
+
+
+test("deploy takeover requires the same service and a different commit", () => {
+  const base = { instanceId: "new", publicUrl: "https://svc.example.com", commit: "newsha" };
+  assert.equal(canTakeOverLease({ ...base, owner: "old", ownerUrl: "https://svc.example.com/", ownerCommit: "oldsha" }), true);
+  assert.equal(canTakeOverLease({ ...base, owner: "old", ownerUrl: "https://svc.example.com", ownerCommit: "" }), true);
+  assert.equal(canTakeOverLease({ ...base, owner: "old", ownerUrl: "https://svc.example.com", ownerCommit: "newsha" }), false);
+  assert.equal(canTakeOverLease({ ...base, owner: "old", ownerUrl: "https://other.example.com", ownerCommit: "oldsha" }), false);
+  assert.equal(canTakeOverLease({ ...base, commit: "", owner: "old", ownerUrl: "https://svc.example.com", ownerCommit: "oldsha" }), false);
+  assert.equal(canTakeOverLease({ ...base, owner: "", ownerUrl: "https://svc.example.com", ownerCommit: "oldsha" }), false);
+});
+
+test("a same-service deploy takes over the game-core lease", async () => {
+  const queries = [];
+  const pool = {
+    async query(sql, params = []) {
+      const text = String(sql);
+      queries.push(text);
+      if (text.includes("SELECT l.owner")) {
+        return { rows: [{ owner: "old", url: "https://svc.example.com", commit: "oldsha" }], rowCount: 1 };
+      }
+      if (text.includes("UPDATE cluster_leases") && text.includes("owner = $4")) {
+        return { rows: [{ owner: "new" }], rowCount: 1 };
+      }
+      if (text.includes("UPDATE cluster_leases")) {
+        return { rows: [{ owner: "new" }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+  };
+  const cluster = createCluster({
+    env: {
+      CLUSTER_ROLE: "game",
+      CLUSTER_INSTANCE_ID: "new",
+      CLUSTER_NODE_URL: "https://svc.example.com",
+      RENDER_GIT_COMMIT: "newsha",
+      CLUSTER_LEASE_WAIT_MS: "0"
+    },
+    log: { log() {}, warn() {}, error() {} }
+  });
+  const started = await cluster.start(pool);
+  assert.equal(started.ok, true);
+  assert.equal(cluster.state.lease, "acquired");
+  assert.ok(queries.some(sql => sql.includes("owner = $4")), "takeover update was issued");
+  await cluster.stop(pool);
 });

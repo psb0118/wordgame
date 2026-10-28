@@ -28,6 +28,35 @@ function trimTrailingSlash(value) {
   return String(value || "").replace(/\/+$/, "");
 }
 
+function normalizeServiceUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    return url.protocol + "//" + url.host + trimTrailingSlash(url.pathname);
+  } catch (e) {
+    return "";
+  }
+}
+
+/* 같은 서비스(Render)의 새 배포만 lease를 인계한다.
+   - 공개 URL이 같아야 한다(다른 서비스/다른 DB 코어는 제외).
+   - 새 인스턴스의 커밋이 있어야 하고, 기존 소유자의 커밋과 달라야 한다.
+   - 기존 소유자가 커밋을 기록하지 않던 구버전이면 최초 1회 인계를 허용한다.
+   같은 커밋으로 인스턴스를 여러 개 늘리는 스케일아웃은 인계하지 않는다. */
+function canTakeOverLease(opts = {}) {
+  const owner = String(opts.owner || "").trim();
+  const instanceId = String(opts.instanceId || "").trim();
+  if (!owner || !instanceId || owner === instanceId) return false;
+  const publicUrl = normalizeServiceUrl(opts.publicUrl);
+  const ownerUrl = normalizeServiceUrl(opts.ownerUrl);
+  if (!publicUrl || !ownerUrl || publicUrl !== ownerUrl) return false;
+  const commit = String(opts.commit || "").trim();
+  if (!commit) return false;
+  const ownerCommit = String(opts.ownerCommit || "").trim();
+  return ownerCommit !== commit;
+}
+
 function joinTargetPath(basePath, requestUrl) {
   const base = trimTrailingSlash(basePath);
   const url = String(requestUrl || "/");
@@ -75,6 +104,8 @@ function parseClusterConfig(env = process.env) {
     gameUrl: target ? `${target.origin}${trimTrailingSlash(target.pathname)}` : "",
     instanceId: instanceId || `${os.hostname()}-${process.pid}`,
     publicUrl,
+    /* Render가 주입하는 배포 커밋 — 같은 서비스의 새 배포 판별에만 쓴다. */
+    commit: String(env.RENDER_GIT_COMMIT || env.GIT_COMMIT || "").trim().slice(0, 40),
     proxyApi: String(env.CLUSTER_PROXY_API || "1") !== "0",
     leaseTtlMs: Math.max(5000, Number(env.CLUSTER_LEASE_TTL_MS) || DEFAULT_LEASE_TTL_MS),
     leaseWaitMs: Math.max(0, Number(env.CLUSTER_LEASE_WAIT_MS) || DEFAULT_LEASE_WAIT_MS),
@@ -346,18 +377,20 @@ function createCluster(options = {}) {
         heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
+    await pool.query(`ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS commit TEXT DEFAULT ''`);
   }
 
   async function registerNode(pool) {
     await pool.query(
-      `INSERT INTO cluster_nodes (id, role, url, game_url, started_at, heartbeat_at)
-       VALUES ($1, $2, $3, $4, NOW(), NOW())
+      `INSERT INTO cluster_nodes (id, role, url, game_url, commit, started_at, heartbeat_at)
+       VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
        ON CONFLICT (id) DO UPDATE SET
          role = EXCLUDED.role,
          url = EXCLUDED.url,
          game_url = EXCLUDED.game_url,
+         commit = EXCLUDED.commit,
          heartbeat_at = NOW()`,
-      [config.instanceId, config.role, config.publicUrl, config.gameUrl]
+      [config.instanceId, config.role, config.publicUrl, config.gameUrl, config.commit]
     );
   }
 
@@ -377,13 +410,59 @@ function createCluster(options = {}) {
     return r.rows.length > 0 && r.rows[0].owner === config.instanceId;
   }
 
+  function markLeaseAcquired() {
+    state.lease = "acquired";
+    state.leaseOwner = config.instanceId;
+    state.leaseExpiresAt = Date.now() + config.leaseTtlMs;
+  }
+
+  /* 기존 코어가 같은 서비스의 이전 배포라면 lease를 넘겨받는다.
+     이전 인스턴스는 다음 heartbeat에서 lease 상실을 감지하고 스스로 종료한다. */
+  async function tryTakeOverLease(pool) {
+    const r = await pool.query(
+      `SELECT l.owner, n.url, n.commit
+       FROM cluster_leases l
+       LEFT JOIN cluster_nodes n ON n.id = l.owner
+       WHERE l.name = $1`,
+      [LEASE_NAME]
+    );
+    if (!r.rows.length) return false;
+    const row = r.rows[0];
+    if (!canTakeOverLease({
+      owner: row.owner,
+      instanceId: config.instanceId,
+      ownerUrl: row.url,
+      ownerCommit: row.commit,
+      commit: config.commit,
+      publicUrl: config.publicUrl
+    })) return false;
+    const upd = await pool.query(
+      `UPDATE cluster_leases
+       SET owner = $2, expires_at = NOW() + ($3::int * INTERVAL '1 millisecond'), updated_at = NOW()
+       WHERE name = $1 AND owner = $4
+       RETURNING owner`,
+      [LEASE_NAME, config.instanceId, config.leaseTtlMs, row.owner]
+    );
+    if (upd.rows.length && upd.rows[0].owner === config.instanceId) {
+      log.log?.("[CLUSTER] 배포 lease 인계: " + row.owner + " -> " + config.instanceId);
+      return true;
+    }
+    return false;
+  }
+
   async function acquireLease(pool) {
     const deadline = Date.now() + config.leaseWaitMs;
     for (;;) {
+      try {
+        if (await tryTakeOverLease(pool)) {
+          markLeaseAcquired();
+          return true;
+        }
+      } catch (err) {
+        log.warn?.("[CLUSTER] lease 인계 확인 실패:", err.message);
+      }
       if (await tryAcquireLease(pool)) {
-        state.lease = "acquired";
-        state.leaseOwner = config.instanceId;
-        state.leaseExpiresAt = Date.now() + config.leaseTtlMs;
+        markLeaseAcquired();
         return true;
       }
       if (Date.now() >= deadline) return false;
@@ -503,7 +582,7 @@ function createCluster(options = {}) {
     if (!pool) return [];
     try {
       const r = await pool.query(
-        `SELECT id, role, url, game_url, started_at, heartbeat_at
+        `SELECT id, role, url, game_url, commit, started_at, heartbeat_at
          FROM cluster_nodes
          WHERE heartbeat_at > NOW() - ($1::int * INTERVAL '1 millisecond')
          ORDER BY heartbeat_at DESC`,
@@ -514,6 +593,7 @@ function createCluster(options = {}) {
         role: row.role,
         url: row.url || "",
         gameUrl: row.game_url || "",
+        commit: row.commit || "",
         startedAt: row.started_at,
         heartbeatAt: row.heartbeat_at
       }));
@@ -558,6 +638,7 @@ function createCluster(options = {}) {
 }
 
 module.exports = {
+  canTakeOverLease,
   createCluster,
   parseClusterConfig,
   joinTargetPath,
