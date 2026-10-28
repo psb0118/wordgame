@@ -87,6 +87,8 @@ let economySummaryState = null;
 let economyFilter = "all";
 let wordbookState = [];
 let wordDefCurrent = "";
+let myPlacement = null;
+let pushState = { supported: false, enabled: false, count: 0, max: 5, hasNickname: false };
 let dailyCounters = null;
 
 /* 실시간 랭킹 패널 상태 */
@@ -579,6 +581,8 @@ function initSocket() {
   socket.on("connect", () => {
     socketConnected = true;
     console.log("[SOCKET] 연결됨:", socket.id);
+    /* 서버가 '보고 있는 중'인지 알아야 불필요한 턴 푸시를 보내지 않는다. */
+    socket.emit("client:visibility", { visible: document.visibilityState !== "hidden" });
     /* 저장된 이름으로 재등록 (Google 세션이 있으면 서버가 연결을 복원한다) */
     if (myNickname) socket.emit("player:setName", { nickname: myNickname });
     socket.emit("admin:getRole");
@@ -637,6 +641,10 @@ function initSocket() {
     setText(["#accSingleWL"], `${sng.wins || 0}승 ${sng.losses || 0}패`);
     setText(["#accMultiWL"], `${mul.wins || 0}승 ${mul.losses || 0}패`);
     setText(["#accRankedWL"], `${rkd.wins || 0}승 ${rkd.losses || 0}패`);
+    myPlacement = data.placement || (Number.isFinite(Number(rkd.placementGamesLeft))
+      ? { left: Number(rkd.placementGamesLeft), required: 5, done: Math.max(0, 5 - Number(rkd.placementGamesLeft)), active: Number(rkd.placementGamesLeft) > 0 }
+      : null);
+    renderPlacementChip();
     rankedStreak = rkd.streak || 0;
     rankedBestStreak = rkd.bestStreak || 0;
     setText(["#accRankedStreak"], rankedStreak || 0);
@@ -766,6 +774,27 @@ function initSocket() {
   });
 
   /* -- 계정 복구 / 기기 연결 ---------------------------- */
+  socket.on("push:status", (data) => {
+    if (!data) return;
+    pushState = {
+      supported: pushSupported(),
+      enabled: !!data.enabled,
+      count: Number(data.count) || 0,
+      max: Number(data.max) || 5,
+      hasNickname: !!data.hasNickname
+    };
+    renderPushStatus();
+  });
+
+  socket.on("push:result", (data) => {
+    if (!data) return;
+    const ok = !!data.ok;
+    const text = data.message || data.reason || (ok ? "알림 설정이 변경되었습니다." : "알림 설정에 실패했습니다.");
+    const el = $("#pushStatus");
+    if (el) el.textContent = text;
+    if (socket && socketConnected) socket.emit("push:status");
+  });
+
   socket.on("account:recoveryCode", (data) => {
     if (!data) return;
     if (!data.ok) { recoveryMsg(data.reason || "복구 코드를 만들지 못했습니다.", "error"); return; }
@@ -1108,6 +1137,8 @@ function initSocket() {
 
   /* -- 실시간 채팅 -------------------------------------- */
   socket.on("chat:message", (data) => {
+    /* 관전 중에는 관전 채팅만 보여준다 — 플레이어/전체 채팅이 섞이지 않게. */
+    if (spectating) return;
     if (data && data.scope === "global") {
       globalChatCache.push(data);
       if (globalChatCache.length > 30) globalChatCache.shift();
@@ -1130,6 +1161,28 @@ function initSocket() {
     if (list) list.scrollTop = list.scrollHeight;
   });
   socket.on("chat:cleared", () => { globalChatCache = []; clearChat(); });
+
+  /* 관전자 수 갱신 — 플레이어/관전자 모두 같은 방 이벤트를 받는다 */
+  socket.on("room:spectators", (data) => {
+    if (!data || (data.roomId && roomId && data.roomId !== roomId)) return;
+    if (gameState) gameState.spectatorCount = Number(data.count) || 0;
+    renderRoomInfo(gameState);
+    updateInputState();
+  });
+
+  socket.on("spectate:chat:message", (data) => {
+    if (!data) return;
+    appendChatLine(data);
+  });
+
+  socket.on("spectate:chat:history", (data) => {
+    if (!data || !data.ok) return;
+    clearChat();
+    (Array.isArray(data.messages) ? data.messages : []).slice(-30)
+      .forEach(m => appendChatLine(m, { silent: true }));
+    const list = $("#chatList");
+    if (list) list.scrollTop = list.scrollHeight;
+  });
 
   socket.on("chat:error", (data) => chatNotice((data && data.reason) || "전송하지 못했습니다.", false));
   socket.on("chat:reportResult", (data) => {
@@ -1289,6 +1342,9 @@ function initSocket() {
   /* 관전 입장 — 플레이어가 아니라 채널만 참가하므로 입력 없이 상태만 받는다 */
   socket.on("room:spectating", (data) => {
     if (!data || !data.ok) return;
+    /* 이미 이 방의 플레이어라면 관전 상태로 덮어쓰지 않는다 — 관전 UI가 켜지면
+       플레이어 채팅/입력이 막히기 때문. */
+    if (data.alreadyPlaying) return;
     roomId = data.roomId;
     playerIndex = null;
     spectating = true;
@@ -1301,12 +1357,14 @@ function initSocket() {
       $("#rankedLobby")?.classList.toggle("hidden", !!(data.state && data.state.started));
       $("#rankedGame")?.classList.toggle("hidden", !(data.state && data.state.started));
     }
+    if (Number.isFinite(Number(data.spectatorCount)) && gameState) gameState.spectatorCount = Number(data.spectatorCount);
     renderGameState(gameState);
-    clearChat(); /* 관전 중에도 스코프는 방 채팅 */
+    clearChat(); /* 관전자는 플레이어 채팅이 아니라 관전 채팅을 본다 */
     updateChatScopeLabel();
-    if (socket && socketConnected) socket.emit("chat:history", { roomId: data.roomId }); /* 방 이력 복원 */
+    if (socket && socketConnected) socket.emit("spectate:chat:history");
     showMessage("관전 중입니다 — 이 방의 게임을 구경하고 있습니다.", "info");
     updateInputState();
+    renderRoomInfo(gameState);
   });
 
   socket.on("room:error", (data) => {
@@ -1415,7 +1473,9 @@ function initSocket() {
   socket.on("room:left", () => {
     roomId = null;
     playerIndex = null;
+    spectating = false;
     gameState = null;
+    clearLastRoomId();
     setPracticeBar(false);
     updateChatScopeLabel();
     restoreGlobalChat(); /* 방을 나가면 전체 채팅으로 — 캐시+이력 복원 */
@@ -1540,6 +1600,11 @@ function initSocket() {
   });
 
   /* -- 길드/클랜 ---------------------------------------- */
+  socket.on("guild:weekly", (data) => {
+    if (!data || !data.ok) return;
+    renderGuildWeekly(data);
+  });
+
   socket.on("guild:state", (data) => {
     if (!data) return;
     if (data.ok && typeof data.money === "number") { moneyBalance = data.money; renderMoneyBar(); }
@@ -1957,7 +2022,7 @@ function renderPlayers(state) {
 
   if (container) {
     container.innerHTML = "";
-    const canKick = (state.hostSocketId === socket?.id) || myAdminRole !== "none";
+    const canKick = !spectating && ((state.hostSocketId === socket?.id) || myAdminRole !== "none");
     const showKick = currentMode === "online" || currentMode === "ranked";
     for (const p of state.players) {
       const row = document.createElement("div");
@@ -2085,7 +2150,7 @@ function renderRoomInfo(state) {
       <div>${isRanked ? "🎮" : "방 코드: "}<strong>${isRanked ? "랭크 매칭" : `<span class="room-code" title="클릭하면 복사됩니다">${state.roomId}</span>`}</strong></div>
       <div class="room-status">${statusText}</div>
     </div>
-    <div>인원: ${state.playerCount}/${state.maxPlayers}${isHost && !isRanked ? " (방장)" : ""}</div>
+    <div>인원: ${state.playerCount}/${state.maxPlayers}${isHost && !isRanked ? " (방장)" : ""} · 👁 관전 ${Number(state.spectatorCount) || 0}/${Number(state.spectatorLimit) || 30}</div>
   `;
 
   const codeEl = el.querySelector(".room-code");
@@ -2172,9 +2237,12 @@ function updateInputState() {
     inputArea.dataset.myTurn = myTurn ? "true" : "false";
   }
 
-  const showSpec = (spectating && gameState?.started && !gameState?.finished)
+  const showSpec = spectating
     || (amEliminated && gameState?.started && !gameState?.finished);
-  const specText = spectating ? "관전 모드 — 이 방의 게임을 구경 중입니다" : "관전 모드 — 탈락했습니다";
+  const specCount = Number(gameState?.spectatorCount) || 0;
+  const specText = spectating
+    ? `관전 모드 — 이 방의 게임을 구경 중입니다${specCount > 0 ? ` · 관전자 ${specCount}명` : ""}`
+    : "관전 모드 — 탈락했습니다";
   for (const sel of ["#spectatorNotice", "#spectatorNoticeRanked"]) {
     const specNotice = $(sel);
     if (specNotice) {
@@ -2352,7 +2420,7 @@ function renderRoomList() {
       <span class="rl-host">${escapeHtml(String(r.host || "플레이어"))}</span>
       <span class="rl-count">${Number(r.playerCount) || 0}/${Number(r.maxPlayers) || 0}</span>
       <span class="rl-status">${r.started ? "진행 중" : "대기 중"}</span>
-      <span class="rl-watch" data-watch="${escapeHtml(String(r.roomId))}" title="구경만 하기">관전</span>
+      <span class="rl-watch" data-watch="${escapeHtml(String(r.roomId))}" title="구경만 하기">관전 ${Number(r.spectatorCount) || 0}</span>
       <span class="rl-join">입장 →</span>
     </button>`).join("");
   body.innerHTML = rows;
@@ -2780,6 +2848,23 @@ function renderRankedStreakChip() {
   }
 }
 
+/* 시즌 소프트 리셋 뒤 배치고사 진행 상황 */
+function renderPlacementChip() {
+  const chip = $("#rankedPlacementChip");
+  const p = myPlacement;
+  const hasPlacement = !!(p && (p.active || p.season));
+  const show = !!(p && p.active);
+  if (chip) {
+    chip.classList.toggle("hidden", !show);
+    if (show) {
+      setText(["#rankedPlacementNum"], `${Number(p.done) || 0}/${Number(p.required) || 5}`);
+      setText(["#rankedPlacementLeft"], Number(p.left) || 0);
+    }
+  }
+  setText(["#accPlacement"], hasPlacement ? (show ? `${Number(p.done) || 0}/${Number(p.required) || 5}` : "완료") : "-");
+  setText(["#accPlacementHint"], hasPlacement ? (show ? `남은 ${Number(p.left) || 0}판` : "이번 시즌 완료") : "");
+}
+
 /* ---------------------------------------------------------
    상점 렌더링
 --------------------------------------------------------- */
@@ -3078,7 +3163,8 @@ function renderEconomyHistory() {
     attendance: "출석", mission: "미션", mail: "우편",
     referral_join: "추천인 등록", referral_invite: "추천 보상",
     shop_title: "칭호 구매", shop_shield: "보호 티켓", shop_potion: "물약",
-    shop_multiplier: "돈 배율", game_win: "게임 승리", achievement: "업적", season: "시즌",
+    shop_multiplier: "돈 배율", game_win: "게임 승리", tournament_win: "대회 우승",
+    achievement: "업적", season: "시즌", guild_week: "길드 주간 보상",
     welcome: "복귀 보상", admin_adjust: "관리자 조절", guild_create: "길드 생성"
   };
   list.innerHTML = rows.map(entry => {
@@ -3167,14 +3253,16 @@ function isLoggedIn() { return window.kkLoggedIn === true; }
 /* 채팅 스코프 — 방(온라인/파티/랭크)이 아니면 전체 채팅 (서버와 동일 규칙) */
 function chatScopeNow() {
   const mode = gameState && gameState.mode;
+  if (spectating && roomId && mode && mode !== "ai") return "spectate";
   return (roomId && mode && mode !== "ai") ? "room" : "global";
 }
 
 function updateChatScopeLabel() {
+  const scope = chatScopeNow();
   const title = $("#chatTitle");
-  if (title) title.textContent = chatScopeNow() === "room" ? "💬 방 채팅" : "💬 전체 채팅";
+  if (title) title.textContent = scope === "spectate" ? "👁 관전 채팅" : scope === "room" ? "💬 방 채팅" : "💬 전체 채팅";
   const btn = $("#chatBtn");
-  if (btn) btn.title = chatScopeNow() === "room" ? "방 채팅 열기" : "전체 채팅 열기";
+  if (btn) btn.title = scope === "spectate" ? "관전 채팅 열기" : scope === "room" ? "방 채팅 열기" : "전체 채팅 열기";
 }
 
 /* 채팅은 누구나 볼 수 있다 — 쓰기·신고만 로그인(서버가 게이트).
@@ -3220,7 +3308,7 @@ function appendChatLine(data, opts) {
   if (data.scope) {
     const scope = document.createElement("span");
     scope.className = `chat-scope-tag ${data.scope}`;
-    scope.textContent = data.scope === "room" ? "방" : "전체";
+    scope.textContent = data.scope === "room" ? "방" : (data.scope === "spectate" ? "관전" : "전체");
     line.append(scope);
   }
 
@@ -3704,6 +3792,80 @@ function accountMsg(text, type) {
   el.className = "account-msg" + (type === "ok" ? " ok" : type === "error" ? " error" : "");
 }
 
+/* ---------------------------------------------------------
+ 웹 푸시 알림
+--------------------------------------------------------- */
+function pushSupported() {
+return typeof window !== "undefined" && "Notification" in window
+  && "serviceWorker" in navigator && "PushManager" in window;
+}
+function urlBase64ToUint8Array(base64String) {
+const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+const raw = atob(base64);
+const out = new Uint8Array(raw.length);
+for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+return out;
+}
+function renderPushStatus() {
+const btn = $("#pushToggle");
+const testBtn = $("#pushTestBtn");
+const el = $("#pushStatus");
+if (btn) {
+  btn.textContent = pushState.count > 0 ? "알림 끄기" : "알림 켜기";
+  btn.disabled = !pushSupported() || !pushState.enabled;
+}
+if (testBtn) testBtn.classList.toggle("hidden", pushState.count <= 0);
+if (!el) return;
+if (!pushSupported()) el.textContent = "이 브라우저는 알림을 지원하지 않습니다.";
+else if (!pushState.enabled) el.textContent = "서버 알림이 비활성화되어 있습니다.";
+else if (!pushState.hasNickname) el.textContent = "닉네임을 설정하면 알림을 켤 수 있습니다.";
+else if (pushState.count > 0) el.textContent = `이 계정의 ${pushState.count}개 기기에서 알림을 받는 중입니다.`;
+else el.textContent = "알림이 꺼져 있습니다.";
+}
+async function enablePushNotifications() {
+const el = $("#pushStatus");
+if (!pushSupported()) { if (el) el.textContent = "이 브라우저는 알림을 지원하지 않습니다."; return; }
+try {
+  const res = await fetch("/api/push/publicKey", { cache: "no-store" });
+  const info = await res.json();
+  if (!info || !info.enabled || !info.publicKey) {
+    if (el) el.textContent = "서버에서 알림이 비활성화되어 있습니다.";
+    return;
+  }
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    if (el) el.textContent = "브라우저에서 알림 권한이 거부되었습니다.";
+    return;
+  }
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(info.publicKey)
+    });
+  }
+  if (socket && socketConnected) socket.emit("push:subscribe", { subscription: sub.toJSON() });
+  if (el) el.textContent = "알림을 켜는 중입니다...";
+} catch (err) {
+  if (el) el.textContent = "알림을 켜지 못했습니다: " + (err && err.message ? err.message : "알 수 없는 오류");
+}
+}
+async function disablePushNotifications() {
+const el = $("#pushStatus");
+try {
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+  const endpoint = sub ? sub.endpoint : "";
+  if (sub) await sub.unsubscribe();
+  if (socket && socketConnected) socket.emit("push:unsubscribe", { endpoint });
+  if (el) el.textContent = "알림을 끄는 중입니다...";
+} catch (err) {
+  if (el) el.textContent = "알림을 끄지 못했습니다.";
+}
+}
+
 function openAccountPanel(force) {
   const panel = $("#accountPanel");
   if (!panel) return;
@@ -3713,7 +3875,8 @@ function openAccountPanel(force) {
   updateChatVisibility(); /* 계정 패널이 채팅을 가리지 않도록 채팅을 숨겼다/되살린다 */
   if (open) {
     renderAccountInfo(myNickname);
-    if (socket && socketConnected) { socket.emit("referral:status"); socket.emit("mail:list"); socket.emit("guild:info"); }
+    if (socket && socketConnected) { socket.emit("referral:status"); socket.emit("mail:list"); socket.emit("guild:info"); socket.emit("push:status"); }
+    renderPushStatus();
     setTimeout(() => $("#accNickInput")?.focus(), 60);
   }
 }
@@ -3765,6 +3928,27 @@ function showGuildMsg(text, ok) {
   el.classList.toggle("ok", !!ok);
 }
 
+function renderGuildWeekly(weekly) {
+  const box = $("#guildWeekly");
+  if (!box) return;
+  if (!weekly) { box.innerHTML = ""; return; }
+  const top = Array.isArray(weekly.top) ? weekly.top : [];
+  const medal = (rank) => rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : `${rank}위`;
+  const rows = top.map(r => `
+    <li class="guild-weekly-row">
+      <span class="guild-weekly-rank">${medal(Number(r.rank))}</span>
+      <b class="guild-weekly-name">${escapeHtml(String(r.name || ""))}</b>
+      <span class="guild-weekly-points">${Number(r.points) || 0}점</span>
+      <span class="guild-weekly-members">${Number(r.memberCount) || 0}명</span>
+    </li>`).join("");
+  const mine = weekly.myGuild;
+  box.innerHTML = `
+    <div class="guild-weekly-head">🏆 주간 대항전 <span>${escapeHtml(String(weekly.weekKey || ""))}</span></div>
+    <div class="guild-weekly-sub">랭크·대회 승리로 점수를 쌓습니다. 길드 가입 24시간 뒤부터 반영되며, 1~3위 길드는 주간 종료 시 이번 주에 기여한 길드원에게 코인을 지급합니다.</div>
+    ${mine ? `<div class="guild-weekly-mine">내 길드 <b>${escapeHtml(String(mine.name || ""))}</b> · ${Number(mine.points) || 0}점 · ${mine.rank ? `${mine.rank}위` : "순위권 밖"} · 내 기여 ${Number(mine.myPoints) || 0}점${mine.reward ? ` · 예상 보상 ${Number(mine.reward).toLocaleString()}코인` : ""}</div>` : ""}
+    <ol class="guild-weekly-list">${rows || '<li class="guild-weekly-empty">이번 주 기록이 아직 없습니다.</li>'}</ol>`;
+}
+
 function renderGuildState(data) {
   const body = $("#guildBody");
   const accGuild = $("#accGuildName");
@@ -3774,6 +3958,7 @@ function renderGuildState(data) {
     return;
   }
   if (data.message) showGuildMsg(data.message, true);
+  if (data.weekly) renderGuildWeekly(data.weekly);
 
   const g = data.guild;
   if (accGuild) {
@@ -4687,7 +4872,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   /* 탭 전환 */
   $("#guildRefresh")?.addEventListener("click", () => {
-    if (socket && socketConnected) socket.emit("guild:info");
+    if (socket && socketConnected) { socket.emit("guild:info"); socket.emit("guild:weekly"); }
   });
   $all(".tabs button").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -4734,7 +4919,7 @@ document.addEventListener("DOMContentLoaded", () => {
   } else if (currentMode === "achievements") {
     fetchAchievements();
   } else if (currentMode === "guild") {
-    if (socket && socketConnected) socket.emit("guild:info");
+    if (socket && socketConnected) { socket.emit("guild:info"); socket.emit("guild:weekly"); }
   }
 
       loadSideRanking(sideRankMode, true);
@@ -5039,8 +5224,11 @@ document.addEventListener("DOMContentLoaded", () => {
       chatUnread = 0;
       renderChatUnread();
       updateChatScopeLabel();
-      /* 이력 요청 — 방에 있으면 방 이력, 없으면 전체 이력 */
-      if (socket && socketConnected) socket.emit("chat:history", (roomId && chatScopeNow() === "room") ? { roomId } : {});
+      /* 이력 요청 — 관전 중이면 관전 채팅, 방이면 방 이력, 아니면 전체 이력 */
+      if (socket && socketConnected) {
+        if (chatScopeNow() === "spectate") socket.emit("spectate:chat:history");
+        else socket.emit("chat:history", (roomId && chatScopeNow() === "room") ? { roomId } : {});
+      }
       const list = $("#chatList");
       if (list) list.scrollTop = list.scrollHeight;
       $("#chatInput")?.focus();
@@ -5052,7 +5240,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!inp) return;
     const text = inp.value.trim();
     if (!text) return;
-    socket.emit("chat:send", { text });
+    if (chatScopeNow() === "spectate") socket.emit("spectate:chat", { text });
+    else socket.emit("chat:send", { text });
     inp.value = "";
     inp.focus();
   };
@@ -5062,11 +5251,20 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   clearChat();
 
-  /* 계정 탭 — 이름 설정/변경은 이 탭에서만 한다 */
+
+
+/* 계정 탭 — 이름 설정/변경은 이 탭에서만 한다 */
   $("#accountBtn")?.addEventListener("click", () => openAccountPanel());
   $("#myNickChip")?.addEventListener("click", () => openAccountPanel(true));
   $("#accountClose")?.addEventListener("click", () => openAccountPanel(false));
   $("#accApply")?.addEventListener("click", saveAccount);
+  $("#pushToggle")?.addEventListener("click", () => {
+    if (pushState.count > 0) disablePushNotifications();
+    else enablePushNotifications();
+  });
+  $("#pushTestBtn")?.addEventListener("click", () => {
+    if (socket && socketConnected) socket.emit("push:test");
+  });
 
   /* 레퍼럴(추천인) 등록 */
   const registerReferral = () => {
@@ -5149,3 +5347,10 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => { /* 오프라인 캐시는 선택 기능 */ });
   });
 }
+
+/* 탭이 백그라운드로 갔는지 서버에 알린다 — 그때만 '내 턴' 푸시가 온다. */
+document.addEventListener("visibilitychange", () => {
+  if (socket && socketConnected) {
+    socket.emit("client:visibility", { visible: document.visibilityState === "visible" });
+  }
+});

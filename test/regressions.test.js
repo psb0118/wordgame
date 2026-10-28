@@ -8,6 +8,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const game = require("../server/game.js");
+const rankSeason = require("../server/rank-season.js");
+const guildWeek = require("../server/guild-week.js");
 const source = fs.readFileSync(
   process.env.WORDGAME_TEST_SOURCE || path.join(__dirname, "../server/server.js"), "utf8"
 );
@@ -101,6 +103,17 @@ function context(extra = {}) {
     normalizeWord: game.normalizeWord,
     isAdminNick: () => false, findSubAdmin: () => null, watchNicks: [],
     getPlayerRoom: () => null,
+    rankSeason, guildWeek,
+    notifyPush() {}, shouldNotifyTurn: () => false, awardGuildWeekPoints: async () => null,
+    seasonRolloverPromise: null, guildWeekRolloverPromise: null,
+    pushManager: { renameAccount: async () => ({ ok: true }) },
+    removeSpectator: () => false, broadcastSpectators() {}, clearSpectators() {},
+    ensureSpectatorState: (room) => {
+      if (!(room.spectators instanceof Map)) room.spectators = new Map();
+      if (!Array.isArray(room.spectatorChat)) room.spectatorChat = [];
+      return room.spectators;
+    },
+    spectatorChannel: (room) => room.id + ":spec",
     cancelRankedInvitesFor() {}, removeFromRankedQueue() {}, broadcastRankedQueue() {},
     leaveRoomForSocket() {}, addBot() {}, startNewGame() {},
     broadcastRoomState() {}, getPublicRoomState: r => ({ roomId: r.id, practice: !!r.practice }),
@@ -108,7 +121,11 @@ function context(extra = {}) {
     PARTY_PLAYERS: 4, PARTY_TEAM_SIZE: 2, PARTY_TEAM_COUNT: 2,
     setTimeout(fn, ms) { const t = { fn, ms, active: true }; timers.push(t); return t; },
     clearTimeout(t) { if (t && typeof t === "object") t.active = false; },
-    io: { to: (room) => ({ emit: (...args) => { emissions.push(args); ioRooms.push({ room, args }); } }),
+    io: { to: (room) => {
+        const target = { emit: (...args) => { emissions.push(args); ioRooms.push({ room, args }); } };
+        target.except = () => target;
+        return target;
+      },
       emit: (...args) => emissions.push(args),
       sockets: { sockets: new Map() } },
     requireNickname: async () => ({ ok: true, role: "super", nickname: "admin" }),
@@ -138,7 +155,7 @@ function context(extra = {}) {
     "registerOnline", "unregisterOnline", "updateRating", "updateSingleResult",
     "recordMatchHistory", "finishGame", "migrateJsonPlayersToPg",
     "getPlayerBySocket", "getPlayerByIndex", "getAlivePlayers", "findNextAlivePlayer",
-    "stopTurnTimer", "startTurnTimer", "removePlayer",
+    "stopTurnTimer", "startTurnTimer", "notifyTurnStart", "removePlayer",
     "loadChatHistory", "saveChatHistoryNow", "renameAccountRefs", "startKeepAlivePing",
     "bumpMission", "bumpDaily", "playWord", "runAI",
     "pushRatingHistory", "applyWelcomeReward",
@@ -151,7 +168,7 @@ function context(extra = {}) {
     "findPlayerIdByNickname", "findAllPlayerIdsByNickname",
     "playerExtras",
     "applyGuilds", "loadGuilds", "saveGuilds", "guildOf",
-    "buildGuildState", "notifyGuildMembers",
+    "buildGuildState", "buildGuildWeekBoard", "notifyGuildMembers",
     "seasonRewardFor", "buildSeasonInfo", "nowForSeason", "seasonKeyOf",
     "seasonEndMs", "currentSeasonKey", "getSeasonStore",
     "applyCustomWord", "saveCustomWords", "loadCustomDict", "applyCustomDict",
@@ -2584,7 +2601,7 @@ test("global chat history survives restarts via kv store", async () => {
 test("chat:history returns room backlog when roomId is provided", async () => {
   const { c } = context();
   const s = socket("room-reader");
-  const room = { id: "ROOM-H", mode: "online", chat: [{ from: "a", text: "이전 방 대화", scope: "room", id: "1" }] };
+  const room = { id: "ROOM-H", mode: "online", players: [{ socketId: "room-reader" }], chat: [{ from: "a", text: "이전 방 대화", scope: "room", id: "1" }] };
   c.ROOMS.set("ROOM-H", room);
   installHandler(c, "chat:history", s);
   await s.handlers.get("chat:history")({ roomId: "ROOM-H" });
@@ -2820,4 +2837,57 @@ test("tournament finish settles ranked results and pays the winner once", async 
   assert.ok(ledger.some(h => h.reason === "tournament_win"), "대회 우승 코인이 원장에 기록된다");
   assert.equal(winner.recentGames.length, 1);
   assert.equal(winner.recentGames[0].mode, "tournament");
+});
+
+test("season soft reset seeds placement games and ranked wins consume them", async () => {
+  const { c, errors } = context({ seasonStore: { lastClosed: "2026-09", history: [] } });
+  const p = seed(c, "placed", {
+    season: { season: "2026-09", games: 3, wins: 2, losses: 1 },
+    ranked: { rating: 1900, wins: 20, losses: 5, streak: 3 }
+  });
+  p.id = "placed";
+  const opp = seed(c, "opponent", { ranked: { rating: 1500, wins: 10, losses: 4 } });
+  opp.id = "opponent";
+
+  await c.ensureSeasonRollover();
+  assert.equal(errors.length, 0, errors.join(" | "));
+  const after = c.playerCache.get("placed");
+  assert.equal(after.ranked.rating, 1450, "레이팅은 1000 기준 절반만 이월된다");
+  assert.equal(after.ranked.placementGamesLeft, 5, "다음 시즌 배치 5판이 예약된다");
+  assert.equal(after.ranked.placementSeason, "2026-10", "배치는 새 시즌에 진행된다");
+  assert.equal(after.ranked.streak, 0, "연승은 초기화된다");
+  const opponent = c.playerCache.get("opponent");
+  assert.equal(opponent.ranked.rating, 1250, "시즌 미참가자도 다음 시즌을 위해 소프트 리셋된다");
+  assert.equal(opponent.ranked.placementGamesLeft, 5, "미참가자도 배치 5판을 받는다");
+
+  const payload = await c.getRankingPayload("placed");
+  assert.equal(payload.placement.active, true);
+  assert.equal(payload.placement.left, 5);
+
+  await c.updateRating("placed", "opponent", "placed", "opponent", "ranked");
+  assert.equal(c.playerCache.get("placed").ranked.placementGamesLeft, 4, "승리도 배치 1판을 소모한다");
+  assert.equal(c.playerCache.get("opponent").ranked.placementGamesLeft, 4);
+});
+
+test("guild state exposes the weekly leaderboard and my contribution", () => {
+  const { c } = context();
+  const week = c.getKstWeek();
+  const old = new Date(Date.now() - 3 * 86400000).toISOString();
+  const mk = (key, name, points) => ({
+    key, name, leader: "a", leaderNick: "A", createdAt: old,
+    members: [{ key: "a", nick: "A", joinedAt: old }, { key: "b", nick: "B", joinedAt: old }],
+    week: { key: week, points, dailyKey: "2026-10-04", dailyPoints: points, updatedAt: "" }
+  });
+  c.guildCache = {
+    g1: mk("g1", "호랑이", { a: 60, b: 30 }),
+    g2: mk("g2", "독수리", { a: 90, b: 10 })
+  };
+  const state = c.buildGuildState("a");
+  assert.equal(state.guild.name, "호랑이");
+  assert.equal(state.weekly.weekKey, week);
+  assert.deepEqual(state.weekly.top.map(r => [r.name, r.rank, r.points]), [["독수리", 1, 100], ["호랑이", 2, 90]]);
+  assert.equal(state.weekly.myGuild.points, 90);
+  assert.equal(state.weekly.myGuild.rank, 2);
+  assert.equal(state.weekly.myGuild.myPoints, 60);
+  assert.equal(state.weekly.myGuild.reward, 10000);
 });

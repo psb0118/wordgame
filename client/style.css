@@ -4606,6 +4606,61 @@ html.dark .acc-rename-info {
   .toast { bottom: 92px; }
 }
 
+/* --- 관전 / 배치고사 / 길드 주간전 / 알림 --- */
+.chat-scope-tag.spectate { background: rgba(14, 165, 233, 0.18); color: #0284c7; }
+
+.ranked-placement-chip {
+  margin: 8px 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: rgba(109, 40, 217, 0.1);
+  border: 1px solid rgba(109, 40, 217, 0.3);
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.guild-weekly {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+}
+.guild-weekly-head { display: flex; align-items: baseline; gap: 8px; font-weight: 800; }
+.guild-weekly-head span { color: var(--text-dim); font-size: 0.76rem; font-weight: 600; }
+.guild-weekly-sub { margin: 6px 0 8px; color: var(--text-dim); font-size: 0.76rem; line-height: 1.45; }
+.guild-weekly-mine {
+  margin: 6px 0 8px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  font-size: 0.8rem;
+}
+.guild-weekly-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.guild-weekly-row {
+  display: grid;
+  grid-template-columns: 44px 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 7px;
+  background: rgba(148, 163, 184, 0.08);
+  font-size: 0.8rem;
+}
+.guild-weekly-rank { font-weight: 800; text-align: center; }
+.guild-weekly-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guild-weekly-points { color: var(--accent); font-weight: 800; }
+.guild-weekly-members { color: var(--text-dim); font-size: 0.72rem; }
+.guild-weekly-empty { color: var(--text-dim); font-size: 0.78rem; padding: 6px; }
+
+.acc-push { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--border); }
+
+@media (max-width: 520px) {
+  .guild-weekly-row { grid-template-columns: 38px 1fr auto; }
+  .guild-weekly-members { display: none; }
+}
+
 /* --- 랭크 대회 --- */
 .tournament-hero {
   display: flex;
