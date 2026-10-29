@@ -1453,113 +1453,131 @@ function saveJsonDb() {
 async function initDatabase() {
   const databaseUrl = process.env.DATABASE_URL;
   if (databaseUrl) {
-    try {
-      const { Pool } = require("pg");
-      /* PostgreSQL/Neon URLs carry their own TLS settings (e.g. sslmode=require).
-         Do not disable certificate verification with an explicit SSL override. */
-      dbPool = new Pool({ connectionString: databaseUrl });
-      await dbPool.query(`
-        CREATE TABLE IF NOT EXISTS players (
-          id TEXT PRIMARY KEY,
-          nickname TEXT DEFAULT '플레이어',
-          rating INTEGER DEFAULT 1000,
-          wins INTEGER DEFAULT 0,
-          losses INTEGER DEFAULT 0,
-          streak INTEGER DEFAULT 0,
-          best_streak INTEGER DEFAULT 0,
-          ranked_rating INTEGER DEFAULT 1000,
-          ranked_wins INTEGER DEFAULT 0,
-          ranked_losses INTEGER DEFAULT 0,
-          ranked_streak INTEGER DEFAULT 0,
-          ranked_best_streak INTEGER DEFAULT 0,
-          money INTEGER DEFAULT 0,
-          money_multiplier INTEGER DEFAULT 1,
-          rating_boost_games INTEGER DEFAULT 0,
-          titles TEXT DEFAULT '[]',
-          current_title TEXT DEFAULT '',
-          last_check_date TEXT DEFAULT '',
-          attendance_streak INTEGER DEFAULT 0,
-          recent_games TEXT DEFAULT '[]',
-          daily TEXT DEFAULT '{}',
-          weekly TEXT DEFAULT '{}',
-          monthly TEXT DEFAULT '{}',
-          single_rating INTEGER DEFAULT 1000,
-          single_wins INTEGER DEFAULT 0,
-          single_losses INTEGER DEFAULT 0,
-          created_at TIMESTAMP DEFAULT NOW(),
-          updated_at TIMESTAMP DEFAULT NOW(),
-          season TEXT DEFAULT '{}',
-          firebase_uid TEXT DEFAULT NULL,
-          firebase_email TEXT DEFAULT '',
-          firebase_name TEXT DEFAULT '',
-          shield_tickets INTEGER DEFAULT 0,
-          rating_history TEXT DEFAULT '[]',
-          last_seen TEXT DEFAULT '',
-          extras TEXT DEFAULT '{}'
-        )
-      `);
-      await dbPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_players_firebase_uid ON players(firebase_uid)`);
-      await dbPool.query(`
-        ALTER TABLE players
-          ADD COLUMN IF NOT EXISTS single_rating INTEGER DEFAULT 1000,
-          ADD COLUMN IF NOT EXISTS single_wins INTEGER DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS single_losses INTEGER DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS streak INTEGER DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS best_streak INTEGER DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS ranked_rating INTEGER DEFAULT 1000,
-          ADD COLUMN IF NOT EXISTS ranked_wins INTEGER DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS ranked_losses INTEGER DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS ranked_streak INTEGER DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS ranked_best_streak INTEGER DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS money INTEGER DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS money_multiplier INTEGER DEFAULT 1,
-          ADD COLUMN IF NOT EXISTS rating_boost_games INTEGER DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS titles TEXT DEFAULT '[]',
-          ADD COLUMN IF NOT EXISTS current_title TEXT DEFAULT '',
-          ADD COLUMN IF NOT EXISTS last_check_date TEXT DEFAULT '',
-          ADD COLUMN IF NOT EXISTS attendance_streak INTEGER DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS recent_games TEXT DEFAULT '[]',
-          ADD COLUMN IF NOT EXISTS daily TEXT DEFAULT '{}',
-          ADD COLUMN IF NOT EXISTS weekly TEXT DEFAULT '{}',
-          ADD COLUMN IF NOT EXISTS monthly TEXT DEFAULT '{}',
-          ADD COLUMN IF NOT EXISTS season TEXT DEFAULT '{}',
-          ADD COLUMN IF NOT EXISTS firebase_uid TEXT DEFAULT NULL,
-          ADD COLUMN IF NOT EXISTS firebase_email TEXT DEFAULT '',
-          ADD COLUMN IF NOT EXISTS firebase_name TEXT DEFAULT '',
-          ADD COLUMN IF NOT EXISTS shield_tickets INTEGER DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS rating_history TEXT DEFAULT '[]',
-          ADD COLUMN IF NOT EXISTS last_seen TEXT DEFAULT '',
-          ADD COLUMN IF NOT EXISTS extras TEXT DEFAULT '{}'
-      `);
-      await dbPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_players_firebase_uid ON players(firebase_uid)`);
-      /* 보조 저장소(친구/시즌/관리자 설정/커스텀 사전/버그 제보) — 재배포에도 유지 */
-      await dbPool.query(`
-        CREATE TABLE IF NOT EXISTS kv_store (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL,
-          updated_at TIMESTAMP DEFAULT NOW()
-        )
-      `);
-      /* 코인 원장 — 지급/차감을 기록하고 idem_key로 중복 지급을 막는다 */
-      await dbPool.query(`
-        CREATE TABLE IF NOT EXISTS economy_ledger (
-          id BIGSERIAL PRIMARY KEY,
-          idem_key TEXT UNIQUE NOT NULL,
-          account_id TEXT NOT NULL,
-          delta BIGINT NOT NULL,
-          balance_after BIGINT,
-          reason TEXT NOT NULL,
-          ref TEXT DEFAULT '',
-          created_at TIMESTAMP DEFAULT NOW()
-        )
-      `);
-      await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_economy_ledger_account ON economy_ledger(account_id, created_at DESC)`);
-      dbMode = "pg";
-      console.log("데이터베이스: PostgreSQL 연결 완료");
-      return;
-    } catch (err) {
-      console.warn("PostgreSQL 연결 실패:", err.message);
+    /* DB가 잠깐 응답하지 않는다고 JSON 파일 모드로 내려가면, 영속 디스크가 없는
+       배포에서는 기존 기록이 사라진 것처럼 보이고 그 사이 쓰기는 다음 배포에서
+       유실된다. 그래서 재시도하고, 그래도 실패하면 조용히 강등하지 않고 알린다. */
+    const attempts = Math.max(1, Number(process.env.DB_CONNECT_ATTEMPTS) || 5);
+    const retryMs = Math.max(200, Number(process.env.DB_CONNECT_RETRY_MS) || 2000);
+    let lastErr = null;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const { Pool } = require("pg");
+        /* PostgreSQL/Neon URLs carry their own TLS settings (e.g. sslmode=require).
+           Do not disable certificate verification with an explicit SSL override. */
+        dbPool = new Pool({ connectionString: databaseUrl });
+        await dbPool.query(`
+          CREATE TABLE IF NOT EXISTS players (
+            id TEXT PRIMARY KEY,
+            nickname TEXT DEFAULT '플레이어',
+            rating INTEGER DEFAULT 1000,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            streak INTEGER DEFAULT 0,
+            best_streak INTEGER DEFAULT 0,
+            ranked_rating INTEGER DEFAULT 1000,
+            ranked_wins INTEGER DEFAULT 0,
+            ranked_losses INTEGER DEFAULT 0,
+            ranked_streak INTEGER DEFAULT 0,
+            ranked_best_streak INTEGER DEFAULT 0,
+            money INTEGER DEFAULT 0,
+            money_multiplier INTEGER DEFAULT 1,
+            rating_boost_games INTEGER DEFAULT 0,
+            titles TEXT DEFAULT '[]',
+            current_title TEXT DEFAULT '',
+            last_check_date TEXT DEFAULT '',
+            attendance_streak INTEGER DEFAULT 0,
+            recent_games TEXT DEFAULT '[]',
+            daily TEXT DEFAULT '{}',
+            weekly TEXT DEFAULT '{}',
+            monthly TEXT DEFAULT '{}',
+            single_rating INTEGER DEFAULT 1000,
+            single_wins INTEGER DEFAULT 0,
+            single_losses INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW(),
+            season TEXT DEFAULT '{}',
+            firebase_uid TEXT DEFAULT NULL,
+            firebase_email TEXT DEFAULT '',
+            firebase_name TEXT DEFAULT '',
+            shield_tickets INTEGER DEFAULT 0,
+            rating_history TEXT DEFAULT '[]',
+            last_seen TEXT DEFAULT '',
+            extras TEXT DEFAULT '{}'
+          )
+        `);
+        await dbPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_players_firebase_uid ON players(firebase_uid)`);
+        await dbPool.query(`
+          ALTER TABLE players
+            ADD COLUMN IF NOT EXISTS single_rating INTEGER DEFAULT 1000,
+            ADD COLUMN IF NOT EXISTS single_wins INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS single_losses INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS streak INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS best_streak INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS ranked_rating INTEGER DEFAULT 1000,
+            ADD COLUMN IF NOT EXISTS ranked_wins INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS ranked_losses INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS ranked_streak INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS ranked_best_streak INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS money INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS money_multiplier INTEGER DEFAULT 1,
+            ADD COLUMN IF NOT EXISTS rating_boost_games INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS titles TEXT DEFAULT '[]',
+            ADD COLUMN IF NOT EXISTS current_title TEXT DEFAULT '',
+            ADD COLUMN IF NOT EXISTS last_check_date TEXT DEFAULT '',
+            ADD COLUMN IF NOT EXISTS attendance_streak INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS recent_games TEXT DEFAULT '[]',
+            ADD COLUMN IF NOT EXISTS daily TEXT DEFAULT '{}',
+            ADD COLUMN IF NOT EXISTS weekly TEXT DEFAULT '{}',
+            ADD COLUMN IF NOT EXISTS monthly TEXT DEFAULT '{}',
+            ADD COLUMN IF NOT EXISTS season TEXT DEFAULT '{}',
+            ADD COLUMN IF NOT EXISTS firebase_uid TEXT DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS firebase_email TEXT DEFAULT '',
+            ADD COLUMN IF NOT EXISTS firebase_name TEXT DEFAULT '',
+            ADD COLUMN IF NOT EXISTS shield_tickets INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS rating_history TEXT DEFAULT '[]',
+            ADD COLUMN IF NOT EXISTS last_seen TEXT DEFAULT '',
+            ADD COLUMN IF NOT EXISTS extras TEXT DEFAULT '{}'
+        `);
+        await dbPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_players_firebase_uid ON players(firebase_uid)`);
+        /* 보조 저장소(친구/시즌/관리자 설정/커스텀 사전/버그 제보) — 재배포에도 유지 */
+        await dbPool.query(`
+          CREATE TABLE IF NOT EXISTS kv_store (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT NOW()
+          )
+        `);
+        /* 코인 원장 — 지급/차감을 기록하고 idem_key로 중복 지급을 막는다 */
+        await dbPool.query(`
+          CREATE TABLE IF NOT EXISTS economy_ledger (
+            id BIGSERIAL PRIMARY KEY,
+            idem_key TEXT UNIQUE NOT NULL,
+            account_id TEXT NOT NULL,
+            delta BIGINT NOT NULL,
+            balance_after BIGINT,
+            reason TEXT NOT NULL,
+            ref TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT NOW()
+          )
+        `);
+        await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_economy_ledger_account ON economy_ledger(account_id, created_at DESC)`);
+        dbMode = "pg";
+        console.log("데이터베이스: PostgreSQL 연결 완료");
+        return;
+      } catch (err) {
+        lastErr = err;
+        if (dbPool) { try { await dbPool.end(); } catch (e) { /* 무시 */ } dbPool = null; }
+        console.warn(`PostgreSQL 연결 실패 (${attempt}/${attempts}):`, err.message);
+        if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, retryMs));
+      }
     }
+    if (String(process.env.ALLOW_JSON_FALLBACK || "") !== "1") {
+      throw Object.assign(
+        new Error(`PostgreSQL 연결에 실패했습니다 (${attempts}회 재시도): ${lastErr ? lastErr.message : "알 수 없는 이유"}`),
+        { code: "DB_UNAVAILABLE" }
+      );
+    }
+    console.warn("ALLOW_JSON_FALLBACK=1 — PostgreSQL 없이 JSON 파일 모드로 시작합니다. 재배포 시 데이터가 유실될 수 있습니다.");
   }
   dbMode = "json";
   loadJsonDb();
@@ -4404,8 +4422,42 @@ function persistReplayShares() {
   if (dbMode === "pg") pgStoreSet("replayShares", raw);
 }
 
-/* 운영 지표 — 외부 모니터링이 방/대기열/메모리를 한 번에 볼 수 있게 한다. */
-app.get("/api/metrics", (req, res) => {
+/* 운영 지표는 기본적으로 내부(플랫폼 헬스체크·사설망)에서만 열린다.
+   외부 모니터링이 필요하면 METRICS_TOKEN을 설정하고 x-metrics-token 헤더로 접근한다.
+   토큰이 없으면 외부 요청에는 404로 응답해 존재 여부도 드러내지 않는다. */
+const METRICS_TOKEN = String(process.env.METRICS_TOKEN || "").trim();
+
+function isPrivateAddress(value) {
+  let ip = String(value || "").trim();
+  if (ip.startsWith("::ffff:")) ip = ip.slice(7);
+  if (ip === "::1" || ip === "127.0.0.1") return true;
+  if (/^127\./.test(ip)) return true;
+  if (/^10\./.test(ip)) return true;
+  if (/^192\.168\./.test(ip)) return true;
+  const m = ip.match(/^172\.(\d{1,3})\./);
+  if (m && Number(m[1]) >= 16 && Number(m[1]) <= 31) return true;
+  if (/^f[cd][0-9a-f]{2}:/i.test(ip)) return true;   /* fc00::/7 (ULA) */
+  return false;
+}
+
+function metricsTokenMatches(given) {
+  if (!METRICS_TOKEN) return false;
+  const a = Buffer.from(String(given || ""), "utf8");
+  const b = Buffer.from(METRICS_TOKEN, "utf8");
+  if (a.length !== b.length) return false;
+  return require("crypto").timingSafeEqual(a, b);
+}
+
+function metricsAccess(req, res, next) {
+  if (metricsTokenMatches(req.get("x-metrics-token"))) return next();
+  /* req.ip만 본다 — 프록시 뒤에서는 소켓 주소가 항상 사설(프록시)이라 그것까지 허용하면
+     외부 요청이 그대로 통과한다. 원격 주소 판정은 trust proxy 설정을 거친 req.ip로만 한다. */
+  if (isPrivateAddress(req.ip)) return next();
+  res.status(404).json({ ok: false });
+}
+
+/* 운영 지표 — 방/대기열/메모리를 한 번에 볼 수 있게 한다. */
+app.get("/api/metrics", metricsAccess, (req, res) => {
   res.set("cache-control", "no-store");
   res.json({
     ok: true,
@@ -4445,7 +4497,7 @@ app.get("/api/replay/:token", async (req, res) => {
   }
 });
 
-app.get("/api/cluster/status", async (req, res) => {
+app.get("/api/cluster/status", metricsAccess, async (req, res) => {
   res.set("cache-control", "no-store");
   res.json({
     ok: true,
@@ -8018,7 +8070,15 @@ initDatabase().then(async () => {
     startKeepAlivePing();
   });
 }).catch(err => {
+  if (err && err.code === "DB_UNAVAILABLE") {
+    console.error("서버 시작 실패:", err.message);
+    console.error("DATABASE_URL 연결을 확인하세요. JSON 파일 모드로 임시 기동하려면 ALLOW_JSON_FALLBACK=1을 설정하세요.");
+    process.exit(1);
+  }
   console.error("서버 시작 실패:", err);
+  /* 이미 포트를 연 뒤의 초기화 오류라면 다시 listen하지 않는다 — ERR_SERVER_ALREADY_LISTEN이
+     원래 오류를 가리므로, 원인을 남기고 종료해 플랫폼이 재시작하게 둔다. */
+  if (server.listening) process.exit(1);
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`끝말잇기 서버 실행 중 (DB 없음): http://localhost:${PORT}`);
     console.log(`빌드 커밋: ${BUILD_COMMIT || "로컬"}`);
@@ -8055,3 +8115,13 @@ function shutdown(signal) {
 }
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+/* 놓친 프로미스 하나가 게임 코어 전체를 내리지 않게 남긴다. 원인 추적을 위해 스택을 남기고,
+   프로세스 상태를 신뢰할 수 없는 uncaughtException만 종료해 플랫폼이 재시작하게 한다. */
+process.on("unhandledRejection", (reason) => {
+  console.error("[UNHANDLED] 처리되지 않은 프로미스 거부:", reason && reason.stack ? reason.stack : reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[UNCAUGHT] 처리되지 않은 예외 — 종료 후 재시작합니다:", err && err.stack ? err.stack : err);
+  process.exit(1);
+});

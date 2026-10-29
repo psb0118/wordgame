@@ -45,7 +45,7 @@
 - 단어장 계정 동기화 + 초성 복습 퀴즈 (기기를 바꿔도 유지)
 - 리플레이 공유 링크 (30일 만료 · 링크를 아는 사람만 조회)
 - 닉네임 변경 적용 확인 배너 (서버가 돌려준 적용 시각 표시)
-- 운영 지표 API `/api/metrics`
+- 운영 지표 API `/api/metrics` (내부 요청 또는 `METRICS_TOKEN` 헤더 필요)
 
 ## 랭크 등급
 | Rating | 등급 |
@@ -141,6 +141,7 @@ npm run dev:neon
 
 ## 운영 지표
 - `GET /api/metrics`에서 방 수, 접속자, 랭크/대회 대기열, DB 모드, 푸시 활성화, 클러스터 상태, 메모리를 확인합니다.
+  `/api/metrics`와 `/api/cluster/status`는 기본적으로 사설망(내부) 요청만 허용합니다. 외부 모니터링에서 호출하려면 `METRICS_TOKEN`을 설정하고 `x-metrics-token` 헤더를 붙이세요.
 - `GET /api/replay/:token`은 공유 리플레이를 조회합니다. 두 응답 모두 캐시하지 않습니다.
 
 ## 계정 복구·기기 연결
@@ -159,6 +160,7 @@ Render 등 **임시 파일 시스템** 환경에서는 기본 JSON 파일 저장
 - **`DATABASE_URL` 지정 시 (권장)**: 모든 데이터를 PostgreSQL `players` 테이블과 `kv_store` 테이블에 저장합니다. JSON 파일 저장과 자동 동기화됩니다.
 - **`KK_DATA_DIR` 지정 시**: 설정한 디렉터리에 JSON 파일들을 보존합니다. (예: `/app/data`)
 - 두 설정이 모두 없으면 기본 JSON 파일(`data/*.json`)에 저장하며, 안정성을 위해 `.bak` 파일이 자동 생성되고 원본 손상 시 복원됩니다.
+- `DATABASE_URL`이 설정됐는데 연결에 실패하면 5회 재시도 후 **종료**합니다(데이터 유실 방지). 예전처럼 JSON 파일로 임시 기동하려면 `ALLOW_JSON_FALLBACK=1`을 설정하세요 — 재배포 시 데이터가 유실될 수 있습니다. 재시도 횟수/간격은 `DB_CONNECT_ATTEMPTS`(기본 5), `DB_CONNECT_RETRY_MS`(기본 2000)로 조정합니다.
 - 단어·AI 목록 파일(`data/*.txt`)은 git에 포함되어 있어 초기화되지 않습니다.
 
 ### Render에서 PostgreSQL 연결하기 (무료)
@@ -191,7 +193,7 @@ Render 등 **임시 파일 시스템** 환경에서는 기본 JSON 파일 저장
 
 ```bash
 curl -s https://<주소>/api/health | jq '.cluster'
-curl -s https://<주소>/api/cluster/status | jq '{role, lease, nodes}'
+curl -s -H "x-metrics-token: $METRICS_TOKEN" https://<주소>/api/cluster/status | jq '{role, lease, nodes}'
 ```
 
 게임 코어는 `role: "game"`, `lease: "acquired"`이고, 웹 릴레이는 `role: "web"`, `lease: "relay"`입니다. 웹 릴레이에서 `/socket.io/socket.io.js`와 WebSocket 핸드셰이크가 200/101로 통과하는지도 확인하세요.
