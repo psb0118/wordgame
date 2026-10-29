@@ -141,7 +141,7 @@ npm run dev:neon
 
 ## 운영 지표
 - `GET /api/metrics`에서 방 수, 접속자, 랭크/대회 대기열, DB 모드, 푸시 활성화, 클러스터 상태, 메모리를 확인합니다.
-  `/api/metrics`와 `/api/cluster/status`는 기본적으로 사설망(내부) 요청만 허용합니다. 외부 모니터링에서 호출하려면 `METRICS_TOKEN`을 설정하고 `x-metrics-token` 헤더를 붙이세요.
+  `/api/metrics`와 `/api/cluster/status`는 기본 비공개입니다. 외부에서 호출하려면 `METRICS_TOKEN`을 설정하고 `x-metrics-token` 헤더를 붙이세요(미설정 시 404). 같은 호스트에서 프록시 없이 직접 호출할 때만 예외로 열립니다.
 - `GET /api/replay/:token`은 공유 리플레이를 조회합니다. 두 응답 모두 캐시하지 않습니다.
 
 ## 계정 복구·기기 연결

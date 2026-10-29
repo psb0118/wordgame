@@ -4422,22 +4422,16 @@ function persistReplayShares() {
   if (dbMode === "pg") pgStoreSet("replayShares", raw);
 }
 
-/* 운영 지표는 기본적으로 내부(플랫폼 헬스체크·사설망)에서만 열린다.
-   외부 모니터링이 필요하면 METRICS_TOKEN을 설정하고 x-metrics-token 헤더로 접근한다.
-   토큰이 없으면 외부 요청에는 404로 응답해 존재 여부도 드러내지 않는다. */
+/* 운영 지표는 기본 비공개다. METRICS_TOKEN을 설정하고 x-metrics-token 헤더로 접근하거나,
+   같은 호스트에서 프록시를 거치지 않고 직접 호출할 때만 열린다.
+   프록시 뒤에서는 req.ip가 사설 주소로 보이므로 IP 대역 허용은 쓰지 않는다 —
+   Render 같은 환경에서는 외부 요청도 사설 주소로 도착해 그대로 통과한다. */
 const METRICS_TOKEN = String(process.env.METRICS_TOKEN || "").trim();
 
-function isPrivateAddress(value) {
+function isLoopbackAddress(value) {
   let ip = String(value || "").trim();
   if (ip.startsWith("::ffff:")) ip = ip.slice(7);
-  if (ip === "::1" || ip === "127.0.0.1") return true;
-  if (/^127\./.test(ip)) return true;
-  if (/^10\./.test(ip)) return true;
-  if (/^192\.168\./.test(ip)) return true;
-  const m = ip.match(/^172\.(\d{1,3})\./);
-  if (m && Number(m[1]) >= 16 && Number(m[1]) <= 31) return true;
-  if (/^f[cd][0-9a-f]{2}:/i.test(ip)) return true;   /* fc00::/7 (ULA) */
-  return false;
+  return ip === "::1" || /^127\./.test(ip);
 }
 
 function metricsTokenMatches(given) {
@@ -4450,9 +4444,12 @@ function metricsTokenMatches(given) {
 
 function metricsAccess(req, res, next) {
   if (metricsTokenMatches(req.get("x-metrics-token"))) return next();
-  /* req.ip만 본다 — 프록시 뒤에서는 소켓 주소가 항상 사설(프록시)이라 그것까지 허용하면
-     외부 요청이 그대로 통과한다. 원격 주소 판정은 trust proxy 설정을 거친 req.ip로만 한다. */
-  if (isPrivateAddress(req.ip)) return next();
+  const proxied = !!(
+    req.headers["x-forwarded-for"] ||
+    req.headers["x-forwarded-host"] ||
+    req.headers["forwarded"]
+  );
+  if (!proxied && isLoopbackAddress(req.socket && req.socket.remoteAddress)) return next();
   res.status(404).json({ ok: false });
 }
 
