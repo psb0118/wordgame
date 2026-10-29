@@ -24,7 +24,7 @@ const path = require("path");
 /* 입력창 안내문이 그대로 계정 이름이 된 행 — 실행할 때마다 손으로 나열하지 않도록 한 번에 처리한다.
    '플레이어'(이름을 정하지 않은 게스트)는 전적이 있을 수 있어 여기 넣지 않는다. */
 const PLACEHOLDER_NICKS = [
-  "닉네임", "닉네임입력", "닉네임을입력하세요", "이름", "이름입력", "정보", "undefined", "null"
+  "닉네임", "닉네임입력", "닉네임을입력하세요", "이름입력", "undefined", "null"
 ];
 const PURGE_PLACEHOLDERS = process.argv.includes("--placeholders");
 const rawArg = String(process.argv[2] || "").trim();

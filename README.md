@@ -207,4 +207,4 @@ curl -s -H "x-metrics-token: $METRICS_TOKEN" https://<주소>/api/cluster/status
 ### 플레이어 데이터 삭제 (운영 도구)
 `node tools/purge-player.js <닉네임>`은 삭제 대상을 보고만 하고, `--apply`를 붙이면 JSON 백업 후 players·전적·friends·시즌 등 관련 데이터를 정리합니다. TLS는 시스템 CA로 검증하며 URL의 `sslmode=no-verify`/`disable`은 무시합니다. 사설 CA를 쓰는 DB는 `DATABASE_CA_CERT`에 PEM 문자열이나 인증서 파일 경로를 지정하세요.
 
-입력창 안내문(`닉네임`, `정보`, `이름` 등)이 그대로 계정 이름이 된 행은 `node tools/purge-player.js --placeholders`로 한 번에 확인하고, `--placeholders --apply`로 삭제합니다. 로그인 계정(`firebase_uid`)에 연결된 행과 이름을 정하지 않은 게스트(`플레이어`)는 건드리지 않습니다.
+입력창 안내문(`닉네임`, `닉네임을 입력하세요` 등)이 그대로 계정 이름이 된 행은 `node tools/purge-player.js --placeholders`로 한 번에 확인하고, `--placeholders --apply`로 삭제합니다. 로그인 계정(`firebase_uid`)에 연결된 행과 이름을 정하지 않은 게스트(`플레이어`)는 건드리지 않습니다. `정보`·`이름`처럼 실제로 쓸 수 있는 단어는 자동 대상에서 빼 두었으니, 그런 행은 `node tools/purge-player.js 정보 --apply`처럼 이름을 지정해 지웁니다.

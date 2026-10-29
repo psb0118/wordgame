@@ -29,16 +29,17 @@ vm.runInContext([
 ].join("\n"), sandbox);
 
 test("placeholder and empty nicknames are rejected as names", () => {
-  for (const n of ["닉네임", " 닉네임 ", "정보", "플레이어", "이름", "undefined", "", "   "]) {
+  for (const n of ["닉네임", " 닉네임 ", "플레이어", "이름입력", "undefined", "null", "", "   "]) {
     assert.equal(sandbox.isPlaceholderNickname(n), true, JSON.stringify(n));
   }
-  for (const n of ["정보왕", "정재", "버프", "닉네임2", "플레이어1"]) {
+  /* 실제 단어는 사용자가 고를 수 있어야 한다 */
+  for (const n of ["정보", "이름", "정보왕", "정재", "버프", "닉네임2", "플레이어1"]) {
     assert.equal(sandbox.isPlaceholderNickname(n), false, n);
   }
 });
 
 test("ghost records cover placeholder, empty, and missing nicknames", () => {
-  assert.equal(sandbox.isGhostRecord({ nickname: "정보" }), true);
+  assert.equal(sandbox.isGhostRecord({ nickname: "정보" }), false);
   assert.equal(sandbox.isGhostRecord({ nickname: "닉네임" }), true);
   assert.equal(sandbox.isGhostRecord({ nickname: "" }), true);
   assert.equal(sandbox.isGhostRecord({}), true);

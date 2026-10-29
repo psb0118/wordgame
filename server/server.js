@@ -819,8 +819,7 @@ function writeStoreFile(filePath, value, key) {
 /* 입력창 placeholder나 테스트 입력이 그대로 계정 이름이 된 경우 — 랭킹에 노출하지 않는다.
    실제 사용자가 붙인 이름과 겹치지 않도록 정확히 일치할 때만 걸러낸다. */
 const PLACEHOLDER_NICKS = new Set([
-  "플레이어", "닉네임", "닉네임입력", "닉네임을입력하세요", "이름", "이름입력",
-  "정보", "undefined", "null"
+  "플레이어", "닉네임", "닉네임입력", "닉네임을입력하세요", "이름입력", "undefined", "null"
 ]);
 
 function isPlaceholderNickname(nickname) {
@@ -7621,11 +7620,6 @@ io.on("connection", (socket) => {
         socket.emit("player:nameUpdated", { ok: false, reason: "이름은 12자 이내로 입력해주세요." });
         return;
       }
-      /* 입력창 안내문이 그대로 이름으로 저장되던 경로 차단 */
-      if (isPlaceholderNickname(nickname)) {
-        socket.emit("player:nameUpdated", { ok: false, reason: "사용할 수 없는 이름입니다. 다른 이름을 입력해주세요." });
-        return;
-      }
       /* 운영 제재 — 밴 계정은 이름을 설정할 수 없다 */
       const banMsg = banGuard(nickname);
       if (banMsg) {
@@ -7637,6 +7631,12 @@ io.on("connection", (socket) => {
       const prevNick = socketNicks.get(socket.id) || "";
       const prevKey = prevNick ? normKey(prevNick) : "";
       const isRename = !!prevKey && prevKey !== normKey(nickname);
+      /* 입력창 안내문이 그대로 이름이 되는 것만 막는다 — 이미 그 이름을 쓰는 계정이
+         접속할 때마다 다시 보내는 재등록은 통과시켜 기존 사용자를 깨뜨리지 않는다. */
+      if (isPlaceholderNickname(nickname) && normKey(nickname) !== prevKey) {
+        socket.emit("player:nameUpdated", { ok: false, reason: "사용할 수 없는 이름입니다. 다른 이름을 입력해주세요." });
+        return;
+      }
 
       /* 이름 변경 전 검사 — 대상 이름 충돌과 비용을 선점 확인한다 */
       let renameCost = 0;
