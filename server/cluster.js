@@ -22,6 +22,7 @@ const RELAY_HEADER = "x-kk-cluster-relay";
 const LEASE_NAME = "kk-wordgame-game-core-v1";
 const DEFAULT_LEASE_TTL_MS = 30000;
 const DEFAULT_LEASE_WAIT_MS = 35000;
+const DEFAULT_TAKEOVER_GRACE_MS = 20000;
 const NODE_STALE_MS = 120000;
 
 function trimTrailingSlash(value) {
@@ -39,22 +40,44 @@ function normalizeServiceUrl(value) {
   }
 }
 
+function toTimeMs(value) {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (!value) return 0;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 /* 같은 서비스(Render)의 새 배포만 lease를 인계한다.
-   - 공개 URL이 같아야 한다(다른 서비스/다른 DB 코어는 제외).
-   - 새 인스턴스의 커밋이 있어야 하고, 기존 소유자의 커밋과 달라야 한다.
-   - 기존 소유자가 커밋을 기록하지 않던 구버전이면 최초 1회 인계를 허용한다.
-   같은 커밋으로 인스턴스를 여러 개 늘리는 스케일아웃은 인계하지 않는다. */
+   - 같은 서비스여야 한다(Render 서비스 ID 우선, 없으면 공개 URL).
+   - 커밋이 다르면 새 배포이므로 즉시 인계한다.
+   - 커밋을 비교할 수 없을 때(같은 커밋 재배포, 커밋 환경변수 없음)는
+     기존 소유자가 충분히 오래 전에 기동했을 때만 인계한다. 같은 시점에
+     함께 뜬 스케일아웃 인스턴스끼리는 인계하지 않아 서로 죽이는 순환을 막는다. */
 function canTakeOverLease(opts = {}) {
   const owner = String(opts.owner || "").trim();
   const instanceId = String(opts.instanceId || "").trim();
   if (!owner || !instanceId || owner === instanceId) return false;
   const publicUrl = normalizeServiceUrl(opts.publicUrl);
   const ownerUrl = normalizeServiceUrl(opts.ownerUrl);
-  if (!publicUrl || !ownerUrl || publicUrl !== ownerUrl) return false;
+  const serviceId = String(opts.serviceId || "").trim();
+  const ownerServiceId = String(opts.ownerServiceId || "").trim();
+  const sameService = serviceId && ownerServiceId
+    ? serviceId === ownerServiceId
+    : !!publicUrl && !!ownerUrl && publicUrl === ownerUrl;
+  if (!sameService) return false;
+
   const commit = String(opts.commit || "").trim();
-  if (!commit) return false;
   const ownerCommit = String(opts.ownerCommit || "").trim();
-  return ownerCommit !== commit;
+  if (commit && ownerCommit !== commit) return true;
+
+  const startedAt = toTimeMs(opts.startedAt);
+  const ownerStartedAt = toTimeMs(opts.ownerStartedAt);
+  if (!startedAt || !ownerStartedAt) return false;
+  const graceMs = Number.isFinite(Number(opts.graceMs))
+    ? Math.max(0, Number(opts.graceMs))
+    : DEFAULT_TAKEOVER_GRACE_MS;
+  return startedAt - ownerStartedAt >= graceMs;
 }
 
 function joinTargetPath(basePath, requestUrl) {
@@ -92,7 +115,10 @@ function parseClusterConfig(env = process.env) {
     throw new Error("CLUSTER_ROLE=web 에는 CLUSTER_GAME_URL(게임 코어 주소)이 필요합니다.");
   }
 
-  const instanceId = String(env.CLUSTER_INSTANCE_ID || `${os.hostname()}-${process.pid}`).trim();
+  /* Render 인스턴스 ID를 우선 사용한다 — pid/호스트명이 같아도 인스턴스마다 고유하다. */
+  const instanceId = String(
+    env.CLUSTER_INSTANCE_ID || `${env.RENDER_INSTANCE_ID || os.hostname()}-${process.pid}`
+  ).trim();
   const publicUrl = trimTrailingSlash(
     env.CLUSTER_NODE_URL || env.RENDER_EXTERNAL_URL || env.KK_PUBLIC_URL || ""
   );
@@ -104,11 +130,18 @@ function parseClusterConfig(env = process.env) {
     gameUrl: target ? `${target.origin}${trimTrailingSlash(target.pathname)}` : "",
     instanceId: instanceId || `${os.hostname()}-${process.pid}`,
     publicUrl,
+    /* Render 서비스 ID — 공개 URL이 바뀌어도 같은 서비스의 새 배포임을 알 수 있다. */
+    serviceId: String(env.RENDER_SERVICE_ID || "").trim(),
     /* Render가 주입하는 배포 커밋 — 같은 서비스의 새 배포 판별에만 쓴다. */
     commit: String(env.RENDER_GIT_COMMIT || env.GIT_COMMIT || "").trim().slice(0, 40),
     proxyApi: String(env.CLUSTER_PROXY_API || "1") !== "0",
     leaseTtlMs: Math.max(5000, Number(env.CLUSTER_LEASE_TTL_MS) || DEFAULT_LEASE_TTL_MS),
     leaseWaitMs: Math.max(0, Number(env.CLUSTER_LEASE_WAIT_MS) || DEFAULT_LEASE_WAIT_MS),
+    /* 이 인스턴스가 시작한 시각 — 같은 커밋 재배포 판별에 쓴다. */
+    bootedAt: Date.now(),
+    takeoverGraceMs: Number.isFinite(Number(env.CLUSTER_TAKEOVER_GRACE_MS))
+      ? Math.max(0, Number(env.CLUSTER_TAKEOVER_GRACE_MS))
+      : DEFAULT_TAKEOVER_GRACE_MS,
     strictLease: String(env.CLUSTER_REQUIRE_LEASE ?? "1") !== "0"
   };
 }
@@ -378,19 +411,21 @@ function createCluster(options = {}) {
       )
     `);
     await pool.query(`ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS commit TEXT DEFAULT ''`);
+    await pool.query(`ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS service TEXT DEFAULT ''`);
   }
 
   async function registerNode(pool) {
     await pool.query(
-      `INSERT INTO cluster_nodes (id, role, url, game_url, commit, started_at, heartbeat_at)
-       VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+      `INSERT INTO cluster_nodes (id, role, url, game_url, commit, service, started_at, heartbeat_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
        ON CONFLICT (id) DO UPDATE SET
          role = EXCLUDED.role,
          url = EXCLUDED.url,
          game_url = EXCLUDED.game_url,
          commit = EXCLUDED.commit,
+         service = EXCLUDED.service,
          heartbeat_at = NOW()`,
-      [config.instanceId, config.role, config.publicUrl, config.gameUrl, config.commit]
+      [config.instanceId, config.role, config.publicUrl, config.gameUrl, config.commit, config.serviceId]
     );
   }
 
@@ -410,6 +445,22 @@ function createCluster(options = {}) {
     return r.rows.length > 0 && r.rows[0].owner === config.instanceId;
   }
 
+  /* 인계가 거부된 이유를 소유자가 바뀔 때 한 번만 남긴다. */
+  let lastBlockedKey = "";
+  function logLeaseBlocked(row) {
+    const owner = String(row?.owner || "");
+    if (!owner || owner === config.instanceId) return;
+    const key = `${owner}|${row.commit || ""}|${row.url || ""}`;
+    if (key === lastBlockedKey) return;
+    lastBlockedKey = key;
+    const ageMs = toTimeMs(row.started_at) ? Date.now() - toTimeMs(row.started_at) : null;
+    log.warn?.(
+      `[CLUSTER] 게임 코어 lease 인계 불가 — owner=${owner} commit=${row.commit || "-"} url=${row.url || "-"}` +
+      `${ageMs === null ? "" : ` (owner 기동 ${Math.round(ageMs / 1000)}초 전)`}, ` +
+      `이 인스턴스 commit=${config.commit || "-"} url=${config.publicUrl || "-"} 기동 ${Math.round((Date.now() - config.bootedAt) / 1000)}초 전`
+    );
+  }
+
   function markLeaseAcquired() {
     state.lease = "acquired";
     state.leaseOwner = config.instanceId;
@@ -420,7 +471,7 @@ function createCluster(options = {}) {
      이전 인스턴스는 다음 heartbeat에서 lease 상실을 감지하고 스스로 종료한다. */
   async function tryTakeOverLease(pool) {
     const r = await pool.query(
-      `SELECT l.owner, n.url, n.commit
+      `SELECT l.owner, n.url, n.commit, n.started_at, n.service
        FROM cluster_leases l
        LEFT JOIN cluster_nodes n ON n.id = l.owner
        WHERE l.name = $1`,
@@ -433,9 +484,18 @@ function createCluster(options = {}) {
       instanceId: config.instanceId,
       ownerUrl: row.url,
       ownerCommit: row.commit,
+      ownerStartedAt: row.started_at,
+      ownerServiceId: row.service,
+      serviceId: config.serviceId,
+      startedAt: config.bootedAt,
+      graceMs: config.takeoverGraceMs,
       commit: config.commit,
       publicUrl: config.publicUrl
-    })) return false;
+    })) {
+      state.leaseOwner = row.owner || null;
+      logLeaseBlocked(row);
+      return false;
+    }
     const upd = await pool.query(
       `UPDATE cluster_leases
        SET owner = $2, expires_at = NOW() + ($3::int * INTERVAL '1 millisecond'), updated_at = NOW()
@@ -547,7 +607,13 @@ function createCluster(options = {}) {
       const acquired = await acquireLease(pool);
       if (!acquired) {
         state.lease = "busy";
-        state.lastError = "다른 게임 코어가 lease를 보유 중입니다.";
+        state.lastError = state.leaseOwner
+          ? `다른 게임 코어가 lease를 보유 중입니다. (owner=${state.leaseOwner})`
+          : "다른 게임 코어가 lease를 보유 중입니다.";
+        log.error?.(
+          "[CLUSTER] 게임 코어 lease를 얻지 못했습니다. 같은 서비스에 게임 코어를 여러 개 띄우는 구성이면 " +
+          "추가 인스턴스를 CLUSTER_ROLE=web + CLUSTER_GAME_URL로 띄우세요."
+        );
         return { ok: false, reason: state.lastError };
       }
       startHeartbeat(pool);
@@ -640,6 +706,7 @@ function createCluster(options = {}) {
 module.exports = {
   canTakeOverLease,
   createCluster,
+  toTimeMs,
   parseClusterConfig,
   joinTargetPath,
   isSocketIoPath,

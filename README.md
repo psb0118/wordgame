@@ -182,7 +182,7 @@ Render 등 **임시 파일 시스템** 환경에서는 기본 JSON 파일 저장
 
 - 게임 코어와 웹 릴레이는 같은 PostgreSQL `DATABASE_URL`을 사용해야 합니다.
 - 게임 코어는 시작할 때 `cluster_leases`에 lease를 잡습니다. 같은 DB에서 두 번째 게임 코어가 뜨면 lease를 얻지 못하고 종료합니다. `cluster_nodes`에는 살아있는 인스턴스 heartbeat가 기록됩니다.
-- Render처럼 새 인스턴스를 먼저 띄우는 배포에서는 **같은 서비스 URL + 다른 `RENDER_GIT_COMMIT`**일 때만 새 인스턴스가 lease를 인계합니다. 인계 직후 이전 인스턴스는 다음 heartbeat에서 lease 상실을 감지하고 종료합니다. 같은 커밋으로 인스턴스 수를 늘리는 스케일아웃은 인계하지 않습니다.
+- Render처럼 새 인스턴스를 먼저 띄우는 배포에서는 새 인스턴스가 lease를 인계받습니다. 조건은 **같은 서비스**(`RENDER_SERVICE_ID`, 없으면 같은 공개 URL)이고 (a) `RENDER_GIT_COMMIT`이 기존 소유자와 다르거나, (b) 커밋을 비교할 수 없을 때(같은 커밋 재배포·커밋 정보 없음) 기존 소유자가 `CLUSTER_TAKEOVER_GRACE_MS`(기본 20000ms)보다 오래 전에 기동한 경우입니다. 인계 직후 이전 인스턴스는 다음 heartbeat에서 lease 상실을 감지하고 종료합니다. 같은 시점에 함께 뜬 인스턴스로 수를 늘리는 스케일아웃은 인계하지 않으므로, 게임 코어를 늘리지 말고 추가 인스턴스는 `CLUSTER_ROLE=web`으로 띄우세요.
 - `/api/health`와 `/api/cluster/status`는 웹 릴레이에서도 로컬로 응답합니다. 나머지 `/api`는 기본적으로 게임 코어로 프록시합니다(`CLUSTER_PROXY_API=0`으로 끌 수 있음).
 - Socket.IO는 게임 코어에만 붙으므로 **sticky session이 필요 없습니다.** 웹 릴레이는 HTTP 폴링과 WebSocket 업그레이드를 모두 프록시합니다. 게임 코어에는 30초 `connectionStateRecovery`가 켜져 있어 짧은 끊김 뒤 방 복구를 돕습니다.
 - 웹 릴레이의 `CLUSTER_GAME_URL`은 게임 코어 자신의 주소여야 하며, 웹 릴레이 자신을 가리키면 순환으로 판정해 `508`을 반환합니다. Render에서는 게임 코어를 별도 서비스(또는 별도 인스턴스 URL)로 두고 웹 서비스에서 그 주소를 지정하세요.

@@ -71,6 +71,11 @@ test("cluster config defaults to a single game core and requires a URL for web r
     () => parseClusterConfig({ CLUSTER_GAME_URL: "file:///tmp/game" }),
     /http/
   );
+
+  /* Render 인스턴스/서비스 ID를 인스턴스 식별자로 우선 사용한다. */
+  const render = parseClusterConfig({ RENDER_INSTANCE_ID: "inst-1", RENDER_SERVICE_ID: "srv-1" });
+  assert.equal(render.instanceId, `inst-1-${process.pid}`);
+  assert.equal(render.serviceId, "srv-1");
 });
 
 test("relay only proxies socket.io and stateful API paths", () => {
@@ -186,24 +191,69 @@ test("web relay rejects proxying to its own origin", async (t) => {
 });
 
 
-test("deploy takeover requires the same service and a different commit", () => {
-  const base = { instanceId: "new", publicUrl: "https://svc.example.com", commit: "newsha" };
+test("deploy takeover requires the same service and a newer start", () => {
+  const now = Date.now();
+  const base = {
+    instanceId: "new",
+    publicUrl: "https://svc.example.com",
+    commit: "newsha",
+    startedAt: now,
+    ownerStartedAt: new Date(now - 10 * 60 * 1000)
+  };
   assert.equal(canTakeOverLease({ ...base, owner: "old", ownerUrl: "https://svc.example.com/", ownerCommit: "oldsha" }), true);
   assert.equal(canTakeOverLease({ ...base, owner: "old", ownerUrl: "https://svc.example.com", ownerCommit: "" }), true);
-  assert.equal(canTakeOverLease({ ...base, owner: "old", ownerUrl: "https://svc.example.com", ownerCommit: "newsha" }), false);
   assert.equal(canTakeOverLease({ ...base, owner: "old", ownerUrl: "https://other.example.com", ownerCommit: "oldsha" }), false);
-  assert.equal(canTakeOverLease({ ...base, commit: "", owner: "old", ownerUrl: "https://svc.example.com", ownerCommit: "oldsha" }), false);
   assert.equal(canTakeOverLease({ ...base, owner: "", ownerUrl: "https://svc.example.com", ownerCommit: "oldsha" }), false);
+
+  /* Render 서비스 ID가 양쪽에 있으면 URL이 달라도 같은 서비스로 본다. */
+  assert.equal(canTakeOverLease({
+    ...base, owner: "old", ownerUrl: "https://old.example.com", ownerCommit: "oldsha",
+    serviceId: "srv-1", ownerServiceId: "srv-1"
+  }), true);
+  assert.equal(canTakeOverLease({
+    ...base, owner: "old", ownerUrl: "https://svc.example.com", ownerCommit: "oldsha",
+    serviceId: "srv-1", ownerServiceId: "srv-2"
+  }), false);
+
+  /* 같은 커밋 재배포 · 커밋 정보 없음 — 오래 떠 있던 소유자만 인계한다. */
+  assert.equal(canTakeOverLease({ ...base, owner: "old", ownerUrl: "https://svc.example.com", ownerCommit: "newsha" }), true);
+  assert.equal(canTakeOverLease({ ...base, commit: "", owner: "old", ownerUrl: "https://svc.example.com", ownerCommit: "oldsha" }), true);
+  assert.equal(canTakeOverLease({ ...base, commit: "", owner: "old", ownerUrl: "https://svc.example.com", ownerCommit: "" }), true);
+  /* 같은 시점에 뜬 스케일아웃 인스턴스는 인계하지 않는다. */
+  assert.equal(canTakeOverLease({
+    ...base,
+    owner: "old",
+    ownerUrl: "https://svc.example.com",
+    ownerCommit: "newsha",
+    ownerStartedAt: new Date(now - 2000)
+  }), false);
+  assert.equal(canTakeOverLease({
+    ...base,
+    commit: "",
+    owner: "old",
+    ownerUrl: "https://svc.example.com",
+    ownerCommit: "",
+    ownerStartedAt: new Date(now - 5000),
+    graceMs: 60000
+  }), false);
 });
 
 test("a same-service deploy takes over the game-core lease", async () => {
   const queries = [];
   const pool = {
-    async query(sql, params = []) {
+    async query(sql) {
       const text = String(sql);
       queries.push(text);
       if (text.includes("SELECT l.owner")) {
-        return { rows: [{ owner: "old", url: "https://svc.example.com", commit: "oldsha" }], rowCount: 1 };
+        return {
+          rows: [{
+            owner: "old",
+            url: "https://svc.example.com",
+            commit: "oldsha",
+            started_at: new Date(Date.now() - 10 * 60 * 1000)
+          }],
+          rowCount: 1
+        };
       }
       if (text.includes("UPDATE cluster_leases") && text.includes("owner = $4")) {
         return { rows: [{ owner: "new" }], rowCount: 1 };
@@ -228,5 +278,40 @@ test("a same-service deploy takes over the game-core lease", async () => {
   assert.equal(started.ok, true);
   assert.equal(cluster.state.lease, "acquired");
   assert.ok(queries.some(sql => sql.includes("owner = $4")), "takeover update was issued");
+  await cluster.stop(pool);
+});
+
+test("a redeploy of the same commit takes over a long-running core", async () => {
+  const pool = {
+    async query(sql) {
+      const text = String(sql);
+      if (text.includes("SELECT l.owner")) {
+        return {
+          rows: [{
+            owner: "old",
+            url: "https://svc.example.com",
+            commit: "samesha",
+            started_at: new Date(Date.now() - 60 * 60 * 1000)
+          }],
+          rowCount: 1
+        };
+      }
+      if (text.includes("UPDATE cluster_leases")) return { rows: [{ owner: "new" }], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    }
+  };
+  const cluster = createCluster({
+    env: {
+      CLUSTER_ROLE: "game",
+      CLUSTER_INSTANCE_ID: "new",
+      CLUSTER_NODE_URL: "https://svc.example.com",
+      RENDER_GIT_COMMIT: "samesha",
+      CLUSTER_LEASE_WAIT_MS: "0"
+    },
+    log: { log() {}, warn() {}, error() {} }
+  });
+  const started = await cluster.start(pool);
+  assert.equal(started.ok, true);
+  assert.equal(cluster.state.lease, "acquired");
   await cluster.stop(pool);
 });
