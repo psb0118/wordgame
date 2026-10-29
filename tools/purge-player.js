@@ -2,6 +2,8 @@
    사용법:
      DATABASE_URL=<External Database URL> node tools/purge-player.js 정재           # dry-run (보고만)
      DATABASE_URL=<External Database URL> node tools/purge-player.js 정재 --apply   # 백업 후 실제 삭제
+     DATABASE_URL=<External Database URL> node tools/purge-player.js --placeholders          # 입력창 안내문이 이름이 된 행 전체
+     DATABASE_URL=<External Database URL> node tools/purge-player.js --placeholders --apply  # 위 대상 실제 삭제
 
    TLS는 기본적으로 시스템 CA로 서버 인증서를 검증한다. URL에 sslmode=no-verify /
    disable이 있어도 무시하고 항상 검증한다. 사설 CA를 쓰는 DB라면
@@ -19,12 +21,22 @@ const { Client } = require("pg");
 const fs = require("fs");
 const path = require("path");
 
-const target = String(process.argv[2] || "").trim();
+/* 입력창 안내문이 그대로 계정 이름이 된 행 — 실행할 때마다 손으로 나열하지 않도록 한 번에 처리한다.
+   '플레이어'(이름을 정하지 않은 게스트)는 전적이 있을 수 있어 여기 넣지 않는다. */
+const PLACEHOLDER_NICKS = [
+  "닉네임", "닉네임입력", "닉네임을입력하세요", "이름", "이름입력", "정보", "undefined", "null"
+];
+const PURGE_PLACEHOLDERS = process.argv.includes("--placeholders");
+const rawArg = String(process.argv[2] || "").trim();
+const target = rawArg.startsWith("--") ? "" : rawArg;
 const APPLY = process.argv.includes("--apply");
 const normKey = (s) => String(s || "").replace(/\s+/g, "").toLowerCase();
 const T = normKey(target);
 
-if (!target) { console.error("사용법: node tools/purge-player.js <닉네임> [--apply]"); process.exit(2); }
+if (!target && !PURGE_PLACEHOLDERS) {
+  console.error("사용법: node tools/purge-player.js <닉네임|--placeholders> [--apply]");
+  process.exit(2);
+}
 if (!process.env.DATABASE_URL) { console.error("DATABASE_URL 환경변수가 없습니다. (Render > DB > External Database URL)"); process.exit(2); }
 
 const deepHas = (v) => {
@@ -237,4 +249,51 @@ async function main() {
   await db.end();
 }
 
-main().catch((e) => { console.error("오류:", e.message); process.exit(1); });
+/* --placeholders — DB에서 대상 행을 찾아 이름마다 기존 삭제 절차를 그대로 실행한다.
+   실제 계정(firebase_uid)이 붙은 행은 건드리지 않는다. */
+async function purgePlaceholders() {
+  let ssl;
+  try {
+    ssl = resolveSslConfig();
+  } catch (error) {
+    console.error("DATABASE_CA_CERT 인증서를 읽지 못했습니다:", error.message);
+    process.exit(2);
+  }
+  const db = new Client({ connectionString: secureConnectionString(process.env.DATABASE_URL), ssl });
+  await db.connect();
+  let rows;
+  try {
+    rows = (await db.query("SELECT id, nickname, firebase_uid FROM players")).rows;
+  } finally {
+    await db.end();
+  }
+
+  const names = [];
+  const skipped = [];
+  for (const row of rows) {
+    const key = normKey(row.nickname);
+    if (!PLACEHOLDER_NICKS.includes(key)) continue;
+    if (String(row.firebase_uid || "").trim()) { skipped.push(`${row.nickname}(uid)`); continue; }
+    if (names.includes(row.nickname)) continue;
+    names.push(row.nickname);
+  }
+
+  console.log(`\nplaceholder 행: ${names.length}개 ${names.length ? "→ " + names.join(", ") : ""}`);
+  if (skipped.length) console.log(`건너뜀(로그인 계정에 연결됨): ${skipped.join(", ")}`);
+  if (!names.length) { console.log("삭제할 placeholder 행이 없습니다."); return; }
+
+  const { spawnSync } = require("child_process");
+  for (const name of names) {
+    console.log(`\n### '${name}' ${APPLY ? "삭제" : "확인"}`);
+    const args = [__filename, name].concat(APPLY ? ["--apply"] : []);
+    const res = spawnSync(process.execPath, args, { stdio: "inherit", env: process.env });
+    if (res.status !== 0) {
+      console.error(`'${name}' 처리 실패 (exit ${res.status})`);
+      process.exitCode = 1;
+    }
+  }
+  if (!APPLY) console.log("\n[DRY-RUN] 실제 삭제는 --apply 를 붙여 다시 실행하세요.");
+}
+
+(PURGE_PLACEHOLDERS ? purgePlaceholders : main)
+  .catch((e) => { console.error("오류:", e.message); process.exit(1); });
