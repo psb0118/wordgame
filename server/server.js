@@ -816,11 +816,22 @@ function writeStoreFile(filePath, value, key) {
 }
 
 
-/* 실사용자 이름이 없는 레코드(소켓 ID 키 + '플레이어' 닉네임)는 고스트로 분류 —
+/* 입력창 placeholder나 테스트 입력이 그대로 계정 이름이 된 경우 — 랭킹에 노출하지 않는다.
+   실제 사용자가 붙인 이름과 겹치지 않도록 정확히 일치할 때만 걸러낸다. */
+const PLACEHOLDER_NICKS = new Set([
+  "플레이어", "닉네임", "닉네임입력", "닉네임을입력하세요", "이름", "이름입력",
+  "정보", "undefined", "null"
+]);
+
+function isPlaceholderNickname(nickname) {
+  const key = normKey(nickname);
+  return !key || PLACEHOLDER_NICKS.has(key);
+}
+
+/* 실사용자 이름이 없는 레코드(소켓 ID 키 + placeholder 닉네임)는 고스트로 분류 —
    랭킹/리더보드에서 제외하고, 계정을 만들면 사라진다 */
 function isGhostRecord(p) {
-  const n = String(p?.nickname || "").trim();
-  return !(n.length > 0 && normKey(n) !== normKey("플레이어"));
+  return isPlaceholderNickname(p?.nickname);
 }
 
 /* 같은 닉네임(단일 계정) 레코드 2개를 하나로 병합 — 과거 소켓 ID 기준 저장 데이터 정규화용 */
@@ -4557,7 +4568,7 @@ app.get("/api/leaderboard", async (req, res) => {
       let entries;
       if (seasonKey) {
         const hist = getSeasonStore().history.find(h => h.season === seasonKey);
-        entries = hist ? (hist.top || []).map(t => ({
+        entries = hist ? (hist.top || []).filter(t => !isPlaceholderNickname(t.nickname)).map(t => ({
           id: t.nickname, nickname: t.nickname,
           rating: Number(t.rating) || 0, wins: Number(t.wins) || 0,
           losses: Number(t.losses) || 0,
@@ -4567,7 +4578,7 @@ app.get("/api/leaderboard", async (req, res) => {
       } else {
         const key = currentSeasonKey();
         entries = (await listAllPlayers())
-          .filter(p => p.season && p.season.season === key && (p.season.games || 0) > 0)
+          .filter(p => p.season && p.season.season === key && (p.season.games || 0) > 0 && !isPlaceholderNickname(p.nickname))
           .map(p => ({
             id: p.id, nickname: p.nickname || "플레이어",
             rating: Number(p.season.rating) || 1000,
@@ -4713,7 +4724,7 @@ app.get("/api/leaderboard", async (req, res) => {
     const seenNicks = new Set();
     const filtered = rows.filter(r => {
       const k = String(r.nickname || "").trim();
-      if (!k || !normKey(k) || normKey(k) === normKey("플레이어")) return false;
+      if (isPlaceholderNickname(k)) return false;
       if (seenNicks.has(k)) return false;
       seenNicks.add(k);
       return true;
@@ -7608,6 +7619,11 @@ io.on("connection", (socket) => {
       }
       if (nickname.length > 12) {
         socket.emit("player:nameUpdated", { ok: false, reason: "이름은 12자 이내로 입력해주세요." });
+        return;
+      }
+      /* 입력창 안내문이 그대로 이름으로 저장되던 경로 차단 */
+      if (isPlaceholderNickname(nickname)) {
+        socket.emit("player:nameUpdated", { ok: false, reason: "사용할 수 없는 이름입니다. 다른 이름을 입력해주세요." });
         return;
       }
       /* 운영 제재 — 밴 계정은 이름을 설정할 수 없다 */

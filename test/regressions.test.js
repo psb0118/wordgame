@@ -131,7 +131,7 @@ function context(extra = {}) {
     requireNickname: async () => ({ ok: true, role: "super", nickname: "admin" }),
     ...extra,
   });
-  for (const name of ["normKey", "MODE_DEFAULT", "SEASON_DEFAULT", "REACT_EMOJIS", "REACT_COOLDOWN_MS",
+  for (const name of ["normKey", "PLACEHOLDER_NICKS", "MODE_DEFAULT", "SEASON_DEFAULT", "REACT_EMOJIS", "REACT_COOLDOWN_MS",
     "REFERRAL_JOIN_COIN", "REFERRAL_INVITE_COIN", "MAIL_MAX", "MAIL_COIN_MAX", "PLAYER_COLUMN_KEYS",
     "GUILD_MAX_MEMBERS", "GUILD_CREATE_COIN", "SEA_TITLE", "RENAME_PRICE",
     "CHAT_MAX_LEN", "CHAT_COOLDOWN_MS", "CHAT_WINDOW_MS", "CHAT_WINDOW_MAX",
@@ -180,7 +180,7 @@ function context(extra = {}) {
     "beginEconomyTx", "finishEconomyTx", "abortEconomyTx", "getEconomyHistory",
     "chatRateKey", "takeChatSlot", "renameEconomyAccount",
     "safeEconomyRequestId", "recordAchievementLedger", "getEconomySummary", "recordWelcomeLedger",
-    "isGhostRecord", "bumpSeasonFor", "computeMoneyReward", "rollMoney",
+    "isPlaceholderNickname", "isGhostRecord", "bumpSeasonFor", "computeMoneyReward", "rollMoney",
     "normalizeRecoveryCode", "randomRecoveryCode", "hashRecoveryCode", "sameRecoveryHash",
     "recoveryAttemptAllowed", "issueLinkCode", "redeemLinkCode", "adoptAccountForSocket",
     "addToTournamentQueue", "removeFromTournamentQueue", "broadcastTournamentQueue",
