@@ -14,6 +14,7 @@ const { createPushManager, shouldNotifyTurn } = require("./push.js");
 const wordbookStore = require("./wordbook.js");
 const replayShare = require("./replay-share.js");
 const netLimit = require("./net-limit.js");
+const roomSnapshots = require("./room-snapshot.js");
 const {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
   loadData, hasWord, getAttackDepth, isAttackWord,
@@ -114,6 +115,7 @@ try {
 }
 const PUSH_STORE_PATH = path.join(RUNTIME_DATA_DIR, "push.json");
 const GUILD_WEEK_STORE_PATH = path.join(RUNTIME_DATA_DIR, "guild-week.json");
+const ROOMS_SNAPSHOT_PATH = path.join(RUNTIME_DATA_DIR, "rooms.json");
 /* 관전자 — 방마다 최대 인원. 플레이어 정원과 별개다. */
 const MAX_SPECTATORS = 30;
 let MAX_HEARTS = 2;
@@ -3599,6 +3601,7 @@ function getPublicRoomState(room) {
     hostSocketId: room.hostSocketId,
     mode: room.mode,
     practice: !!room.practice,
+    restored: !!room.restored,
     tournament: !!room.tournament,
     tournamentId: room.tournamentId || null,
     currentWord: room.currentWord,
@@ -3651,6 +3654,43 @@ function getPublicRoomState(room) {
 function broadcastRoomState(room) {
   if (!room) return;
   io.to(room.id).emit("game:state", getPublicRoomState(room));
+  scheduleRoomSnapshot();
+}
+
+/* =========================================================
+   방 스냅샷 — 진행 중 방을 저장하고 재시작 뒤 재접속으로 복구
+========================================================= */
+let roomSnapshotSaveTimer = null;
+let roomSnapshotSavedAt = 0;
+
+function saveRoomSnapshotsNow() {
+  try {
+    const payload = roomSnapshots.collectRooms(ROOMS.values(), { now: Date.now() });
+    writeStoreFile(ROOMS_SNAPSHOT_PATH, payload, "rooms");
+    roomSnapshotSavedAt = Date.now();
+  } catch (err) {
+    console.error("방 스냅샷 저장 실패:", err.message);
+  }
+}
+
+/* 잠금 없이도 과도한 파일 쓰기를 막는다 — 5초에 최대 1회 */
+function scheduleRoomSnapshot() {
+  if (roomSnapshotSaveTimer) return;
+  const wait = Math.max(0, 5000 - (Date.now() - roomSnapshotSavedAt));
+  roomSnapshotSaveTimer = setTimeout(() => {
+    roomSnapshotSaveTimer = null;
+    saveRoomSnapshotsNow();
+  }, wait);
+  if (roomSnapshotSaveTimer.unref) roomSnapshotSaveTimer.unref();
+}
+
+async function restoreRoomSnapshots() {
+  const payload = await loadStoreJSON("rooms", ROOMS_SNAPSHOT_PATH, null);
+  const rooms = roomSnapshots.restoreRooms(payload, { now: Date.now() });
+  for (const room of rooms) {
+    if (!ROOMS.has(room.id)) ROOMS.set(room.id, room);
+  }
+  return rooms.length;
 }
 
 /* =========================================================
@@ -4915,9 +4955,14 @@ io.on("connection", (socket) => {
         const prev = disconnectedPlayers.get(oldId);
         if (prev) { clearTimeout(prev.timer); disconnectedPlayers.delete(oldId); }
         disconnectedPlayers.delete(socket.id);
+        if (!room.hostSocketId) room.hostSocketId = socket.id;
         if (room.started && !room.finished) {
           stopTurnTimer(room);
           startTurnTimer(room, room.gameSessionId);
+        }
+        if (room.restored && roomSnapshots.allHumansConnected(room)) {
+          room.restored = false;
+          io.to(room.id).emit("room:resumed", { roomId: room.id, state: getPublicRoomState(room) });
         }
         socket.emit("room:joined", { ok: true, roomId: room.id, playerIndex: reconnected.playerIndex, reconnect: true, waiting: reconnected.waiting, state: getPublicRoomState(room) });
         io.to(room.id).emit("room:playerJoined", { playerIndex: reconnected.playerIndex, nickname, reconnect: true, state: getPublicRoomState(room) });
@@ -7978,6 +8023,11 @@ initDatabase().then(async () => {
   if (cluster.isGameCore) {
     await pushManager.init();
     await loadGuildWeekStore();
+    /* 재시작 전에 저장한 방을 복구한다 — 플레이어가 재접속하면 이어서 진행된다. */
+    const restoredRooms = await restoreRoomSnapshots();
+    if (restoredRooms > 0) console.log(`[ROOM RESTORE] ${restoredRooms}개 방 복구 — 재접속 대기`);
+    const roomSnapshotInterval = setInterval(saveRoomSnapshotsNow, 15000);
+    if (roomSnapshotInterval.unref) roomSnapshotInterval.unref();
   }
   /* 시즌 전환은 게임 코어에서만 실행한다. web 인스턴스가 여러 개 떠도
      같은 시즌 마감/보상 지급이 중복 실행되지 않도록 하기 위함이다. */
@@ -8044,6 +8094,7 @@ function startKeepAlivePing() {
 
 function shutdown(signal) {
   for (const room of ROOMS.values()) stopTurnTimer(room);
+  saveRoomSnapshotsNow();
   if (chatSaveTimer) { clearTimeout(chatSaveTimer); chatSaveTimer = null; saveChatHistoryNow(); }
   Promise.resolve(cluster.stop(dbPool)).catch(() => {})
     .then(() => flushFirebaseScores())

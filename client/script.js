@@ -1356,6 +1356,15 @@ function initSocket() {
     }
   });
 
+  socket.on("room:resumed", (data) => {
+    noteRestoredRoom({ restored: false });
+    if (data && data.state) {
+      gameState = data.state;
+      renderGameState(gameState);
+      updateInputState();
+    }
+  });
+
   socket.on("room:joined", (data) => {
     if (!data.ok) return;
     if (isStaleAIEvent(null, data.state)) return;
@@ -1373,6 +1382,7 @@ function initSocket() {
     roomId = data.roomId;
     playerIndex = data.playerIndex;
     spectating = false;
+    noteRestoredRoom(data.state);
     /* 방(온라인/랭크)에 들어가면 방 채팅으로, AI 방이면 전체 채팅 유지 */
     if (data.state && data.state.mode !== "ai") {
       clearChat();
@@ -1717,6 +1727,7 @@ function initSocket() {
     const wasMyTurn = gameState && gameState.turnPlayer === playerIndex;
     gameState = data;
     renderGameState(gameState);
+    noteRestoredRoom(data);
     const isMyTurn = data.turnPlayer === playerIndex;
     if (isMyTurn) {
       submitting = false;
@@ -3311,6 +3322,21 @@ function chatScopeNow() {
   const mode = gameState && gameState.mode;
   if (spectating && roomId && mode && mode !== "ai") return "spectate";
   return (roomId && mode && mode !== "ai") ? "room" : "global";
+}
+
+/* 복구된 방 안내 — 서버 재시작 뒤 전원 재접속으로 재개될 때까지 보여준다. */
+let restoredNoticeShown = false;
+function noteRestoredRoom(state) {
+  if (!state) return;
+  if (state.restored) {
+    if (!restoredNoticeShown) {
+      restoredNoticeShown = true;
+      showMessage("서버 재시작으로 복구된 방입니다. 모든 플레이어가 다시 입장하면 재개됩니다.", "info");
+    }
+  } else if (restoredNoticeShown) {
+    restoredNoticeShown = false;
+    showMessage("복구된 게임이 재개되었습니다.", "success");
+  }
 }
 
 /* -- 리액션 · 입력 중 · 관전자 표시 ---------------------- */
