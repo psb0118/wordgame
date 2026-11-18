@@ -153,6 +153,41 @@ npm run dev:neon
 3. 저장 후 새 배포가 완료되면 `https://<서비스주소>/api/health`가 HTTP 200이고 `db`가 `"postgres"`인지 확인합니다.
 4. `https://<서비스주소>/api/dictionary/definition?word=나무`를 호출해 HTTP 200과 `source: "우리말샘"`, 하나 이상의 `entries`가 반환되는지 확인합니다. `503`이면 API 키 환경 변수 저장과 새 배포 여부를 확인하세요.
 
+### PostgreSQL 호스트 장애 복구 (`getaddrinfo ENOTFOUND`)
+
+빌드와 업로드는 성공하는데 실행 로그에 아래가 반복되고 서버가 종료되면 앱 코드가 아니라 **DB 엔드포인트 문제**입니다.
+
+```
+PostgreSQL 연결 실패 (1/5): getaddrinfo ENOTFOUND dpg-xxxx-a
+서버 시작 실패: PostgreSQL 연결에 실패했습니다 (5회 재시도)
+```
+
+`dpg-...` 형태의 Internal Database URL은 같은 Render 계정·같은 리전의 서비스에서만 해석됩니다. 호스트가 조회되지 않는다는 것은 DB가 삭제·만료·정지됐거나, `DATABASE_URL`이 다른 계정/리전의 옛 DB를 가리킨다는 뜻입니다.
+
+**Render 무료 PostgreSQL 만료 규칙**
+- 생성 30일 후 만료되어 접속할 수 없습니다.
+- 만료 후 14일 유예 기간 안에 유료 플랜으로 업그레이드하면 기존 데이터를 유지할 수 있습니다.
+- 유예 기간이 끝나면 DB와 모든 데이터가 삭제됩니다. 무료 플랜은 자동 백업이 없습니다.
+- 만료된 DB를 삭제만 하고 `DATABASE_URL`을 그대로 두면 배포는 계속 실패합니다.
+
+**복구 순서**
+1. Render 대시보드 → **Databases**에서 `wordgame-db` 상태를 확인합니다. `Available`이 아니면 만료·정지·삭제 여부를 확인하세요.
+2. 아직 14일 유예 기간이라면 해당 DB를 유료 플랜으로 업그레이드하는 것이 데이터를 살리는 유일한 방법입니다.
+3. 이미 삭제됐다면 새 PostgreSQL을 만듭니다. 이전 데이터는 백업이 없으면 복구할 수 없습니다.
+4. 새 DB의 **Connect** 탭에서 **Internal Database URL**을 복사합니다 (External URL이나 `psql` 명령이 아님).
+5. **wordgame** → Environment → `DATABASE_URL`을 새 URL로 교체합니다. 게임 코어와 웹 릴레이를 별도 서비스로 운영한다면 둘 다 같은 URL로 바꿉니다.
+6. 새 DB가 `Available`이 된 뒤 웹 서비스를 재배포합니다. DB보다 웹을 먼저 띄우면 같은 오류로 종료됩니다.
+7. `https://<서비스주소>/api/health`에서 `"db":"postgres"`인지 확인합니다.
+
+긴급하게 웹만 띄워야 한다면 `ALLOW_JSON_FALLBACK=1`을 설정할 수 있지만, Render의 임시 파일 시스템에서는 재배포·재시작 시 데이터가 유실됩니다. 운영 데이터가 있다면 사용하지 마세요.
+
+`DATABASE_URL`은 절대 Git·README·로그에 남기지 말고 Render Environment의 비밀 변수로만 관리하세요. 호스트가 바뀐 직후 일시적인 연결 실패가 반복되면 `DB_CONNECT_ATTEMPTS`(기본 5)와 `DB_CONNECT_RETRY_MS`(기본 2000)를 늘려 재시도 여유를 줄 수 있습니다.
+
+**만료된 DB를 삭제해도 되는 경우**
+- 기존 데이터가 필요 없고 새 PostgreSQL을 만들 계획이라면 삭제해도 됩니다.
+- 삭제 전에 반드시 `DATABASE_URL`을 새 DB URL로 교체하거나 변수를 제거해야 합니다. 그대로 두면 다음 배포도 `ENOTFOUND`로 실패합니다.
+- 유예 기간이 남아 있고 데이터를 살리고 싶다면 삭제하지 말고 유료 플랜으로 업그레이드하세요.
+
 ## 데이터 저장 (초기화 방지)
 서버는 플레이어·시즌·친구·관리자 설정·단어 신청·버그 제보 데이터를 저장합니다.
 Render 등 **임시 파일 시스템** 환경에서는 기본 JSON 파일 저장 방식이 재배포/재시작 시 초기화되므로 아래 설정을 사용하세요.
