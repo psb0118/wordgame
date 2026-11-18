@@ -61,4 +61,4 @@ function merge(items, incoming) {
   return list;
 }
 
-module.exports = { MAX_ITEMS, MAX_WORD_LENGTH, cleanWord, sanitize, add, remove, merge };
+module.exports = { MAX_ITEMS, sanitize, add, remove, merge };

@@ -706,15 +706,11 @@ function createCluster(options = {}) {
 module.exports = {
   canTakeOverLease,
   createCluster,
-  toTimeMs,
   parseClusterConfig,
   joinTargetPath,
   isSocketIoPath,
   isApiPath,
   isLocalApiPath,
   shouldProxyPath,
-  normalizeHost,
-  sameOriginAsTarget,
-  LEASE_NAME,
   RELAY_HEADER
 };

@@ -282,10 +282,7 @@ function createPushManager(opts = {}) {
 }
 
 module.exports = {
-  MAX_SUBS_PER_ACCOUNT,
   sanitizeSubscription,
-  isBlockedPushHost,
   shouldNotifyTurn,
-  buildPayload,
   createPushManager
 };

@@ -194,12 +194,8 @@ function allHumansConnected(room) {
 }
 
 module.exports = {
-  SNAPSHOT_VERSION,
-  MAX_ROOMS,
   MAX_AGE_MS,
-  shouldPersist,
   serializeRoom,
-  deserializeRoom,
   collectRooms,
   restoreRooms,
   allHumansConnected

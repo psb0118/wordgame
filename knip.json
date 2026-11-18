@@ -1,0 +1,17 @@
+{
+  "entry": [
+    "client/script.js",
+    "client/live-ui.js",
+    "client/firebase-auth.js",
+    "client/firebase-config.js",
+    "client/sw.js",
+    "tools/purge-player.js",
+    "test/**/*.test.js"
+  ],
+  "project": [
+    "server/**/*.js",
+    "client/**/*.js",
+    "test/**/*.js",
+    "tools/**/*.js"
+  ]
+}

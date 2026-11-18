@@ -10,7 +10,8 @@
     "dev:neon": "node --env-file-if-exists=.env.local --watch server/server.js",
     "start:neon": "node --env-file-if-exists=.env.local server/server.js",
     "test": "node --test",
-    "lint": "eslint client server test tools"
+    "lint": "eslint client server test tools",
+    "knip": "knip"
   },
   "dependencies": {
     "express": "^5.1.0",
@@ -22,6 +23,7 @@
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.16",
     "eslint": "^10.15.0",
-    "globals": "^17.14.0"
+    "globals": "^17.14.0",
+    "knip": "^4.6.0"
   }
 }

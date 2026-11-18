@@ -1161,8 +1161,8 @@ function initSocket() {
     if (list) list.scrollTop = list.scrollHeight;
   });
   socket.on("chat:cleared", () => { globalChatCache = []; clearChat(); });
-  socket.on("chat:typing", (data) => showTyping(data));
-  socket.on("game:react", (data) => showReactionBubble(data));
+  socket.on("chat:typing", (data) => window.LiveUI.showTyping(data));
+  socket.on("game:react", (data) => window.LiveUI.showReactionBubble(data));
   socket.on("react:error", (data) => { if (data && data.reason) showMessage(data.reason, "info"); });
 
   /* 관전자 수 갱신 — 플레이어/관전자 모두 같은 방 이벤트를 받는다 */
@@ -1175,7 +1175,7 @@ function initSocket() {
         : [];
     }
     renderRoomInfo(gameState);
-    renderSpectatorLine(data);
+    window.LiveUI.renderSpectatorLine(data);
     updateInputState();
   });
 
@@ -3336,81 +3336,6 @@ function noteRestoredRoom(state) {
   } else if (restoredNoticeShown) {
     restoredNoticeShown = false;
     showMessage("복구된 게임이 재개되었습니다.", "success");
-  }
-}
-
-/* -- 리액션 · 입력 중 · 관전자 표시 ---------------------- */
-const REACTION_EMOJIS = ["👍", "👏", "🔥", "😂", "🎉", "😮"];
-let lastTypingSentAt = 0;
-const typingUsers = new Map();
-
-function renderSpectatorLine(data) {
-  const el = $("#spectatorLine");
-  if (!el) return;
-  const names = Array.isArray(data && data.spectators)
-    ? data.spectators.map(s => s && s.nickname).filter(Boolean)
-    : [];
-  const count = Math.max(0, Number(data && data.count) || names.length);
-  el.classList.toggle("hidden", count === 0);
-  el.textContent = count === 0 ? "" :
-    `👁 관전 ${count}명${names.length ? ` · ${names.slice(0, 3).join(", ")}${names.length > 3 ? " 외" : ""}` : ""}`;
-}
-
-function renderTypingLine() {
-  const el = $("#typingLine");
-  if (!el) return;
-  const names = [...typingUsers.keys()];
-  el.classList.toggle("hidden", names.length === 0);
-  el.textContent = names.length === 0 ? "" :
-    `${names.slice(0, 2).join(", ")}${names.length > 2 ? ` 외 ${names.length - 2}명` : ""} 님이 입력 중…`;
-}
-
-function showTyping(data) {
-  const nickname = String((data && data.nickname) || "").trim();
-  if (!nickname || nickname === myNickname) return;
-  clearTimeout(typingUsers.get(nickname));
-  typingUsers.set(nickname, setTimeout(() => {
-    typingUsers.delete(nickname);
-    renderTypingLine();
-  }, 3000));
-  renderTypingLine();
-}
-
-function showReactionBubble(data) {
-  if (!data || !data.emoji) return;
-  const layer = $("#reactionLayer");
-  if (!layer) return;
-  const bubble = document.createElement("div");
-  bubble.className = "reaction-bubble";
-  bubble.style.left = `${8 + Math.random() * 72}%`;
-  const emoji = document.createElement("span");
-  emoji.className = "reaction-emoji";
-  emoji.textContent = String(data.emoji);
-  const from = document.createElement("span");
-  from.className = "reaction-from";
-  from.textContent = String(data.from || "");
-  bubble.append(emoji, from);
-  layer.appendChild(bubble);
-  setTimeout(() => bubble.remove(), 2600);
-}
-
-function sendReaction(emoji) {
-  if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
-  socket.emit("game:react", { emoji });
-}
-
-function initReactionBar() {
-  const bar = $("#reactionBar");
-  if (!bar || bar.dataset.ready === "1") return;
-  bar.dataset.ready = "1";
-  for (const emoji of REACTION_EMOJIS) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = emoji;
-    btn.title = `${emoji} 리액션 보내기`;
-    btn.setAttribute("aria-label", `${emoji} 리액션 보내기`);
-    btn.addEventListener("click", () => sendReaction(emoji));
-    bar.appendChild(btn);
   }
 }
 
@@ -5651,13 +5576,15 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#chatInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); sendChat(); }
   });
-  initReactionBar();
+  window.LiveUI.init({
+    getNickname: () => myNickname,
+    canEmit: () => !!socket && socketConnected,
+    emit: (event, payload) => socket.emit(event, payload),
+    notify: showMessage
+  });
   $("#chatInput")?.addEventListener("input", () => {
     if (!socket || !socketConnected || chatScopeNow() !== "room") return;
-    const now = Date.now();
-    if (now - lastTypingSentAt < 1500) return;
-    lastTypingSentAt = now;
-    socket.emit("chat:typing");
+    window.LiveUI.onChatInput();
   });
   clearChat();
 
