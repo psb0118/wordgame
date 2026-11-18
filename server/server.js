@@ -1956,8 +1956,8 @@ async function savePlayerData(playerId, data, opts = {}) {
   if (dbMode === "pg") {
     /* 코인 변동은 저장된 잔액에 원자적으로 더한다 — 동시 지급/구매가 서로의
        갱신을 덮어쓰지 않도록 INSERT/UPDATE 모두 money 식을 차분으로 계산한다. */
-    const moneyInsert = coinDelta ? "GREATEST(0, $16 + $35)" : "$16";
-    const moneyUpdate = coinDelta ? "GREATEST(0, players.money + $35)" : "$16";
+    const moneyInsert = coinDelta ? "GREATEST(0, $16::bigint + $35::bigint)" : "$16";
+    const moneyUpdate = coinDelta ? "GREATEST(0, players.money + $35::bigint)" : "$16";
     try {
       const saved = await dbPool.query(`
         INSERT INTO players

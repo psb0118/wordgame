@@ -20,6 +20,7 @@
     "web-push": "^3.6.7"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
     "eslint": "^10.15.0",
     "globals": "^17.14.0"
   }
