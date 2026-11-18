@@ -9,7 +9,8 @@
     "dev": "node --watch server/server.js",
     "dev:neon": "node --env-file-if-exists=.env.local --watch server/server.js",
     "start:neon": "node --env-file-if-exists=.env.local server/server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "lint": "eslint client server test tools"
   },
   "dependencies": {
     "express": "^5.1.0",
@@ -17,5 +18,9 @@
     "pg": "^8.13.0",
     "socket.io": "^4.8.1",
     "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "eslint": "^10.15.0",
+    "globals": "^17.14.0"
   }
 }

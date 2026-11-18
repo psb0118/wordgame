@@ -13,6 +13,7 @@ const guildDuel = require("./guild-duel.js");
 const { createPushManager, shouldNotifyTurn } = require("./push.js");
 const wordbookStore = require("./wordbook.js");
 const replayShare = require("./replay-share.js");
+const netLimit = require("./net-limit.js");
 const {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
   loadData, hasWord, getAttackDepth, isAttackWord,
@@ -100,11 +101,27 @@ const RUNTIME_DATA_DIR = process.env.KK_DATA_DIR ? path.resolve(process.env.KK_D
 /* KK_DATA_DIR이 아직 없는 경로여도 첫 저장이 ENOENT로 조용히 실패하지 않도록 만든다. */
 try { fs.mkdirSync(RUNTIME_DATA_DIR, { recursive: true }); }
 catch (e) { console.warn("데이터 디렉터리 생성 실패:", RUNTIME_DATA_DIR, e.message); }
+/* 저장 실패를 health/metrics에 노출한다. STORAGE_STRICT=1이면 첫 실패에 기동을 중단한다. */
+let storageWriteFailures = 0;
+let storageHealthy = true;
+try {
+  const probe = path.join(RUNTIME_DATA_DIR, ".write-probe");
+  fs.writeFileSync(probe, "ok");
+  fs.unlinkSync(probe);
+} catch (e) {
+  storageHealthy = false;
+  console.error("런타임 데이터 디렉터리 쓰기 불가:", RUNTIME_DATA_DIR, e.message);
+}
 const PUSH_STORE_PATH = path.join(RUNTIME_DATA_DIR, "push.json");
 const GUILD_WEEK_STORE_PATH = path.join(RUNTIME_DATA_DIR, "guild-week.json");
 /* 관전자 — 방마다 최대 인원. 플레이어 정원과 별개다. */
 const MAX_SPECTATORS = 30;
 let MAX_HEARTS = 2;
+/* 소켓 이벤트 레이트리밋 — 정상 입력 속도는 통과, 연타/스팸만 조용히 무시한다. */
+const WORD_RATE = netLimit.createRateLimiter({ limit: 6, windowMs: 1000 });
+const WORD_REQUEST_RATE = netLimit.createRateLimiter({ limit: 10, windowMs: 60000 });
+const JOIN_RATE = netLimit.createRateLimiter({ limit: 4, windowMs: 5000 });
+const TYPING_RATE = netLimit.createRateLimiter({ limit: 1, windowMs: 1500 });
 let TURN_TIME = 20;
 let MAX_PLAYERS = 10;
 /* 2v2 파티(팀전) — 파티 모드 상수. 기존 온라인/랭크/싱글 흐름과 완전히 분리되어
@@ -391,6 +408,10 @@ function scheduleSaveChatHistory() {
 const CHAT_AUTO_MUTE_REPORTS = 3;
 const CHAT_AUTO_MUTE_MINUTES = 10;
 const chatReportCounts = new Map();   /* 대상 정규화 키 -> { firstAt, reporters: Set<신고자 키> } */
+/* 이모지 리액션 — 허용 목록 밖은 거부, 소켓당 최소 간격 제한 */
+const REACT_EMOJIS = ["👍", "👏", "🔥", "😮", "😅", "😢", "❤️", "😂", "💪", "🎉", "🤔", "😡"];
+const REACT_COOLDOWN_MS = 600;
+
 /* 반환: { ok, reason, clean } — ok면 clean에 통과한 텍스트 */
 function chatFilter(raw) {
   const text = String(raw || "").trim();
@@ -810,7 +831,12 @@ function writeStoreFile(filePath, value, key) {
       try { fs.copyFileSync(filePath, `${filePath}.bak`); } catch (e) { /* 백업 실패는 무시 */ }
     }
     fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
-  } catch (e) { console.warn(`저장소 '${key}' 파일 저장 실패:`, e.message); }
+  } catch (e) {
+    storageHealthy = false;
+    storageWriteFailures += 1;
+    console.error(`저장소 '${key}' 파일 저장 실패:`, e.message);
+    if (process.env.STORAGE_STRICT === "1") throw e;
+  }
   pgStoreSet(key, value);
 }
 
@@ -2536,8 +2562,10 @@ function broadcastRankedQueue() {
   for (const q of RANKED_QUEUE) {
     const nearbyCount = RANKED_QUEUE.reduce(
       (count, other) => count + (other !== q && Math.abs(other.rating - q.rating) <= 100 ? 1 : 0), 0);
+    const waitedMs = Math.max(0, now - q.joinedAt);
+    const etaMs = averageWaitMs != null ? Math.max(0, averageWaitMs - waitedMs) : null;
     io.to(q.socketId).emit("ranked:queueSize", {
-      size, inQueue, nearbyCount, oldestWaitMs, averageWaitMs,
+      size, inQueue, nearbyCount, oldestWaitMs, averageWaitMs, etaMs,
     });
   }
   if (size === 0) io.emit("ranked:queueSize", { size: 0, inQueue: [] });
@@ -3060,8 +3088,15 @@ function tryMatchRanked() {
        동률이면 먼저 기다린 사람(joinedAt)을 앞에 둔다. */
     RANKED_QUEUE.sort((a, b) =>
       (a.rating - b.rating) || (a.joinedAt - b.joinedAt) || String(a.socketId).localeCompare(String(b.socketId)));
-    const a = RANKED_QUEUE.shift();
-    const b = RANKED_QUEUE.shift();
+    const a = RANKED_QUEUE[0];
+    const b = RANKED_QUEUE[1];
+    /* 대기 시간이 길수록 허용 레이팅 격차를 넓힌다 — 초반은 품질, 후반은 속도. */
+    const pairNow = Date.now();
+    const pairWaitMs = Math.max(0, pairNow - Math.min(a.joinedAt, b.joinedAt));
+    const ratingWindow = Math.min(900, 150 + Math.floor(pairWaitMs / 1000) * 25);
+    if (Math.abs(a.rating - b.rating) > ratingWindow) break;
+    RANKED_QUEUE.shift();
+    RANKED_QUEUE.shift();
     RANKED_QUEUE_MAP.delete(a.socketId);
     RANKED_QUEUE_MAP.delete(b.socketId);
 
@@ -3605,6 +3640,7 @@ function getPublicRoomState(room) {
     playerCount: room.players.filter(p => !p.isBot && !p.waiting).length,
     maxPlayers: roomCapacity(room),
     spectatorCount: ensureSpectatorState(room).size,
+    spectatorNames: spectatorList(room).map(s => s.nickname).slice(0, 30),
     spectatorLimit: MAX_SPECTATORS,
     maxHearts: MAX_HEARTS,
     turnStartedAt: room.turnStartedAt,
@@ -4521,6 +4557,7 @@ app.get("/api/health", (req, res) => {
     db: dbMode === "pg" ? "postgres" : "json",
     firebase: firebaseReady,
     dataDir: RUNTIME_DATA_DIR || null,
+    storage: { ok: storageHealthy, failures: storageWriteFailures },
     uptime: process.uptime(),
     cluster: cluster.health(),
     push: pushManager.isEnabled(),
@@ -4837,6 +4874,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("room:join", (data) => {
+    if (!JOIN_RATE.allow(socket.id)) return;
     try {
       const roomId = String(data?.roomId || "").trim().toUpperCase();
       const nickname = normalizeWord(data?.nickname) || "플레이어";
@@ -4972,6 +5010,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("game:word", (data) => {
+    if (!WORD_RATE.allow(socket.id)) return;
     try {
       const room = getPlayerRoom(socket);
       if (!room) { socket.emit("game:error", { ok: false, reason: "게임 방에 참여하지 않았습니다." }); return; }
@@ -5309,6 +5348,7 @@ io.on("connection", (socket) => {
   /* 커스텀 사전 — 사용자가 새 단어를 신청한다. 신청 검증 후 pending에 추가하고,
    관리자가 승인하면 게임 사전에 반영된다. */
   socket.on("word:request", (data) => {
+    if (!WORD_REQUEST_RATE.allow(socket.id)) return;
     try {
       const nickname = normalizeWord(socketNicks.get(socket.id) || data?.nickname || "");
       if (!nickname) { socket.emit("word:requestResult", { ok: false, reason: "닉네임을 먼저 저장해주세요." }); return; }
@@ -5325,6 +5365,12 @@ io.on("connection", (socket) => {
       }
       if (customWords.pending.some(p => p.word === raw)) {
         socket.emit("word:requestResult", { ok: false, reason: "이미 승인 대기 중인 단어입니다." }); return;
+      }
+      if (customWords.pending.filter(p => normalizeWord(p.by) === nickname).length >= 3) {
+        socket.emit("word:requestResult", { ok: false, reason: "진행 중인 신청이 3개 이상입니다. 처리 후 다시 시도해주세요." }); return;
+      }
+      if (customWords.pending.length >= 200) {
+        socket.emit("word:requestResult", { ok: false, reason: "승인 대기 목록이 꽉 찼습니다. 잠시 후 다시 시도해주세요." }); return;
       }
 
       customWords.pending.push({ word: raw, by: nickname, at: Date.now(), socketId: socket.id });
@@ -6931,6 +6977,18 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("채팅 오류:", err); }
   });
 
+  /* 입력 중 표시 — 방 단위로 소켓당 1.5초에 한 번만 중계한다. */
+  socket.on("chat:typing", () => {
+    try {
+      const room = getPlayerRoom(socket);
+      if (!room || room.mode === "ai") return;
+      const me = getPlayerBySocket(room, socket.id);
+      const nickname = (me && me.nickname) || socketNicks.get(socket.id) || "";
+      if (!nickname || !TYPING_RATE.allow(socket.id)) return;
+      socket.to(room.id).except(spectatorChannel(room)).emit("chat:typing", { nickname, at: Date.now() });
+    } catch (err) { console.error("입력 중 표시 오류:", err); }
+  });
+
   /* 채팅 이력 — roomId를 주면 그 방의 이력, 없으면 전체 이력을 돌려준다.
      읽기는 로그인 없이도 허용한다(보이는 채팅), 쓰기·신고만 Google 로그인 게이트 */
   socket.on("chat:history", (data) => {
@@ -7011,6 +7069,32 @@ io.on("connection", (socket) => {
       notifySuperAdmins({ nickname: reporter, at: new Date().toISOString(), reason: "chat-report", target });
       console.log(`[CHAT REPORT] '${reporter}' → '${target}': ${text.slice(0, 60)}`);
     } catch (err) { console.error("채팅 신고 오류:", err); socket.emit("chat:reportResult", { ok: false, reason: "신고 접수에 실패했습니다." }); }
+  });
+
+  /* 이모지 리액션 — 방 전체 브로드캐스트 (뮤트·속도 제한 적용) */
+  socket.on("game:react", (data) => {
+    try {
+      const room = getPlayerRoom(socket);
+      if (!room) { socket.emit("react:error", { reason: "방에 들어와 있을 때만 리액션을 보낼 수 있습니다." }); return; }
+      const me = getPlayerBySocket(room, socket.id);
+      const nickname = (me && me.nickname) || socketNicks.get(socket.id) || "";
+      if (!nickname) { socket.emit("react:error", { reason: "닉네임을 먼저 설정해주세요." }); return; }
+      const mute = getMute(nickname, socketFirebaseUid.get(socket.id) || "");
+      if (mute) {
+        socket.emit("react:error", { reason: `리액션이 차단되었습니다${mute.reason ? ` (${mute.reason})` : ""}. 관리자에게 문의하세요.` });
+        return;
+      }
+      const emoji = String(data?.emoji || "");
+      if (!REACT_EMOJIS.includes(emoji)) {
+        socket.emit("react:error", { reason: "사용할 수 없는 이모지입니다." });
+        return;
+      }
+      const now = Date.now();
+      const sd = socket.data || (socket.data = {});
+      if (now - Number(sd.reactLastAt || 0) < REACT_COOLDOWN_MS) return;   /* 조용히 무시 */
+      sd.reactLastAt = now;
+      io.to(room.id).emit("game:react", { from: nickname, emoji, at: now, roomId: room.id });
+    } catch (err) { console.error("리액션 오류:", err); }
   });
 
   /* -- 추천인 등록(레퍼럴) — 계정당 1회, 등록 즉시 양쪽 코인 지급 ---------- */

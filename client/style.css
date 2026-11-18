@@ -4838,3 +4838,24 @@ html.dark .acc-rename-info {
 .guild-duel-history li { display: flex; gap: 6px; flex-wrap: wrap; color: var(--muted, #6b7280); }
 .guild-duel-history b { color: inherit; }
 .guild-duel-history em { font-style: normal; font-weight: 700; }
+
+/* =========================================================
+   리액션 · 입력 중 · 관전자 표시
+========================================================= */
+.reaction-bar { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 10px 10px; border-top: 1px solid rgba(255,255,255,.06); }
+.reaction-bar button { width: 34px; height: 34px; border-radius: 999px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.06); font-size: 17px; line-height: 1; cursor: pointer; transition: transform .12s ease, background .12s ease; }
+.reaction-bar button:hover { transform: translateY(-2px) scale(1.06); background: rgba(255,255,255,.14); }
+.typing-line, .spectator-line { font-size: 12px; line-height: 1.4; color: #9fb0c9; padding: 4px 12px; }
+.spectator-line { color: #c4b5fd; }
+.reaction-layer { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 60; }
+.reaction-bubble { position: absolute; bottom: 16%; display: flex; flex-direction: column; align-items: center; gap: 2px; animation: reaction-float 2.4s ease-out forwards; }
+.reaction-bubble .reaction-emoji { font-size: 34px; filter: drop-shadow(0 4px 10px rgba(0,0,0,.35)); }
+.reaction-bubble .reaction-from { font-size: 11px; color: #e5e7eb; background: rgba(0,0,0,.45); border-radius: 999px; padding: 1px 8px; }
+@keyframes reaction-float {
+  0% { opacity: 0; transform: translateY(18px) scale(.7); }
+  15% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-170px) scale(1.2); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reaction-bubble { animation-duration: .01ms; }
+}

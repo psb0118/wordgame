@@ -323,7 +323,6 @@ const DUEUM = {
   "러": ["러", "너"], "럭": ["럭", "넉"], "런": ["런", "넌"],
 "럴": ["럴", "널"], "럽": ["럽", "넙"],
   "레": ["레", "네", "에"],
-  "력": ["력", "역"],
   "로": ["로", "노"], "록": ["록", "녹"], "론": ["론", "논"],
   "롤": ["롤", "놀"], "롬": ["롬", "놈"], "롭": ["롭", "놑", "놉"],
   "롯": ["롯", "놃"], "롱": ["롱", "농"], "뢰": ["뢰", "뇌"],
@@ -1162,12 +1161,21 @@ function initSocket() {
     if (list) list.scrollTop = list.scrollHeight;
   });
   socket.on("chat:cleared", () => { globalChatCache = []; clearChat(); });
+  socket.on("chat:typing", (data) => showTyping(data));
+  socket.on("game:react", (data) => showReactionBubble(data));
+  socket.on("react:error", (data) => { if (data && data.reason) showMessage(data.reason, "info"); });
 
   /* 관전자 수 갱신 — 플레이어/관전자 모두 같은 방 이벤트를 받는다 */
   socket.on("room:spectators", (data) => {
     if (!data || (data.roomId && roomId && data.roomId !== roomId)) return;
-    if (gameState) gameState.spectatorCount = Number(data.count) || 0;
+    if (gameState) {
+      gameState.spectatorCount = Number(data.count) || 0;
+      gameState.spectatorNames = Array.isArray(data.spectators)
+        ? data.spectators.map(s => s && s.nickname).filter(Boolean)
+        : [];
+    }
     renderRoomInfo(gameState);
+    renderSpectatorLine(data);
     updateInputState();
   });
 
@@ -2767,6 +2775,10 @@ function renderRankedQueueInfo() {
   if (rankedQueueStats.averageWaitMs != null) {
     parts.push(`평균 매칭 ${formatRankedWait(rankedQueueStats.averageWaitMs)}`);
   }
+  if (rankedQueueStats.etaMs != null && Number.isFinite(Number(rankedQueueStats.etaMs))) {
+    const eta = Math.max(0, Number(rankedQueueStats.etaMs) - elapsed);
+    parts.push(`예상 ${eta > 0 ? formatRankedWait(eta) : "곧 시작"}`);
+  }
   info.textContent = `매칭 대기 중 · ${parts.join(" · ")}`;
 }
 
@@ -3299,6 +3311,81 @@ function chatScopeNow() {
   const mode = gameState && gameState.mode;
   if (spectating && roomId && mode && mode !== "ai") return "spectate";
   return (roomId && mode && mode !== "ai") ? "room" : "global";
+}
+
+/* -- 리액션 · 입력 중 · 관전자 표시 ---------------------- */
+const REACTION_EMOJIS = ["👍", "👏", "🔥", "😂", "🎉", "😮"];
+let lastTypingSentAt = 0;
+const typingUsers = new Map();
+
+function renderSpectatorLine(data) {
+  const el = $("#spectatorLine");
+  if (!el) return;
+  const names = Array.isArray(data && data.spectators)
+    ? data.spectators.map(s => s && s.nickname).filter(Boolean)
+    : [];
+  const count = Math.max(0, Number(data && data.count) || names.length);
+  el.classList.toggle("hidden", count === 0);
+  el.textContent = count === 0 ? "" :
+    `👁 관전 ${count}명${names.length ? ` · ${names.slice(0, 3).join(", ")}${names.length > 3 ? " 외" : ""}` : ""}`;
+}
+
+function renderTypingLine() {
+  const el = $("#typingLine");
+  if (!el) return;
+  const names = [...typingUsers.keys()];
+  el.classList.toggle("hidden", names.length === 0);
+  el.textContent = names.length === 0 ? "" :
+    `${names.slice(0, 2).join(", ")}${names.length > 2 ? ` 외 ${names.length - 2}명` : ""} 님이 입력 중…`;
+}
+
+function showTyping(data) {
+  const nickname = String((data && data.nickname) || "").trim();
+  if (!nickname || nickname === myNickname) return;
+  clearTimeout(typingUsers.get(nickname));
+  typingUsers.set(nickname, setTimeout(() => {
+    typingUsers.delete(nickname);
+    renderTypingLine();
+  }, 3000));
+  renderTypingLine();
+}
+
+function showReactionBubble(data) {
+  if (!data || !data.emoji) return;
+  const layer = $("#reactionLayer");
+  if (!layer) return;
+  const bubble = document.createElement("div");
+  bubble.className = "reaction-bubble";
+  bubble.style.left = `${8 + Math.random() * 72}%`;
+  const emoji = document.createElement("span");
+  emoji.className = "reaction-emoji";
+  emoji.textContent = String(data.emoji);
+  const from = document.createElement("span");
+  from.className = "reaction-from";
+  from.textContent = String(data.from || "");
+  bubble.append(emoji, from);
+  layer.appendChild(bubble);
+  setTimeout(() => bubble.remove(), 2600);
+}
+
+function sendReaction(emoji) {
+  if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+  socket.emit("game:react", { emoji });
+}
+
+function initReactionBar() {
+  const bar = $("#reactionBar");
+  if (!bar || bar.dataset.ready === "1") return;
+  bar.dataset.ready = "1";
+  for (const emoji of REACTION_EMOJIS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = emoji;
+    btn.title = `${emoji} 리액션 보내기`;
+    btn.setAttribute("aria-label", `${emoji} 리액션 보내기`);
+    btn.addEventListener("click", () => sendReaction(emoji));
+    bar.appendChild(btn);
+  }
 }
 
 function updateChatScopeLabel() {
@@ -5535,6 +5622,14 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#chatSend")?.addEventListener("click", sendChat);
   $("#chatInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); sendChat(); }
+  });
+  initReactionBar();
+  $("#chatInput")?.addEventListener("input", () => {
+    if (!socket || !socketConnected || chatScopeNow() !== "room") return;
+    const now = Date.now();
+    if (now - lastTypingSentAt < 1500) return;
+    lastTypingSentAt = now;
+    socket.emit("chat:typing");
   });
   clearChat();
 
