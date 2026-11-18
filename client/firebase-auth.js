@@ -15,6 +15,18 @@
   let fbUser = null;
   let pendingToken = null;
 
+  /* 최초 인증 상태 복원과 토큰 전송이 끝나기 전에는 script.js가 저장된 이름을
+     보내지 않도록 한다. (UID 없이 이름을 보내면 본인 계정도 "이미 사용 중"으로
+     거부되고, 그 사이 이름을 바꾸면 계정 승계가 깨질 수 있다) */
+  let authStateKnown = false;
+  let resolveAuthState;
+  const authStateReady = new Promise((resolve) => { resolveAuthState = resolve; });
+  function markAuthStateKnown() {
+    if (authStateKnown) return;
+    authStateKnown = true;
+    resolveAuthState();
+  }
+
   const $id = (id) => document.getElementById(id);
 
   /* 로그인 상태를 script.js에 알린다 — 채팅·랭킹 게이트와 튜토리얼 표시 조건이 이 값을 본다 */
@@ -41,21 +53,61 @@
 
   /* 소켓이 준비되면(연결됨) 보류 중이거나 현재 로그인된 사용자의 토큰을 서버로 전송 */
   async function sendTokenToServer() {
-    if (!fbUser) return;
+    if (!fbUser) return false;
     let token = pendingToken;
     try {
       token = await fbUser.getIdToken();
     } catch (e) {
       token = pendingToken;
     }
-    if (!token) return;
+    if (!token) return false;
     pendingToken = token;
     try {
       if (typeof socket !== "undefined" && socket && socket.connected) {
         socket.emit("player:firebaseAuth", { idToken: token });
+        return true;
       }
     } catch (e) { /* 소켓 준비 전이면 연결 이벤트에서 재시도 */ }
+    return false;
   }
+
+  /* 서버가 토큰을 검증해 UID를 세션에 넣을 때까지 기다린다. 이벤트만 보내고
+     바로 이름을 보내면 서버의 비동기 인증 처리와 이름 처리가 다시 경쟁한다. */
+  function waitForAuthResult(timeoutMs = 3000) {
+    return new Promise((resolve) => {
+      if (typeof socket === "undefined" || !socket || typeof socket.once !== "function") {
+        resolve(false);
+        return;
+      }
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        socket.off("player:firebaseAuthResult", finish);
+        resolve(true);
+      };
+      const timer = setTimeout(finish, timeoutMs);
+      socket.once("player:firebaseAuthResult", finish);
+    });
+  }
+
+  /* 소켓 연결 직후, 이름 등록보다 먼저 호출된다. 인증 상태 → 토큰 전송 →
+     서버의 UID 설정 응답까지 기다린 뒤 이름을 보내 새로고침·재접속 경합을 없앤다. */
+  async function syncAuthForSocket() {
+    if (!configured) return false;
+    await Promise.race([
+      authStateReady,
+      new Promise((resolve) => setTimeout(resolve, 3000))
+    ]);
+    if (!fbUser) return false;
+    const result = waitForAuthResult();
+    const sent = await sendTokenToServer();
+    if (!sent) return false;
+    await result;
+    return true;
+  }
+  window.kkSyncFirebaseAuth = syncAuthForSocket;
 
   function renderAuthState() {
     const loginBtn = $id("fbGoogleBtn");
@@ -82,6 +134,7 @@
     const box = $id("fbBox");
     if (!configured) {
       hideFirebaseUI("설정 없음 — client/firebase-config.js 를 채워주세요.");
+      markAuthStateKnown();
       return;
     }
     try {
@@ -89,6 +142,7 @@
       fbAuth = firebase.auth();
     } catch (err) {
       hideFirebaseUI("초기화 실패: " + err.message);
+      markAuthStateKnown();
       return;
     }
     if (box) box.classList.remove("hidden");
@@ -124,6 +178,8 @@
     /* 인증 상태 변화 → UI 갱신 + 서버 연동 */
     fbAuth.onAuthStateChanged(async (user) => {
       fbUser = user;
+      authStateKnown = true;
+      resolveAuthState();
       renderAuthState();
       if (user) {
         setMsg("서버에 계정을 연결하는 중...", "");
@@ -160,8 +216,6 @@
               setMsg(data.reason || "Firebase 인증에 실패했습니다.", "error");
             }
           });
-          /* 소켓이 나중에 연결되면 보류 중인 로그인 토큰을 전송 */
-          socket.on("connect", () => { if (fbUser) sendTokenToServer(); });
           return true;
         }
       } catch (e) { /* 무시 */ }

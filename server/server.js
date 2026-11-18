@@ -941,6 +941,7 @@ const friendsMap = new Map();            /* 정규화 닉네임 -> Set<정규화
 const friendRequests = new Map();        /* 신청한 쪽 정규화 닉네임 -> Set<받는 쪽 정규화 닉네임> */
 const onlineNicks = new Map();           /* 정규화 닉네임 -> socketId(접속 중) */
 const socketNicks = new Map();           /* socketId -> 등록된 닉네임 (닉네임 재적용 전 새 소켓 구분) */
+const nameOps = new Set();               /* 진행 중인 이름 변경/선점 키 — 같은 계정·이름의 동시 요청 차단 */
 const normKey = (nick) => String(nick || "").replace(/\s+/g, "").toLowerCase();
 
 function applyFriendsData(data) {
@@ -1701,6 +1702,21 @@ async function flushFirebaseScores() {
   }
 }
 setInterval(() => { flushFirebaseScores().catch(() => {}); }, 20000);
+
+/* 개명 시 Firestore 리더보드의 옛 문서를 지운다. 새 문서는 savePlayerData가
+   dirty-set에 넣어 주기 때문에 여기서는 옛 키만 정리하면 된다. */
+async function renameFirebaseAccount(prevKey, newKey) {
+  if (!firebaseReady || !firebaseDb) return;
+  const from = normKey(prevKey);
+  const to = normKey(newKey);
+  if (!from || !to || from === to) return;
+  try {
+    await firebaseDb.collection("leaderboards").doc(from).delete();
+  } catch (err) {
+    console.error("Firebase 랭킹 옛 문서 삭제 실패:", from, err.message);
+  }
+  if (playerCache.has(to)) firebaseDirty.add(to);
+}
 
 async function verifyFirebaseIdToken(idToken) {
   if (!firebaseReady || !firebaseAuth) throw new Error("firebase_not_configured");
@@ -7599,6 +7615,13 @@ io.on("connection", (socket) => {
        같은 계정이 이름만 바꾼 경우에도 능력치·코인·랭킹이 초기화되지 않는다.
        비용은 1회 무료, 이후 회당 RENAME_PRICE */
   socket.on("player:setName", async (data) => {
+    let nameOpKeys = null;
+    /* 같은 소켓에서 저장 버튼을 연타해도 두 요청이 겹치지 않게 한다. */
+    if (socket.data?.nameUpdateInFlight) {
+      socket.emit("player:nameUpdated", { ok: false, reason: "이름 변경을 처리 중입니다. 잠시 후 다시 시도해주세요." });
+      return;
+    }
+    if (socket.data) socket.data.nameUpdateInFlight = true;
     try {
       const nickname = normalizeWord(data?.nickname);
       if (!nickname) {
@@ -7627,6 +7650,17 @@ io.on("connection", (socket) => {
         return;
       }
 
+      /* 같은 계정이나 같은 새 이름을 동시에 처리하지 않는다. 두 탭/연타로
+         비용이 두 번 차감되거나 다른 계정을 덮어쓰는 것을 막는다. */
+      nameOpKeys = [`name:${normKey(nickname)}`];
+      if (prevKey) nameOpKeys.push(`account:${prevKey}`);
+      if (nameOpKeys.some(key => nameOps.has(key))) {
+        nameOpKeys = null;   /* 다른 요청이 가진 잠금을 finally에서 풀지 않는다 */
+        socket.emit("player:nameUpdated", { ok: false, reason: "이름 변경을 처리 중입니다. 잠시 후 다시 시도해주세요." });
+        return;
+      }
+      for (const key of nameOpKeys) nameOps.add(key);
+
       /* 이름 변경 전 검사 — 대상 이름 충돌과 비용을 선점 확인한다 */
       let renameCost = 0;
       let prevOwned = false;
@@ -7649,6 +7683,15 @@ io.on("connection", (socket) => {
         /* 옛 계정 행 — 본인 소유일 때만 승계한다 */
         prevRow = await getPlayerData(prevKey);
         prevOwned = !!prevRow && (!prevRow.firebaseUid || (uid && prevRow.firebaseUid === uid));
+        /* Firebase에 연결된 계정인데 아직 UID가 확인되지 않았다면 새 계정을 만들지
+           않는다. 인증 복원 전 이름 변경으로 전적·코인을 잃는 것을 막는다. */
+        if (!prevOwned && prevRow?.firebaseUid) {
+          socket.emit("player:nameUpdated", {
+            ok: false,
+            reason: "Google 로그인 세션을 확인한 뒤 다시 시도해주세요."
+          });
+          return;
+        }
         if (prevOwned) {
           const done = Number(prevRow.nameChanges || 0);
           renameCost = done >= 1 ? RENAME_PRICE : 0;
@@ -7695,7 +7738,36 @@ io.on("connection", (socket) => {
       }
       const welcomeReward = applyWelcomeReward(playerData, socket);
       const renameDelta = (isRename && prevOwned && renameCost > 0) ? -renameCost : 0;
-      const newMoney = await savePlayerData(claim.key, playerData, { coinDelta: (welcomeReward || 0) + renameDelta });
+      /* firebase_uid에는 UNIQUE 인덱스가 있다. 옛 행을 지우기 전에 같은 UID로
+         새 행을 저장하면 개명이 실패하므로, 먼저 옛 행의 UID를 비워 자리를 만든다.
+         저장이 실패하면 옛 행의 UID를 되돌린다. */
+      let releasedOldUid = false;
+      if (dbMode === "pg" && isRename && prevOwned && prevKey !== claim.key && prevRow?.firebaseUid && uid) {
+        try {
+          const cleared = await dbPool.query(
+            "UPDATE players SET firebase_uid = NULL WHERE id = $1 AND firebase_uid = $2",
+            [prevKey, uid]
+          );
+          releasedOldUid = cleared.rowCount > 0;
+        } catch (e) {
+          console.error("이름 변경 UID 임시 해제 오류:", e.message);
+          throw e;
+        }
+      }
+      let newMoney;
+      try {
+        newMoney = await savePlayerData(claim.key, playerData, { coinDelta: (welcomeReward || 0) + renameDelta });
+      } catch (e) {
+        if (releasedOldUid) {
+          try {
+            await dbPool.query(
+              "UPDATE players SET firebase_uid = $2 WHERE id = $1 AND firebase_uid IS NULL",
+              [prevKey, uid]
+            );
+          } catch (restoreErr) { console.error("이름 변경 UID 복구 오류:", restoreErr.message); }
+        }
+        throw e;
+      }
       if (welcomeReward) await recordWelcomeLedger(claim.key, welcomeReward, newMoney);
       /* 옛 이름 행 제거 — 랭킹/리더보드에 옛 이름이 남아 초기화·중복의 원인이 되지 않게 한다 */
       if (isRename && prevOwned && prevKey !== claim.key) {
@@ -7713,6 +7785,7 @@ io.on("connection", (socket) => {
         renameAccountRefs(prevKey, claim.key, nickname);
         await renameEconomyAccount(prevKey, claim.key);
         await pushManager.renameAccount(prevKey, claim.key);
+        await renameFirebaseAccount(prevKey, claim.key);
       }
       registerOnline(socket.id, nickname);
       socket.emit("player:nameUpdated", {
@@ -7732,7 +7805,13 @@ io.on("connection", (socket) => {
       if (watchNicks.some(w => normKey(w) === normKey(nickname))) {
         notifySuperAdmins({ nickname, at: new Date().toISOString(), reason: "login" });
       }
-    } catch (err) { console.error("닉네임 설정 오류:", err); }
+    } catch (err) {
+      console.error("닉네임 설정 오류:", err);
+      socket.emit("player:nameUpdated", { ok: false, reason: "이름 변경 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요." });
+    } finally {
+      if (socket.data) socket.data.nameUpdateInFlight = false;
+      if (nameOpKeys) for (const key of nameOpKeys) nameOps.delete(key);
+    }
   });
 
   /* Firebase(Google) 로그인 — 검증된 UID/이메일을 소켓 세션에 기록한다.

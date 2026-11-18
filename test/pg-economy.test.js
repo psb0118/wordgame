@@ -60,6 +60,28 @@ test("player upsert applies coin deltas without losing concurrent changes", asyn
   }
 });
 
+test("a firebase UID can move to a new player row only after the old row releases it", async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(playersDdl);
+    await db.exec("CREATE UNIQUE INDEX idx_players_firebase_uid ON players(firebase_uid)");
+    await db.query("INSERT INTO players (id, nickname, firebase_uid) VALUES ($1,$2,$3)", ["old", "old", "uid-move"]);
+
+    await assert.rejects(
+      db.query("INSERT INTO players (id, nickname, firebase_uid) VALUES ($1,$2,$3)", ["new", "new", "uid-move"]),
+      /unique|duplicate/i,
+      "옛 행이 UID를 쥐고 있으면 새 행 저장은 실패한다"
+    );
+
+    await db.query("UPDATE players SET firebase_uid = NULL WHERE id = $1 AND firebase_uid = $2", ["old", "uid-move"]);
+    await db.query("INSERT INTO players (id, nickname, firebase_uid) VALUES ($1,$2,$3)", ["new", "new", "uid-move"]);
+    const moved = await db.query("SELECT id, firebase_uid FROM players WHERE id = $1", ["new"]);
+    assert.equal(moved.rows[0].firebase_uid, "uid-move");
+  } finally {
+    await db.close();
+  }
+});
+
 test("economy ledger rejects a duplicate idempotency key", async () => {
   const db = new PGlite();
   try {

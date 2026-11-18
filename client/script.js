@@ -253,6 +253,7 @@ function bindAdminEnter(selector, fn) {
 
 /* 이름 표시 — name-bar가 없으므로 money-bar 칩과 계정 탭만 갱신한다 */
 let myNameChanges = 0;
+let nameSavePending = false;
 const RENAME_COST = 1000000;
 
 function updateNicknameUI() {
@@ -273,6 +274,14 @@ function updateRenameInfo() {
   el.innerHTML = nextCost > 0
     ? `다음 이름 변경 비용: <b>${nextCost.toLocaleString()}코인</b> (이전 ${myNameChanges}회 변경)`
     : `다음 이름 변경: <b>무료</b> (첫 1회 · 이후 1회당 ${RENAME_COST.toLocaleString()}코인)`;
+}
+
+function setNameSavePending(pending) {
+  nameSavePending = !!pending;
+  const btn = $("#accApply");
+  if (!btn) return;
+  btn.disabled = nameSavePending;
+  btn.setAttribute("aria-busy", nameSavePending ? "true" : "false");
 }
 
 /* 이름이 없으면 계정 탭을 열어 입력으로 유도한다 */
@@ -577,11 +586,16 @@ function initSocket() {
     timeout: 10000
   });
 
-  socket.on("connect", () => {
+  socket.on("connect", async () => {
     socketConnected = true;
     console.log("[SOCKET] 연결됨:", socket.id);
     /* 서버가 '보고 있는 중'인지 알아야 불필요한 턴 푸시를 보내지 않는다. */
     socket.emit("client:visibility", { visible: document.visibilityState !== "hidden" });
+    /* Google 세션 복원·토큰 전송보다 이름 등록이 먼저 가면 서버가 본인 계정을
+       "이미 사용 중"으로 거부할 수 있다. 인증 동기화를 먼저 기다린다. */
+    try {
+      if (window.kkSyncFirebaseAuth) await window.kkSyncFirebaseAuth();
+    } catch (e) { /* Firebase 미설정/일시 오류 — 게스트 흐름으로 진행 */ }
     /* 저장된 이름으로 재등록 (Google 세션이 있으면 서버가 연결을 복원한다) */
     if (myNickname) socket.emit("player:setName", { nickname: myNickname });
     if (myNickname) socket.emit("wordbook:list");
@@ -602,6 +616,7 @@ function initSocket() {
   socket.on("disconnect", () => {
     socketConnected = false;
     submitting = false;
+    setNameSavePending(false);
     startingGame = false;
     rankedQueued = false;
     rankedQueueStats = null;
@@ -1200,6 +1215,7 @@ function initSocket() {
 
   /* -- 닉네임 ----------------------------------------- */
   socket.on("player:nameUpdated", (data) => {
+    setNameSavePending(false);
     if (!data) return;
     if (data.ok && data.nickname) {
       const renamed = !!data.renamed;
@@ -4178,6 +4194,7 @@ function renderAccountScores() {
 }
 
 function saveAccount() {
+  if (nameSavePending) return;
   const nick = normalizeWord($("#accNickInput")?.value || "");
   if (!nick) {
     accountMsg("닉네임을 입력해주세요.", "error");
@@ -4188,6 +4205,7 @@ function saveAccount() {
     return;
   }
   if (socket && socketConnected && socket.id) {
+    setNameSavePending(true);
     socket.emit("player:setName", { nickname: nick });
   } else {
     accountMsg("서버에 연결되지 않았습니다.", "error");

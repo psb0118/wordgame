@@ -74,7 +74,7 @@ function context(extra = {}) {
   const c = vm.createContext({
     structuredClone, Buffer, crypto: require("crypto"),
     console: { log() {}, warn() {}, error(...args) { errors.push(args.join(" ")); } },
-    playerCache: new Map(), socketNicks: new Map(), onlineNicks: new Map(),
+    playerCache: new Map(), socketNicks: new Map(), onlineNicks: new Map(), nameOps: new Set(),
     friendsMap: new Map(), friendRequests: new Map(),
     adminAuthed: new Map(), disconnectedPlayers: new Map(), REMATCHES: new Map(),
     socketFirebaseUid: new Map(), socketFirebaseEmail: new Map(),
@@ -94,7 +94,7 @@ function context(extra = {}) {
     fetch: () => Promise.resolve({ body: { cancel() {} } }), AbortSignal: { timeout: () => null },
     saveBugReports() {}, notifySuperAdmins() {},
     dbMode: "json", dbPool: null,
-    firebaseReady: false, firebaseAuth: null,
+    firebaseReady: false, firebaseAuth: null, firebaseDb: null, firebaseDirty: new Set(),
     saveJsonDb() {},
     getKstDate: () => "2026-10-04",
     getKstWeek: () => "2026-W40",
@@ -161,7 +161,7 @@ function context(extra = {}) {
     "recordMatchHistory", "finishGame", "migrateJsonPlayersToPg",
     "getPlayerBySocket", "getPlayerByIndex", "getAlivePlayers", "findNextAlivePlayer",
     "stopTurnTimer", "startTurnTimer", "notifyTurnStart", "removePlayer",
-    "loadChatHistory", "saveChatHistoryNow", "renameAccountRefs", "startKeepAlivePing",
+    "loadChatHistory", "saveChatHistoryNow", "renameAccountRefs", "renameFirebaseAccount", "startKeepAlivePing",
     "bumpMission", "bumpDaily", "playWord", "runAI",
     "pushRatingHistory", "applyWelcomeReward",
     "getBan", "getMute", "banGuard", "banGuardByUid", "readModEntries",
@@ -2690,6 +2690,78 @@ test("rename broadcasts profile:nickChanged so other screens update immediately"
   /* 이력 표시명도 함께 갱신된다 */
   const hist = vm.runInContext("GLOBAL_CHAT_HISTORY", c);
   assert.equal(hist[0].from, "newname");
+});
+
+test("rename clears the old Firebase UID before saving the new row", async () => {
+  const queries = [];
+  const { c } = context({
+    dbMode: "pg",
+    dbPool: {
+      async query(sql) {
+        queries.push(sql.replace(/\s+/g, " ").trim());
+        if (sql.includes("SELECT firebase_uid")) return { rows: [] };
+        if (sql.includes("UPDATE players SET firebase_uid = NULL")) return { rowCount: 1 };
+        if (sql.includes("INSERT INTO players")) return { rows: [{ money: 2000000 }] };
+        return { rows: [], rowCount: 1 };
+      }
+    }
+  });
+  const s = socket("uid-rename");
+  seed(c, "olduid", { money: 2000000, nameChanges: 0, firebaseUid: "uid-rename" });
+  c.registerOnline(s.id, "olduid");
+  c.socketFirebaseUid.set(s.id, "uid-rename");
+  installHandler(c, "player:setName", s);
+  await s.handlers.get("player:setName")({ nickname: "newuid" });
+  const hit = s.emissions.find(([event]) => event === "player:nameUpdated");
+  assert.equal(hit[1].ok, true);
+  const clearAt = queries.findIndex(q => q.includes("UPDATE players SET firebase_uid = NULL"));
+  const insertAt = queries.findIndex(q => q.includes("INSERT INTO players"));
+  const deleteAt = queries.findIndex(q => q.includes("DELETE FROM players"));
+  assert.ok(clearAt >= 0 && insertAt > clearAt, "새 행 저장 전에 옛 UID를 비워야 한다");
+  assert.ok(deleteAt > insertAt, "새 행 저장 후 옛 행을 지운다");
+  assert.equal(c.playerCache.get("newuid").firebaseUid, "uid-rename");
+});
+
+test("a second name save is rejected while the first is in flight", async () => {
+  const { c } = context();
+  const s = socket("busy-name");
+  s.data.nameUpdateInFlight = true;
+  installHandler(c, "player:setName", s);
+  await s.handlers.get("player:setName")({ nickname: "blocked" });
+  const hit = s.emissions.find(([event]) => event === "player:nameUpdated");
+  assert.equal(hit[1].ok, false);
+  assert.match(String(hit[1].reason || ""), /처리 중/);
+  assert.equal(c.playerCache.has("blocked"), false);
+});
+
+test("a firebase-linked account is not renamed before its UID is confirmed", async () => {
+  const { c } = context();
+  const s = socket("uid-missing");
+  seed(c, "linked", { money: 5000000, firebaseUid: "uid-linked" });
+  c.registerOnline(s.id, "linked");
+  installHandler(c, "player:setName", s);
+  await s.handlers.get("player:setName")({ nickname: "other" });
+  const hit = s.emissions.find(([event]) => event === "player:nameUpdated");
+  assert.equal(hit[1].ok, false);
+  assert.match(String(hit[1].reason || ""), /Google 로그인/);
+  assert.equal(c.playerCache.has("linked"), true);
+  assert.equal(c.playerCache.has("other"), false, "인증 없이 새 계정을 만들지 않는다");
+});
+
+test("rename deletes the old Firestore leaderboard document", async () => {
+  const deleted = [];
+  const { c } = context({
+    firebaseReady: true,
+    firebaseDb: {
+      collection: () => ({
+        doc: (id) => ({ delete: async () => { deleted.push(id); } })
+      })
+    }
+  });
+  c.playerCache.set("newuid", c.migratePlayerData({ nickname: "newuid" }));
+  await c.renameFirebaseAccount("olduid", "newuid");
+  assert.deepEqual(deleted, ["olduid"]);
+  assert.equal(c.firebaseDirty.has("newuid"), true);
 });
 
 test("admin:chatClear wipes global history and emits chat:cleared", async () => {
