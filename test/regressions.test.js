@@ -131,7 +131,7 @@ function context(extra = {}) {
     requireNickname: async () => ({ ok: true, role: "super", nickname: "admin" }),
     ...extra,
   });
-  for (const name of ["normKey", "PLACEHOLDER_NICKS", "MODE_DEFAULT", "SEASON_DEFAULT", "REACT_EMOJIS", "REACT_COOLDOWN_MS",
+  for (const name of ["normKey", "PLACEHOLDER_NICKS", "MODE_DEFAULT", "SEASON_DEFAULT",
     "REFERRAL_JOIN_COIN", "REFERRAL_INVITE_COIN", "MAIL_MAX", "MAIL_COIN_MAX", "PLAYER_COLUMN_KEYS",
     "GUILD_MAX_MEMBERS", "GUILD_CREATE_COIN", "SEA_TITLE", "RENAME_PRICE",
     "CHAT_MAX_LEN", "CHAT_COOLDOWN_MS", "CHAT_WINDOW_MS", "CHAT_WINDOW_MAX",
@@ -1280,62 +1280,6 @@ test("game result copy reports success and clipboard permission failures", async
 });
 
 /* =========================================================
-   이모지 리액션 — 허용 목록 / 뮤트 / 속도 제한
-========================================================= */
-function reactRoom(nick = "hong") {
-  return { id: "RR1", players: [{ id: "s-r1", socketId: "s-r1", playerIndex: 0, nickname: nick, isBot: false }] };
-}
-
-test("emoji reaction is broadcast to the room", () => {
-  const room = reactRoom();
-  const { c, emissions } = context({ getPlayerRoom: () => room });
-  const s = socket("s-r1");
-  installHandler(c, "game:react", s);
-  s.handlers.get("game:react")({ emoji: "🔥" });
-  assert.equal(emissions.length, 1, "방 전체에 브로드캐스트되어야 합니다");
-  assert.equal(emissions[0][0], "game:react");
-  assert.equal(emissions[0][1].emoji, "🔥");
-  assert.equal(emissions[0][1].from, "hong");
-  assert.equal(emissions[0][1].roomId, "RR1");
-  assert.equal(s.emissions.length, 0, "오류 응답은 없어야 합니다");
-});
-
-test("reaction with a non-allowlisted emoji is rejected", () => {
-  const room = reactRoom();
-  const { c, emissions } = context({ getPlayerRoom: () => room });
-  const s = socket("s-r1");
-  installHandler(c, "game:react", s);
-  s.handlers.get("game:react")({ emoji: "💣" });
-  assert.equal(emissions.length, 0, "허용되지 않은 이모지는 브로드캐스트 금지");
-  assert.equal(s.emissions[0][0], "react:error");
-  assert.match(String(s.emissions[0][1].reason), /이모지/);
-});
-
-test("muted player cannot send emoji reactions", () => {
-  const room = reactRoom("mutedUser");
-  const { c, emissions } = context({ getPlayerRoom: () => room });
-  const normKey = vm.runInContext("normKey", c);
-  c.mutedMap.set(normKey("mutedUser"), { nick: "mutedUser", by: "admin", at: Date.now(), reason: "도배" });
-  const s = socket("s-r1");
-  installHandler(c, "game:react", s);
-  s.handlers.get("game:react")({ emoji: "👍" });
-  assert.equal(emissions.length, 0, "뮤트 상태면 브로드캐스트 금지");
-  assert.equal(s.emissions[0][0], "react:error");
-  assert.match(String(s.emissions[0][1].reason), /차단/);
-});
-
-test("reactions are rate limited per socket", () => {
-  const room = reactRoom();
-  const { c, emissions } = context({ getPlayerRoom: () => room });
-  const s = socket("s-r1");
-  installHandler(c, "game:react", s);
-  s.handlers.get("game:react")({ emoji: "👍" });
-  s.handlers.get("game:react")({ emoji: "🔥" });
-  assert.equal(emissions.length, 1, "연속 요청은 조용히 무시되어야 합니다");
-  assert.equal(s.emissions.length, 0, "속도 제한은 오류가 아니라 무시로 처리");
-});
-
-/* =========================================================
    레퍼럴(추천인) — 등록 / 중복 / 본인 / 존재하지 않는 닉네임
 ========================================================= */
 test("referral registration rewards both sides once", async () => {
@@ -1835,44 +1779,6 @@ test("word request and approval flow through the unified store", async () => {
   assert.equal(c.customWords.pending.length, 0, "승인되면 대기에서 빠진다");
   assert.ok(c.customWords.approved.includes("바다래"), "승인 목록에 오른다");
   assert.ok(c.WORD_SET.has("바다래"), "승인 즉시 게임 사전에 반영된다");
-});
-
-test("dictionary submit shares the store and admin approve rebuilds views", async () => {
-  const { c } = context({
-    WORD_SET: new Set(["사과"]), WORD_INDEX: new Map([["사", ["사과"]]]),
-    BASE_WORD_SET: new Set(["사과"]),
-    baseWordData: { WORD_SET: new Set(["사과"]), WORD_INDEX: new Map([["사", ["사과"]]]) },
-    mergeCustomWords: game.mergeCustomWords,
-    hasWord: (w, set) => set.has(w),
-  });
-  seed(c, "kate");
-  const s = socket("s-d1");
-  c.socketNicks.set(s.id, "kate");
-  installHandler(c, "dictionary:submit", s);
-  installHandler(c, "word:request", s);
-  installHandler(c, "admin:dictionaryApprove", s);
-
-  await s.handlers.get("dictionary:submit")({ word: "코코아" });
-  let msg = s.emissions.at(-1);
-  assert.equal(msg[0], "dictionary:status");
-  assert.equal(msg[1].ok, true);
-  assert.equal(c.customWords.pending.length, 1, "dictionary 신청도 단일 저장소에 쌓인다");
-  assert.equal(c.customWords.pending[0].by, "kate", "shop 흐름에서 읽는 by 필드도 채워진다");
-
-  await s.handlers.get("word:request")({ word: "코코아" });
-  msg = s.emissions.at(-1);
-  assert.equal(msg[0], "word:requestResult");
-  assert.equal(msg[1].ok, false, "다른 흐름의 동일 단어 신청은 중복으로 거부된다");
-
-  const id = c.customWords.pending[0].id;
-  await s.handlers.get("admin:dictionaryApprove")({ id });
-  msg = s.emissions.at(-1);
-  assert.equal(msg[0], "admin:dictionary");
-  assert.equal(msg[1].ok, true);
-  assert.equal(c.customWords.pending.length, 0);
-  assert.ok(c.customWords.approved.includes("코코아"));
-  assert.ok(c.WORD_SET.has("코코아"), "승인 후 재구성된 게임 사전에 반영된다");
-  assert.ok(c.WORD_INDEX.get("코") && c.WORD_INDEX.get("코").includes("코코아"));
 });
 
 test("rebuildWordViews merges the unified approved list into game views", () => {

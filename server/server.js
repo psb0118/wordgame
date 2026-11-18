@@ -391,10 +391,6 @@ function scheduleSaveChatHistory() {
 const CHAT_AUTO_MUTE_REPORTS = 3;
 const CHAT_AUTO_MUTE_MINUTES = 10;
 const chatReportCounts = new Map();   /* 대상 정규화 키 -> { firstAt, reporters: Set<신고자 키> } */
-/* 이모지 리액션 — 허용 목록 밖은 거부, 소켓당 최소 간격 제한 */
-const REACT_EMOJIS = ["👍", "👏", "🔥", "😮", "😅", "😢", "❤️", "😂", "💪", "🎉", "🤔", "😡"];
-const REACT_COOLDOWN_MS = 600;
-
 /* 반환: { ok, reason, clean } — ok면 clean에 통과한 텍스트 */
 function chatFilter(raw) {
   const text = String(raw || "").trim();
@@ -717,7 +713,7 @@ function notifyRequester(requester, msg) {
   const targetSocketId = onlineNicks.get(normKey(requester));
   if (!targetSocketId) return;
   const ts = io.sockets.sockets.get(targetSocketId);
-  if (ts) ts.emit("dictionary:status", { ok: true, message: msg, refreshed: true });
+  if (ts) ts.emit("word:requestResult", { ok: true, message: msg });
 }
 
 loadCustomWords();
@@ -4975,29 +4971,6 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("room:joinRandom", () => {
-    try {
-      const candidates = [];
-      for (const room of ROOMS.values()) {
-        if (room.mode !== "online") continue;
-        if (room.started || room.finished) continue;
-        const humans = room.players.filter(p => !p.isBot);
-        if (humans.length >= MAX_PLAYERS) continue;
-        if (humans.some(p => p.socketId === socket.id)) continue;
-        if (room.modeId === "ranked") continue;
-        candidates.push(room);
-      }
-      if (candidates.length === 0) {
-        socket.emit("room:joinRandom", { ok: false, reason: "현재 입장 가능한 방이 없습니다. 방을 만들어 보세요!" });
-        return;
-      }
-      const room = candidates[Math.floor(Math.random() * candidates.length)];
-      socket.emit("room:joinRandom", { ok: true, roomId: room.id, host: room.players[0] ? room.players[0].nickname : "" });
-    } catch (error) {
-      console.error("room:joinRandom 오류:", error);
-    }
-  });
-
   socket.on("game:word", (data) => {
     try {
       const room = getPlayerRoom(socket);
@@ -5792,16 +5765,6 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("season:info", async () => {
-    try {
-      await ensureSeasonRollover();
-      socket.emit("season:info", buildSeasonInfo());
-    } catch (err) {
-      console.error("시즌 정보 조회 오류:", err.message);
-      socket.emit("season:info", { ok: false, error: "시즌 정보를 불러오지 못했습니다." });
-    }
-  });
-
   /* -- 출석체크 ----------------------------------------- */
   socket.on("attendance:status", async () => {
     try {
@@ -6273,6 +6236,7 @@ io.on("connection", (socket) => {
         console.log(`[WORD APPROVE] ${req.by} → '${word}' 승인 (커스텀 사전 ${customWords.approved.length})`);
       }
       saveCustomWords();
+      notifyRequester(req.by, `'${word}' 단어가 승인되어 게임에 반영되었습니다!`);
       emitCustomWords(socket);
     } catch (err) { console.error("커스텀 사전 승인 오류:", err); }
   });
@@ -6289,7 +6253,9 @@ io.on("connection", (socket) => {
       if (idx === -1) { socket.emit("admin:words", { ok: false, reason: "대기 목록에 없는 단어입니다." }); return; }
       const req = customWords.pending.splice(idx, 1)[0];
       customWords.rejected.push({ word, by: req.by, at: Date.now(), reason });
+      if (customWords.rejected.length > 200) customWords.rejected.splice(0, customWords.rejected.length - 200);
       saveCustomWords();
+      notifyRequester(req.by, `'${word}' 단어 신청이 반려되었습니다.`);
       socket.emit("admin:words", {
         ok: true,
         message: `'${word}' 단어를 거절했습니다.`,
@@ -6579,109 +6545,6 @@ io.on("connection", (socket) => {
       socket.emit("admin:role", { ok: true, role: reg.ok ? reg.role : "none" });
     } catch (err) { console.error("관리자 역할 조회 오류:", err); }
   });
-
-  /* -- 커스텀 사전 — 유저 단어 신청 → 관리자 승인 시 게임 반영 (단일 저장소) -- */
-  socket.on("dictionary:status", async () => {
-    try {
-      const pd = await getPlayerData(socket.id);
-      const nickname = String(pd.nickname || "").trim();
-      const mine = customWords.pending
-        .filter(p => String(p.requester || p.by || "") === nickname)
-        .map(p => ({ id: p.id, word: p.word, at: p.at }));
-      socket.emit("dictionary:status", {
-        ok: true, mine, nickname,
-        approvedTotal: customWords.approved.length,
-        pendingTotal: customWords.pending.length,
-        canSubmit: mine.length < 3
-      });
-    } catch (err) { console.error("사전 상태 오류:", err); }
-  });
-
-  socket.on("dictionary:submit", async (data) => {
-    try {
-      const pd = await getPlayerData(socket.id);
-      const nickname = String(pd.nickname || "").trim();
-      if (!nickname) { socket.emit("dictionary:status", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
-      const word = normalizeWord(data?.word);
-      if (!word || word.length < 2 || word.length > 15) {
-        socket.emit("dictionary:status", { ok: false, reason: "단어는 한글 2~15자여야 합니다." }); return;
-      }
-      if (WORD_SET.has(word) || customWords.approved.includes(word)) {
-        socket.emit("dictionary:status", { ok: false, reason: `'${word}'는 이미 등록된 단어입니다.` }); return;
-      }
-      const mineCount = customWords.pending.filter(p => String(p.requester || p.by || "") === nickname).length;
-      if (mineCount >= 3) {
-        socket.emit("dictionary:status", { ok: false, reason: "진행 중인 신청이 3개 이상입니다. 처리 후 다시 시도해주세요." }); return;
-      }
-      if (customWords.pending.some(p => p.word === word)) {
-        socket.emit("dictionary:status", { ok: false, reason: `'${word}'는 이미 신청 대기 중인 단어입니다.` }); return;
-      }
-      if (customWords.pending.length >= 200) {
-        socket.emit("dictionary:status", { ok: false, reason: "승인 대기 목록이 꽉 찼습니다. 잠시 후 다시 시도해주세요." }); return;
-      }
-      customWords.pending.push({ id: String(customWords.nextId++), word, requester: nickname, by: nickname, at: Date.now() });
-      saveCustomWords();
-      socket.emit("dictionary:status", { ok: true, message: `'${word}' 등록을 신청했습니다. 관리자 승인 후 게임에 반영됩니다.` });
-      console.log(`[DICT] ${nickname} 단어 신청: ${word}`);
-    } catch (err) { console.error("사전 신청 오류:", err); }
-  });
-
-  socket.on("dictionary:cancel", async (data) => {
-    try {
-      const pd = await getPlayerData(socket.id);
-      const nickname = String(pd.nickname || "").trim();
-      const id = String(data?.id || "");
-      const idx = customWords.pending.findIndex(p => String(p.id) === id && String(p.requester || p.by || "") === nickname);
-      if (idx === -1) { socket.emit("dictionary:status", { ok: false, reason: "본인의 신청만 취소할 수 있습니다." }); return; }
-      customWords.pending.splice(idx, 1);
-      saveCustomWords();
-      socket.emit("dictionary:status", { ok: true, message: "단어 신청을 취소했습니다." });
-    } catch (err) { console.error("사전 신청 취소 오류:", err); }
-  });
-
-  socket.on("admin:dictionaryList", async () => {
-    try {
-      const reg = await requireNickname(socket);
-      if (!reg.ok) { socket.emit("admin:dictionary", { ok: false, reason: reg.reason }); return; }
-      socket.emit("admin:dictionary", { ok: true, pending: customWords.pending, approved: customWords.approved });
-    } catch (err) { console.error("관리자 사전 목록 오류:", err); }
-  });
-
-  socket.on("admin:dictionaryApprove", async (data) => {
-    try {
-      const reg = await requireNickname(socket);
-      if (!reg.ok) { socket.emit("admin:dictionary", { ok: false, reason: reg.reason }); return; }
-      const id = String(data?.id || "");
-      const idx = customWords.pending.findIndex(p => String(p.id) === id);
-      if (idx === -1) { socket.emit("admin:dictionary", { ok: false, reason: "승인 대기 신청을 찾을 수 없습니다." }); return; }
-      const [item] = customWords.pending.splice(idx, 1);
-      customWords.approved.push(item.word);
-      customWords.rejected = customWords.rejected.filter(r => r.word !== item.word);
-      saveCustomWords();
-      rebuildWordViews();
-      notifyRequester(item.requester || item.by, `'${item.word}' 단어가 승인되어 게임에 반영되었습니다!`);
-      socket.emit("admin:dictionary", { ok: true, pending: customWords.pending, approved: customWords.approved, message: `'${item.word}' 승인 완료` });
-      console.log(`[DICT] ${reg.nickname} 승인: ${item.word} (by ${item.requester || item.by})`);
-    } catch (err) { console.error("사전 승인 오류:", err); }
-  });
-
-  socket.on("admin:dictionaryReject", async (data) => {
-    try {
-      const reg = await requireNickname(socket);
-      if (!reg.ok) { socket.emit("admin:dictionary", { ok: false, reason: reg.reason }); return; }
-      const id = String(data?.id || "");
-      const idx = customWords.pending.findIndex(p => String(p.id) === id);
-      if (idx === -1) { socket.emit("admin:dictionary", { ok: false, reason: "승인 대기 신청을 찾을 수 없습니다." }); return; }
-      const [item] = customWords.pending.splice(idx, 1);
-      customWords.rejected.push({ word: item.word, by: item.requester || item.by, at: Date.now() });
-      if (customWords.rejected.length > 200) customWords.rejected.splice(0, customWords.rejected.length - 200);
-      saveCustomWords();
-      notifyRequester(item.requester || item.by, `'${item.word}' 단어 신청이 반려되었습니다.`);
-      socket.emit("admin:dictionary", { ok: true, pending: customWords.pending, approved: customWords.approved, message: `'${item.word}' 반려 완료` });
-      console.log(`[DICT] ${reg.nickname} 반려: ${item.word} (by ${item.requester || item.by})`);
-    } catch (err) { console.error("사전 반려 오류:", err); }
-  });
-
 
   /* 감시 목록 — 등록된 닉네임의 로그인 시 최고 관리자에게 알림 */
   socket.on("admin:setWatchlist", async (data) => {
@@ -7148,32 +7011,6 @@ io.on("connection", (socket) => {
       notifySuperAdmins({ nickname: reporter, at: new Date().toISOString(), reason: "chat-report", target });
       console.log(`[CHAT REPORT] '${reporter}' → '${target}': ${text.slice(0, 60)}`);
     } catch (err) { console.error("채팅 신고 오류:", err); socket.emit("chat:reportResult", { ok: false, reason: "신고 접수에 실패했습니다." }); }
-  });
-
-  /* 이모지 리액션 — 방 전체 브로드캐스트 (뮤트·속도 제한 적용) */
-  socket.on("game:react", (data) => {
-    try {
-      const room = getPlayerRoom(socket);
-      if (!room) { socket.emit("react:error", { reason: "방에 들어와 있을 때만 리액션을 보낼 수 있습니다." }); return; }
-      const me = getPlayerBySocket(room, socket.id);
-      const nickname = (me && me.nickname) || socketNicks.get(socket.id) || "";
-      if (!nickname) { socket.emit("react:error", { reason: "닉네임을 먼저 설정해주세요." }); return; }
-      const mute = getMute(nickname, socketFirebaseUid.get(socket.id) || "");
-      if (mute) {
-        socket.emit("react:error", { reason: `리액션이 차단되었습니다${mute.reason ? ` (${mute.reason})` : ""}. 관리자에게 문의하세요.` });
-        return;
-      }
-      const emoji = String(data?.emoji || "");
-      if (!REACT_EMOJIS.includes(emoji)) {
-        socket.emit("react:error", { reason: "사용할 수 없는 이모지입니다." });
-        return;
-      }
-      const now = Date.now();
-      const sd = socket.data || (socket.data = {});
-      if (now - Number(sd.reactLastAt || 0) < REACT_COOLDOWN_MS) return;   /* 조용히 무시 */
-      sd.reactLastAt = now;
-      io.to(room.id).emit("game:react", { from: nickname, emoji, at: now, roomId: room.id });
-    } catch (err) { console.error("리액션 오류:", err); }
   });
 
   /* -- 추천인 등록(레퍼럴) — 계정당 1회, 등록 즉시 양쪽 코인 지급 ---------- */
