@@ -5592,6 +5592,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const chatPanel = $("#chatPanel");
   $("#chatBtn")?.addEventListener("click", () => {
     if (!chatPanel) return;
+    /* 계정 패널 등으로 채팅 래퍼가 숨겨진 상태에서도 버튼으로 항상 되살린다. */
+    $("#chatWrap")?.classList.remove("hidden");
     const opening = chatPanel.classList.contains("hidden");
     chatPanel.classList.toggle("hidden", !opening);
     if (opening) {
