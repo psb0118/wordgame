@@ -1,0 +1,42 @@
+# 새 Render 리소스만 정의한다. 기존 대시보드의 wordgame / wordgame-db와
+# 이름이 겹치지 않게 -v2 이름을 사용한다. 이름이 이미 존재하면 두 이름을
+# 모두 바꾼 뒤 Blueprint를 만든다.
+databases:
+  - name: wordgame-db-v2
+    databaseName: wordgame
+    user: wordgame
+    region: oregon
+    # 무료 플랜은 30일 후 만료되어 같은 장애가 반복된다. 최소 유료 플랜을
+    # 사용하며, 비용을 감수하고 무료로 쓰려면 plan: free로 바꾼다.
+    plan: 0.1c-256mb
+
+services:
+  - type: web
+    name: wordgame-v2
+    runtime: node
+    region: oregon
+    plan: free
+    branch: main
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Blueprint가 새 DB의 Internal Database URL을 자동 주입한다.
+      # 대시보드에서 직접 붙여넣지 않는다.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: wordgame-db-v2
+          property: connectionString
+      # 첫 배포에서 DB 프로비저닝이 끝날 때까지 버틴다 (30회 × 3초 = 90초).
+      - key: DB_CONNECT_ATTEMPTS
+        value: "30"
+      - key: DB_CONNECT_RETRY_MS
+        value: "3000"
+      # 값은 Blueprint에 넣지 않고 Dashboard에서 입력받는다.
+      - key: OPENDICT_API_KEY
+        sync: false
+      # 계정 복구 코드 해시에 사용하는 서버 비밀값. 최초 생성 시 자동 발급.
+      - key: RECOVERY_PEPPER
+        generateValue: true

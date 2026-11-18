@@ -198,13 +198,38 @@ Render 등 **임시 파일 시스템** 환경에서는 기본 JSON 파일 저장
 - `DATABASE_URL`이 설정됐는데 연결에 실패하면 5회 재시도 후 **종료**합니다(데이터 유실 방지). 예전처럼 JSON 파일로 임시 기동하려면 `ALLOW_JSON_FALLBACK=1`을 설정하세요 — 재배포 시 데이터가 유실될 수 있습니다. 재시도 횟수/간격은 `DB_CONNECT_ATTEMPTS`(기본 5), `DB_CONNECT_RETRY_MS`(기본 2000)로 조정합니다.
 - 단어·AI 목록 파일(`data/*.txt`)은 git에 포함되어 있어 초기화되지 않습니다.
 
-### Render에서 PostgreSQL 연결하기 (무료)
-1. Render 대시보드 → **New** → **PostgreSQL** → 무료 인스턴스 생성.
+### Render에서 PostgreSQL 연결하기
+1. Render 대시보드 → **New** → **PostgreSQL** → 인스턴스 생성. 무료 플랜은 30일 후 만료되므로 상시 운영에는 위 Blueprint의 유료 플랜을 권장합니다.
 2. 생성된 DB의 **Internal Database URL**을 복사합니다.
 3. Render 대시보드 → 본 **웹 서비스** → **Environment** → **DATABASE_URL**에 붙여넣고 저장(재배포 자동 진행).
 4. 재배포 후 `https://<서비스주소>/api/health`를 열어 응답이 `"db":"postgres"`인지 확인합니다.
    - `"db":"json"`으로 나오면 환경변수가 안 들어갔거나 연결이 실패한 것이므로 Render 로그에서 `PostgreSQL 연결 실패` 오류를 확인하세요.
 - 이전에 임시 파일 시스템에만 있던 데이터는 복구할 수 없지만, 연결 이후에는 재배포/재시작에도 돈·점수·시즌·친구 등이 유지됩니다.
+
+### Blueprint로 새 DB·웹 서비스 만들기 (기존 설정 유지)
+
+저장소 루트의 `render.yaml`은 **기존 대시보드 서비스를 건드리지 않고** 새 PostgreSQL과 새 웹 서비스를 함께 만듭니다. `wordgame-db-v2`의 Internal Database URL이 `wordgame-v2`의 `DATABASE_URL`로 자동 주입되므로 연결 문자열을 복사·붙여넣을 필요가 없습니다.
+
+- DB: `wordgame-db-v2` · `0.1c-256mb`(최소 유료 플랜, 30일 만료 없음) · oregon
+- 웹: `wordgame-v2` · free 플랜 · `npm ci` / `npm start` · 헬스 체크 `/api/health`
+- `OPENDICT_API_KEY`: `sync: false`라서 Blueprint 적용 시 Dashboard에서 입력
+- `RECOVERY_PEPPER`: 최초 생성 시 Render가 자동 발급
+
+**적용 순서**
+1. `render.yaml`을 `main`에 푸시합니다.
+2. Render Dashboard → **New** → **Blueprint** → 이 저장소와 `main` 브랜치를 선택합니다.
+3. Blueprint 이름을 정하고 생성될 리소스 두 개(`wordgame-v2`, `wordgame-db-v2`)만 보이는지 확인합니다. 기존 `wordgame`/`wordgame-db`가 목록에 나타나면 이름이 겹친 것이므로 적용하지 말고 YAML의 두 이름을 바꿉니다.
+4. `OPENDICT_API_KEY` 값을 입력하고 **Apply**합니다.
+5. DB가 `Available`이 되고 웹 배포가 끝나면 `https://<wordgame-v2 주소>/api/health`에서 HTTP 200과 `"db":"postgres"`를 확인합니다.
+6. 새 주소에서 로그인·게임·기록 저장을 확인한 뒤 필요하면 커스텀 도메인을 새 서비스로 옮깁니다. 기존 서비스는 검증이 끝날 때까지 그대로 둡니다.
+
+**기존 설정과 충돌하지 않게 하는 규칙**
+- Blueprint는 파일에 적힌 이름의 리소스만 관리합니다. 기존 서비스 이름(`wordgame`, `wordgame-db`)을 이 파일에 추가하지 마세요. 같은 이름을 적으면 Render가 기존 리소스를 수정 대상으로 잡을 수 있습니다.
+- 기존 대시보드 서비스는 계속 `main`을 자동 배포합니다. 새 서비스와 별개이며, 기존 서비스의 `DATABASE_URL`을 고치기 전까지는 기존 배포가 실패하는 상태로 남습니다.
+- 두 웹 서비스를 동시에 오래 운영하면 무료 웹 750시간/월을 함께 소모합니다. 새 서비스 검증 후 기존 서비스를 중지·삭제하거나, 새 서비스를 유료 플랜으로 바꾸세요.
+- 새 DB는 빈 상태로 생성됩니다. 기존 데이터가 필요하면 만료 전에 백업/이전해야 하며, 이미 삭제됐다면 복구할 수 없습니다.
+- 무료 DB로 바꾸려면 `plan: free`로 수정할 수 있지만 30일 후 다시 만료됩니다. 무료 DB는 워크스페이스당 1개 제한이 있습니다.
+- `render.yaml`을 다시 Sync하면 이 파일이 관리하는 두 리소스의 설정이 파일 값으로 맞춰집니다. DB 플랜·리전처럼 생성 후 바꿀 수 없는 값은 적용 전에 확정하세요.
 
 ### 다중 인스턴스 운영 (게임 코어 + 웹 릴레이)
 방·턴 타이머·랭크/대회 대기열·접속자 상태는 **게임 코어 한 대**에만 둡니다. 나머지 인스턴스는 정적 파일을 직접 서빙하고 Socket.IO·상태성 API를 게임 코어로 프록시하는 **웹 릴레이**로 동작합니다. 이용자가 어느 웹 인스턴스에 접속해도 모든 실시간 요청이 같은 코어로 도착하므로 방 목록·매칭·관전 상태가 갈라지지 않습니다.
