@@ -766,7 +766,7 @@ test("welcome reward pays after a 3-day gap and never twice a day", () => {
   const socket = { emit: (...args) => emissions.push(args) };
   const amount = c.applyWelcomeReward(pd, socket);
   assert.equal(amount, 3 * 2000, "3일 공백 × 2000원");
-  assert.equal(pd.money, 6000);
+  assert.equal(pd.money, 0, "지급은 저장 시 차분으로 적용되고 pd를 직접 바꾸지 않는다");
   assert.equal(pd.lastSeen, "2026-10-04");
   assert.ok(emissions.some(([e]) => e === "welcome:reward"), "보상 이벤트가 전송되어야 합니다");
   const again = c.applyWelcomeReward(pd, socket);
@@ -922,11 +922,12 @@ test("achievement unlocks once, pays its coin, and never repeats", () => {
   const got = c.evaluateAchievements(pd);
   assert.equal(got.length, 1, "첫 승리 업적이 해금되어야 합니다");
   assert.equal(got[0].id, "first_win");
-  assert.equal(pd.money, 1100, "보상 코인이 지급되어야 합니다");
+  assert.equal(got[0].coin, 1000, "해금된 업적의 보상 코인을 반환");
+  assert.equal(pd.money, 100, "지급은 저장 시 차분으로 적용되고 pd를 직접 바꾸지 않는다");
   assert.ok(pd.achievements.first_win);
 
   assert.equal(c.evaluateAchievements(pd).length, 0, "이미 해금된 업적은 다시 해금되지 않습니다");
-  assert.equal(pd.money, 1100, "보상도 중복 지급되지 않습니다");
+  assert.equal(pd.money, 100, "보상도 중복 지급되지 않습니다");
 });
 
 test("game end feeds achievement counters (wins, words, longest, oneshots)", async () => {

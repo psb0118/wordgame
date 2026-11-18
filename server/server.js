@@ -1223,10 +1223,9 @@ async function settleGuildDuels(key) {
               if (!tx.duplicate) console.warn("길드 대항전 보상 실패:", member.key);
               continue;
             }
-            if (!tx.duplicate) pd.money = Math.max(0, (Number(pd.money) || 0) + amount);
             try {
-              await savePlayerData(member.key, pd);
-              await finishEconomyTx(tx, pd.money);
+              const newMoney = await savePlayerData(member.key, pd, { coinDelta: amount });
+              await finishEconomyTx(tx, newMoney);
             } catch (e) {
               await abortEconomyTx(tx);
               throw e;
@@ -1285,10 +1284,9 @@ async function closeGuildWeek(key) {
             if (!tx.duplicate) failed = true;
             continue;
           }
-          if (!tx.duplicate) pd.money = Math.max(0, (Number(pd.money) || 0) + amount);
           try {
-            await savePlayerData(member.key, pd);
-            await finishEconomyTx(tx, pd.money);
+            const newMoney = await savePlayerData(member.key, pd, { coinDelta: amount });
+            await finishEconomyTx(tx, newMoney);
             if (!tx.duplicate) paid++;
           } catch (e) {
             await abortEconomyTx(tx);
@@ -2407,7 +2405,6 @@ function applyWelcomeReward(pd, socket) {
     const gap = Math.round((Date.parse(today) - Date.parse(last)) / 86400000);
     if (!Number.isFinite(gap) || gap < 3 || gap <= 0) return null;
     const amount = Math.min(gap, 14) * 2000;
-    pd.money = (Number(pd.money) || 0) + amount;
     if (socket) socket.emit("welcome:reward", { amount, gapDays: gap, message: `${gap}일 만에 다시 오셨네요! ${amount.toLocaleString("ko-KR")}원을 돌려받았습니다.` });
     return amount;
   } catch (err) { console.error("복귀 보상 오류:", err.message); return null; }
@@ -2731,7 +2728,6 @@ function evaluateAchievements(pd) {
     if (pd.achievements[def.id]) continue;
     if (!cond[def.id]) continue;
     pd.achievements[def.id] = new Date().toISOString();
-    pd.money = Math.max(0, (Number(pd.money) || 0) + def.coin);
     unlocked.push(def);
   }
   return unlocked;
@@ -3085,13 +3081,14 @@ async function recordMatchHistory(room, winnerIndex, loserIndex) {
         flow
       });
       pd.recentGames = list.slice(-10);
-      await savePlayerData(accountId, pd);
-      if (newAch.length) await recordAchievementLedger(accountId, newAch, pd.money);
+      const achCoin = newAch.reduce((sum, d) => sum + (Number(d.coin) || 0), 0);
+      const newMoney = await savePlayerData(accountId, pd, { coinDelta: achCoin });
+      if (newAch.length) await recordAchievementLedger(accountId, newAch, newMoney);
       if (newAch.length) {
         const as = p.socketId ? io.sockets.sockets.get(p.socketId) : null;
         if (as) as.emit("achievements:unlocked", {
           list: newAch.map(d => ({ id: d.id, name: d.name, coin: d.coin })),
-          money: Math.max(0, Math.floor(Number(pd.money) || 0))
+          money: Math.max(0, Math.floor(Number(newMoney) || 0))
         });
       }
     } catch (e) { console.error("전적 기록 오류:", e.message); }
@@ -6034,8 +6031,9 @@ io.on("connection", (socket) => {
       const pd = await getPlayerData(accountId);
       achievementStats(pd);
       const newAch = evaluateAchievements(pd);   /* 로그인 중 미션/승수 변화로 해금이 밀린 경우 보완 */
-      await savePlayerData(accountId, pd);
-      if (newAch.length) await recordAchievementLedger(accountId, newAch, pd.money);
+      const achCoin = newAch.reduce((sum, d) => sum + (Number(d.coin) || 0), 0);
+      const newMoney = await savePlayerData(accountId, pd, { coinDelta: achCoin });
+      if (newAch.length) await recordAchievementLedger(accountId, newAch, newMoney);
       socket.emit("achievements:list", {
         ok: true,
         list: achievementDefs().map(d => ({ ...d, unlockedAt: pd.achievements[d.id] || null })),
@@ -7357,10 +7355,10 @@ io.on("connection", (socket) => {
         socket.emit("guild:state", { ok: false, reason: tx.duplicate ? "이미 처리된 길드 생성입니다." : "길드 생성 기록에 실패했습니다." });
         return;
       }
-      pd.money = Math.max(0, (Number(pd.money) || 0) - cost);
+      let newMoney = pd.money;
       try {
-        await savePlayerData(nk, pd);
-        await finishEconomyTx(tx, pd.money);
+        newMoney = await savePlayerData(nk, pd, { coinDelta: -cost });
+        await finishEconomyTx(tx, newMoney);
       } catch (e) {
         await abortEconomyTx(tx);
         throw e;
@@ -7375,7 +7373,7 @@ io.on("connection", (socket) => {
       socket.emit("guild:state", {
         ...buildGuildState(nick),
         message: `'${name}' 길드를 만들었습니다! (-${cost.toLocaleString()}코인)`,
-        money: Math.max(0, Math.floor(Number(pd.money) || 0))
+        money: Math.max(0, Math.floor(Number(newMoney) || 0))
       });
     } catch (err) { console.error("길드 생성 오류:", err); socket.emit("guild:state", { ok: false, reason: "길드 생성에 실패했습니다." }); }
   });
@@ -7690,11 +7688,11 @@ io.on("connection", (socket) => {
       }
       if (isRename && prevOwned) {
         playerData.nameChanges = Number(prevRow.nameChanges || 0) + 1;
-        if (renameCost > 0) playerData.money = Math.max(0, Number(playerData.money || 0) - renameCost);
       }
       const welcomeReward = applyWelcomeReward(playerData, socket);
-      await savePlayerData(claim.key, playerData);
-      if (welcomeReward) await recordWelcomeLedger(claim.key, welcomeReward, playerData.money);
+      const renameDelta = (isRename && prevOwned && renameCost > 0) ? -renameCost : 0;
+      const newMoney = await savePlayerData(claim.key, playerData, { coinDelta: (welcomeReward || 0) + renameDelta });
+      if (welcomeReward) await recordWelcomeLedger(claim.key, welcomeReward, newMoney);
       /* 옛 이름 행 제거 — 랭킹/리더보드에 옛 이름이 남아 초기화·중복의 원인이 되지 않게 한다 */
       if (isRename && prevOwned && prevKey !== claim.key) {
         try {
@@ -7716,7 +7714,7 @@ io.on("connection", (socket) => {
       socket.emit("player:nameUpdated", {
         ok: true, nickname, previousNickname: prevNick || "",
         renamed: isRename && prevOwned, nameChanges: Number(playerData.nameChanges || 0),
-        cost: renameCost, money: Number(playerData.money || 0),
+        cost: renameCost, money: newMoney,
         appliedAt: new Date().toISOString()
       });
       if (room) broadcastRoomState(room);
@@ -7801,8 +7799,10 @@ io.on("connection", (socket) => {
             const rpd = await getPlayerData(restored);
             const prevSeen = String(rpd.lastSeen || "");
             const reward = applyWelcomeReward(rpd, socket);
-            if (reward !== null || prevSeen !== rpd.lastSeen) await savePlayerData(restored, rpd);
-            if (reward) await recordWelcomeLedger(restored, reward, rpd.money);
+            if (reward !== null || prevSeen !== rpd.lastSeen) {
+              const newMoney = await savePlayerData(restored, rpd, { coinDelta: reward || 0 });
+              if (reward) await recordWelcomeLedger(restored, reward, newMoney);
+            }
           } catch (e) { console.error("복귀 보상 저장 오류:", e.message); }
           console.log(`[FIREBASE] '${restored}' ← ${email || uid} (복원)`);
           return;
@@ -7830,8 +7830,8 @@ io.on("connection", (socket) => {
       pd.firebaseEmail = email;
       pd.firebaseName = decoded.name || "";
       const welcomeReward = applyWelcomeReward(pd, socket);
-      await savePlayerData(socket.id, pd);
-      if (welcomeReward) await recordWelcomeLedger(normKey(pd.nickname) || socket.id, welcomeReward, pd.money);
+      const newMoney = await savePlayerData(socket.id, pd, { coinDelta: welcomeReward || 0 });
+      if (welcomeReward) await recordWelcomeLedger(normKey(pd.nickname) || socket.id, welcomeReward, newMoney);
       registerOnline(socket.id, pd.nickname);
       socket.emit("player:firebaseAuthResult", {
         ok: true, uid, email,
