@@ -21,3 +21,4 @@ jobs:
           done
       - run: npm test
       - run: npm run lint
+      - run: npm run knip
