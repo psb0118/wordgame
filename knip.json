@@ -6,6 +6,7 @@
     "client/firebase-config.js",
     "client/sw.js",
     "tools/purge-player.js",
+    "tools/diagnose-db.js",
     "test/**/*.test.js"
   ],
   "project": [

@@ -11,7 +11,8 @@
     "start:neon": "node --env-file-if-exists=.env.local server/server.js",
     "test": "node --test",
     "lint": "eslint client server test tools",
-    "knip": "knip"
+    "knip": "knip",
+    "diagnose:db": "node tools/diagnose-db.js"
   },
   "dependencies": {
     "express": "^5.1.0",

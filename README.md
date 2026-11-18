@@ -234,6 +234,39 @@ Render 등 **임시 파일 시스템** 환경에서는 기본 JSON 파일 저장
 - 무료 DB로 바꾸려면 `plan: free`로 수정할 수 있지만 30일 후 다시 만료됩니다. 무료 DB는 워크스페이스당 1개 제한이 있습니다.
 - `render.yaml`을 다시 Sync하면 이 파일이 관리하는 두 리소스의 설정이 파일 값으로 맞춰집니다. DB 플랜·리전처럼 생성 후 바꿀 수 없는 값은 적용 전에 확정하세요.
 
+### 기존 DB 유지 vs 새 Blueprint 결정
+
+기존 DB를 살릴지 새 DB로 갈지는 **데이터가 남아 있는지**와 **DB가 실제로 접속되는지**로 결정합니다. 아래 진단 스크립트는 **SELECT만 실행하는 읽기 전용** 도구입니다.
+
+```bash
+read -rsp "Database URL: " DATABASE_URL; echo
+export DATABASE_URL
+npm run diagnose:db
+```
+
+- URL은 셸 기록·Git·채팅에 남기지 말고 위처럼 입력하세요. 스크립트는 사용자명·비밀번호를 출력하지 않고 `host:port/database`만 보여줍니다.
+- 먼저 Render DB의 **External Database URL**로 실행합니다. 그다음 필요한 경우 Render 내부 셸에서 **Internal Database URL**로 실행합니다. 로컬에서 Internal URL의 DNS 실패는 정상일 수 있습니다.
+- `--json`을 붙이면 자동화용 JSON, `--timeout-ms=8000`으로 제한 시간을 조정할 수 있습니다.
+- 종료 코드: `0` 접속 성공, `2` URL/입력 오류, `3` 접속 실패.
+
+**판정 기준**
+
+| 진단 결과 | 판단 |
+|---|---|
+| 접속됨 + `players`/`economy_ledger` 행이 있음 | 기존 DB 유지. 만료 상태면 유예 기간 안에 유료 플랜으로 업그레이드 |
+| 접속됨 + `kv_store`만 데이터 있음 | 설정·길드 데이터가 필요하면 유지, 아니면 새 DB 가능 |
+| 접속됨 + 모든 테이블 0건 | 새 Blueprint DB로 가도 손실 없음 |
+| External은 접속, Internal만 `ENOTFOUND` | 리전 불일치 가능성. External URL을 `DATABASE_URL`로 쓰거나 리전을 통일 |
+| External도 `ENOTFOUND`/거부 + DB가 `Expired` | 유예 기간 내 업그레이드(데이터 유지) vs 새 Blueprint(빈 DB) 중 선택 |
+| `auth`/`database-missing` | 호스트 문제가 아니라 URL의 계정·DB 이름 불일치. Connect 탭에서 URL 재확인 |
+| 테이블이 없거나 조회 권한 없음 | 새 DB이거나 권한 문제. 앱이 만든 DB인지 확인 |
+
+**결정 순서**
+1. External URL로 진단해 `players`/`economy_ledger`/`kv_store` 행 수를 확인합니다.
+2. 데이터가 있으면 **기존 DB 유지**를 우선합니다. `Expired`라면 삭제하지 말고 유예 기간 안에 업그레이드하세요.
+3. 데이터가 0건이거나 기존 데이터를 포기해도 되면 `render.yaml` Blueprint로 새 DB·웹을 만듭니다.
+4. 새 서비스가 정상 동작하고 `/api/health`의 `db`가 `postgres`인 것을 확인한 뒤에만 기존 서비스·DB를 정리합니다.
+
 ### 다중 인스턴스 운영 (게임 코어 + 웹 릴레이)
 방·턴 타이머·랭크/대회 대기열·접속자 상태는 **게임 코어 한 대**에만 둡니다. 나머지 인스턴스는 정적 파일을 직접 서빙하고 Socket.IO·상태성 API를 게임 코어로 프록시하는 **웹 릴레이**로 동작합니다. 이용자가 어느 웹 인스턴스에 접속해도 모든 실시간 요청이 같은 코어로 도착하므로 방 목록·매칭·관전 상태가 갈라지지 않습니다.
 
