@@ -6,7 +6,7 @@ const CACHE = "kkeul-shell-v6";
 const SHELL = [
   "./offline.html",
   "./style.css",
-  "./style.css?v=42",
+  "./style.css?v=44",
   "./script.js",
   "./script.js?v=51",
   "./firebase-config.js",

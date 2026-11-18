@@ -97,6 +97,9 @@ const DATA_DIR = path.join(ROOT_DIR, "data");
    재배포 시 저장소를 새로 클론하면 JSON 파일이 사라지므로, KK_DATA_DIR로
    영속 디스크 경로를 지정할 수 있다. 미지정 시 기존과 동일하게 data/ 를 쓴다. */
 const RUNTIME_DATA_DIR = process.env.KK_DATA_DIR ? path.resolve(process.env.KK_DATA_DIR) : DATA_DIR;
+/* KK_DATA_DIR이 아직 없는 경로여도 첫 저장이 ENOENT로 조용히 실패하지 않도록 만든다. */
+try { fs.mkdirSync(RUNTIME_DATA_DIR, { recursive: true }); }
+catch (e) { console.warn("데이터 디렉터리 생성 실패:", RUNTIME_DATA_DIR, e.message); }
 const PUSH_STORE_PATH = path.join(RUNTIME_DATA_DIR, "push.json");
 const GUILD_WEEK_STORE_PATH = path.join(RUNTIME_DATA_DIR, "guild-week.json");
 /* 관전자 — 방마다 최대 인원. 플레이어 정원과 별개다. */

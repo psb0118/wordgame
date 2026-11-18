@@ -212,9 +212,10 @@ test("turn push is sent only to away players in live multiplayer games", () => {
 });
 
 test("guild weekly rewards only members who scored this week", () => {
-  const g = weeklyGuild(new Date(Date.now() - 3 * 86400000).toISOString());
-  g.members.push({ key: "c", nick: "C", joinedAt: new Date().toISOString() });
+  /* 기여 판정 기준 시각과 가입 시각을 같은 고정 시각에서 파생 — 실제 날짜와 무관하게 유지 */
   const now = Date.UTC(2026, 9, 28, 3, 0, 0);
+  const g = weeklyGuild(new Date(now - 3 * 86400000).toISOString());
+  g.members.push({ key: "c", nick: "C", joinedAt: new Date(now).toISOString() });
   const key = guildWeek.kstWeekKey(now);
   guildWeek.addGuildWeekContribution(g, { memberKey: "a", points: 30, now, weekKey: key });
   const rewarded = guildWeek.guildWeekRewardMembers(g).map(m => m.key);

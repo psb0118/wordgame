@@ -2840,7 +2840,11 @@ test("tournament finish settles ranked results and pays the winner once", async 
 });
 
 test("season soft reset seeds placement games and ranked wins consume them", async () => {
-  const { c, errors } = context({ seasonStore: { lastClosed: "2026-09", history: [] } });
+  const { c, errors } = context({
+    seasonStore: { lastClosed: "2026-09", history: [] },
+    /* 시즌 판정 시각을 고정 — 실제 날짜가 흐르면 기대 시즌이 흔들리지 않는다. */
+    process: { env: { SEASON_NOW_OVERRIDE: String(Date.UTC(2026, 9, 15, 3)) } }
+  });
   const p = seed(c, "placed", {
     season: { season: "2026-09", games: 3, wins: 2, losses: 1 },
     ranked: { rating: 1900, wins: 20, losses: 5, streak: 3 }
