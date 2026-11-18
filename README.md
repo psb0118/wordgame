@@ -164,6 +164,9 @@ PostgreSQL 연결 실패 (1/5): getaddrinfo ENOTFOUND dpg-xxxx-a
 
 `dpg-...` 형태의 Internal Database URL은 같은 Render 계정·같은 리전의 서비스에서만 해석됩니다. 호스트가 조회되지 않는다는 것은 DB가 삭제·만료·정지됐거나, `DATABASE_URL`이 다른 계정/리전의 옛 DB를 가리킨다는 뜻입니다.
 
+- 대시보드에 Internal/External URL이 남아 있어도 실제 접속이 가능하다는 뜻은 아닙니다. 만료된 DB는 목록과 URL이 보이더라도 연결이 거부될 수 있습니다.
+- DB와 웹 서비스의 **리전이 다르면** Internal URL이 `ENOTFOUND`가 될 수 있습니다. 두 리소스를 같은 리전으로 맞추거나, 외부에서도 접속 가능한 **External Database URL**을 `DATABASE_URL`로 사용하세요.
+
 **Render 무료 PostgreSQL 만료 규칙**
 - 생성 30일 후 만료되어 접속할 수 없습니다.
 - 만료 후 14일 유예 기간 안에 유료 플랜으로 업그레이드하면 기존 데이터를 유지할 수 있습니다.
