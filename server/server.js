@@ -1908,7 +1908,8 @@ function playerExtras(safe) {
   return out;
 }
 
-async function savePlayerData(playerId, data) {
+async function savePlayerData(playerId, data, opts = {}) {
+  const coinDelta = Math.trunc(Number(opts && opts.coinDelta) || 0);
   const safe = migratePlayerData(structuredClone(data));
   const nk = normKey(String(safe.nickname || "").trim());
   const hasRealNick = nk.length > 0 && nk !== normKey("플레이어");
@@ -1953,8 +1954,12 @@ async function savePlayerData(playerId, data) {
   safe.weekly = initWeeklyData(safe.weekly, getKstWeek());
   safe.monthly = initMonthlyData(safe.monthly, getKstMonth());
   if (dbMode === "pg") {
+    /* 코인 변동은 저장된 잔액에 원자적으로 더한다 — 동시 지급/구매가 서로의
+       갱신을 덮어쓰지 않도록 INSERT/UPDATE 모두 money 식을 차분으로 계산한다. */
+    const moneyInsert = coinDelta ? "GREATEST(0, $16 + $35)" : "$16";
+    const moneyUpdate = coinDelta ? "GREATEST(0, players.money + $35)" : "$16";
     try {
-      await dbPool.query(`
+      const saved = await dbPool.query(`
         INSERT INTO players
           (id, nickname, rating, wins, losses, streak, best_streak,
            single_rating, single_wins, single_losses,
@@ -1963,18 +1968,19 @@ async function savePlayerData(playerId, data) {
            titles, current_title, last_check_date, attendance_streak,
            recent_games, daily, weekly, monthly, season,
            firebase_uid, firebase_email, firebase_name, shield_tickets, rating_history, last_seen, extras, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,NOW())
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,${moneyInsert},$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,NOW())
         ON CONFLICT (id) DO UPDATE SET
           nickname=$2, rating=$3, wins=$4, losses=$5,
           streak=$6, best_streak=$7,
           single_rating=$8, single_wins=$9, single_losses=$10,
           ranked_rating=$11, ranked_wins=$12, ranked_losses=$13,
           ranked_streak=$14, ranked_best_streak=$15,
-          money=$16, money_multiplier=$17, rating_boost_games=$18,
+          money=${moneyUpdate}, money_multiplier=$17, rating_boost_games=$18,
           titles=$19, current_title=$20, last_check_date=$21, attendance_streak=$22,
           recent_games=$23, daily=$24, weekly=$25, monthly=$26, season=$27,
           firebase_uid=$28, firebase_email=$29, firebase_name=$30,
           shield_tickets=$31, rating_history=$32, last_seen=$33, extras=$34, updated_at=NOW()
+        RETURNING money
       `, [
         key, safe.nickname || "플레이어",
         safe.multi.rating, safe.multi.wins, safe.multi.losses,
@@ -1990,12 +1996,21 @@ async function savePlayerData(playerId, data) {
         JSON.stringify(safe.season || {}),
         safe.firebaseUid || null, safe.firebaseEmail || "", safe.firebaseName || "",
         safe.shieldTickets, JSON.stringify(safe.ratingHistory), safe.lastSeen,
-        JSON.stringify(playerExtras(safe))
+        JSON.stringify(playerExtras(safe)),
+        ...(coinDelta ? [coinDelta] : [])
       ]);
+      if (coinDelta) {
+        safe.money = Math.max(0, Math.floor(Number(saved.rows[0] && saved.rows[0].money) || 0));
+      }
     } catch (err) {
       console.error("DB 쓰기 오류:", err.message);
       throw err; // 이관/보상 호출자가 실패를 알아야 완료 처리하지 않는다.
     }
+  }
+  if (dbMode !== "pg" && coinDelta) {
+    const current = playerCache.get(key);
+    const base = current ? Number(current.money) || 0 : safe.money;
+    safe.money = Math.max(0, Math.floor(base + coinDelta));
   }
   const previous = playerCache.get(key);
   playerCache.set(key, safe);
@@ -2012,6 +2027,7 @@ async function savePlayerData(playerId, data) {
      격리 VM 테스트 하네스에는 이 함수가 없으므로 방어적으로 존재 여부를 확인한다. */
   if (typeof markFirebaseDirty === "function") markFirebaseDirty(key);
   if (key !== playerId && playerCache.has(playerId)) playerCache.delete(playerId);
+  return safe.money;
 }
 
 /* =========================================================
@@ -2903,7 +2919,6 @@ async function closeSeason(key) {
         continue;
       }
       const alreadyPaid = !!(tx && tx.duplicate);
-      if (!alreadyPaid) pd.money += rew.amount;
       if (rew.title && !pd.titles.some(t => t && t.id === rew.title.id)) {
         pd.titles.push({ id: rew.title.id, name: rew.title.name });
         if (!pd.currentTitle) pd.currentTitle = rew.title.name;
@@ -2916,8 +2931,8 @@ async function closeSeason(key) {
         console.log("[SEASON RESET] " + r.id + ": " + reset.before + " → " + reset.after + " (" + key + ")");
       }
       try {
-        await savePlayerData(r.id, pd);
-        if (tx && tx.ok) await finishEconomyTx(tx, pd.money);
+        const newMoney = await savePlayerData(r.id, pd, { coinDelta: alreadyPaid ? 0 : rew.amount });
+        if (tx && tx.ok) await finishEconomyTx(tx, newMoney);
       } catch (e) {
         if (tx && tx.ok) await abortEconomyTx(tx);
         throw e;
@@ -3334,10 +3349,9 @@ async function settleTournamentGame(resultRoom, winnerIndex, roomId, gameSession
       delta: earned, reason: "tournament_win", ref: roomId
     });
     if (tx && tx.ok) {
-      winnerData.money += earned;
       try {
-        await savePlayerData(winnerId, winnerData);
-        await finishEconomyTx(tx, winnerData.money);
+        const newMoney = await savePlayerData(winnerId, winnerData, { coinDelta: earned });
+        await finishEconomyTx(tx, newMoney);
       } catch (err) {
         await abortEconomyTx(tx);
         throw err;
@@ -3968,10 +3982,9 @@ async function finishGame(room, winnerIndex, loserIndex) {
           if (tx && tx.duplicate) {
             console.warn("이미 지급된 게임 보상 — 중복 지급 생략:", room.id, winnerAccountId);
           } else {
-            winnerData.money += earned;
             try {
-              await savePlayerData(winnerAccountId, winnerData);
-              if (tx && tx.ok) await finishEconomyTx(tx, winnerData.money);
+              const newMoney = await savePlayerData(winnerAccountId, winnerData, { coinDelta: earned });
+              if (tx && tx.ok) await finishEconomyTx(tx, newMoney);
             } catch (e) {
               if (tx && tx.ok) await abortEconomyTx(tx);
               throw e;
@@ -5896,15 +5909,15 @@ io.on("connection", (socket) => {
       }
       pd.lastCheckDate = today;
       pd.attendanceStreak = streak;
-      pd.money += reward;
+      let newMoney = pd.money;
       try {
-        await savePlayerData(socket.id, pd);
-        await finishEconomyTx(tx, pd.money);
+        newMoney = await savePlayerData(socket.id, pd, { coinDelta: reward });
+        await finishEconomyTx(tx, newMoney);
       } catch (e) {
         await abortEconomyTx(tx);
         throw e;
       }
-      socket.emit("attendance:result", { ok: true, reward, streak, money: pd.money, checkedToday: true });
+      socket.emit("attendance:result", { ok: true, reward, streak, money: newMoney, checkedToday: true });
       console.log(`[ATTENDANCE] ${String(pd.nickname || "플레이어")} ${today} ${streak}일차 +${reward}원`);
     } catch (err) { console.error("출석체크 오류:", err); }
   });
@@ -5964,17 +5977,17 @@ io.on("connection", (socket) => {
         socket.emit("shop:result", { ok: false, reason: tx.duplicate ? "이미 구매한 칭호입니다." : "구매 기록에 실패했습니다." });
         return;
       }
-      pd.money -= title.price;
       pd.titles.push({ id: title.id, name: title.name });
       pd.currentTitle = title.name;
+      let newMoney = pd.money;
       try {
-        await savePlayerData(socket.id, pd);
-        await finishEconomyTx(tx, pd.money);
+        newMoney = await savePlayerData(socket.id, pd, { coinDelta: -title.price });
+        await finishEconomyTx(tx, newMoney);
       } catch (e) {
         await abortEconomyTx(tx);
         throw e;
       }
-      socket.emit("shop:result", { ok: true, message: `칭호 '${title.name}'을 구매했습니다.`, money: pd.money, titles: pd.titles, currentTitle: pd.currentTitle });
+      socket.emit("shop:result", { ok: true, message: `칭호 '${title.name}'을 구매했습니다.`, money: newMoney, titles: pd.titles, currentTitle: pd.currentTitle });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("칭호 구매 오류:", err); }
   });
@@ -6086,7 +6099,6 @@ io.on("connection", (socket) => {
       pd[group] = store;
       let message = "보상을 수령했습니다.";
       if (mission.coin) {
-        pd.money += mission.coin;
         message = `${mission.coin.toLocaleString()}원을 받았습니다.`;
       }
       if (mission.title && !pd.titles.some(t => t.id === mission.title.id)) {
@@ -6094,9 +6106,10 @@ io.on("connection", (socket) => {
         if (!pd.currentTitle) pd.currentTitle = mission.title.name;
         message += ` 칭호 '${mission.title.name}'을 획득했습니다.`;
       }
+      let newMoney = pd.money;
       try {
-        await savePlayerData(socket.id, pd);
-        if (tx) await finishEconomyTx(tx, pd.money);
+        newMoney = await savePlayerData(socket.id, pd, { coinDelta: mission.coin || 0 });
+        if (tx) await finishEconomyTx(tx, newMoney);
       } catch (e) {
         if (tx) await abortEconomyTx(tx);
         throw e;
@@ -6111,11 +6124,11 @@ io.on("connection", (socket) => {
           weekly: buildMissionProgress(WEEKLY_MISSIONS, initWeeklyData(pd.weekly, getKstWeek())),
           monthly: buildMissionProgress(MONTHLY_MISSIONS, initMonthlyData(pd.monthly, getKstMonth()))
         },
-        money: pd.money, titles: pd.titles, currentTitle: pd.currentTitle
+        money: newMoney, titles: pd.titles, currentTitle: pd.currentTitle
       });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
       socket.emit("shop:info", {
-        ok: true, money: pd.money, moneyMultiplier: pd.moneyMultiplier,
+        ok: true, money: newMoney, moneyMultiplier: pd.moneyMultiplier,
         ratingBoostGames: pd.ratingBoostGames, titles: pd.titles,
         currentTitle: pd.currentTitle, titleCatalog: SHOP_TITLES,
         potionPrice: SHOP_POTION_PRICE, multiplierPrices: SHOP_MULTIPLIER_PRICES,
@@ -6140,16 +6153,16 @@ io.on("connection", (socket) => {
         socket.emit("shop:result", { ok: false, reason: tx.duplicate ? "이미 처리한 구매입니다." : "구매 기록에 실패했습니다." });
         return;
       }
-      pd.money -= SHOP_SHIELD_PRICE;
       pd.shieldTickets = (pd.shieldTickets || 0) + 1;
+      let newMoney = pd.money;
       try {
-        await savePlayerData(socket.id, pd);
-        await finishEconomyTx(tx, pd.money);
+        newMoney = await savePlayerData(socket.id, pd, { coinDelta: -SHOP_SHIELD_PRICE });
+        await finishEconomyTx(tx, newMoney);
       } catch (e) {
         await abortEconomyTx(tx);
         throw e;
       }
-      socket.emit("shop:result", { ok: true, message: "랭크 보호 티켓 1장을 구매했습니다. (랭크 패배 1회 방어)", money: pd.money, shieldTickets: pd.shieldTickets });
+      socket.emit("shop:result", { ok: true, message: "랭크 보호 티켓 1장을 구매했습니다. (랭크 패배 1회 방어)", money: newMoney, shieldTickets: pd.shieldTickets });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("보호 티켓 구매 오류:", err); }
   });
@@ -6168,16 +6181,16 @@ io.on("connection", (socket) => {
         socket.emit("shop:result", { ok: false, reason: tx.duplicate ? "이미 처리한 구매입니다." : "구매 기록에 실패했습니다." });
         return;
       }
-      pd.money -= SHOP_POTION_PRICE;
       pd.ratingBoostGames += 10;
+      let newMoney = pd.money;
       try {
-        await savePlayerData(socket.id, pd);
-        await finishEconomyTx(tx, pd.money);
+        newMoney = await savePlayerData(socket.id, pd, { coinDelta: -SHOP_POTION_PRICE });
+        await finishEconomyTx(tx, newMoney);
       } catch (e) {
         await abortEconomyTx(tx);
         throw e;
       }
-      socket.emit("shop:result", { ok: true, message: "다음 10판 동안 레이팅 2배 물약을 구매했습니다.", money: pd.money, ratingBoostGames: pd.ratingBoostGames });
+      socket.emit("shop:result", { ok: true, message: "다음 10판 동안 레이팅 2배 물약을 구매했습니다.", money: newMoney, ratingBoostGames: pd.ratingBoostGames });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("물약 구매 오류:", err); }
   });
@@ -6199,16 +6212,16 @@ io.on("connection", (socket) => {
         socket.emit("shop:result", { ok: false, reason: tx.duplicate ? "이미 구매한 배율입니다." : "구매 기록에 실패했습니다." });
         return;
       }
-      pd.money -= row.price;
       pd.moneyMultiplier = target;
+      let newMoney = pd.money;
       try {
-        await savePlayerData(socket.id, pd);
-        await finishEconomyTx(tx, pd.money);
+        newMoney = await savePlayerData(socket.id, pd, { coinDelta: -row.price });
+        await finishEconomyTx(tx, newMoney);
       } catch (e) {
         await abortEconomyTx(tx);
         throw e;
       }
-      socket.emit("shop:result", { ok: true, message: `영구 돈 ${target}배를 구매했습니다.`, money: pd.money, moneyMultiplier: pd.moneyMultiplier });
+      socket.emit("shop:result", { ok: true, message: `영구 돈 ${target}배를 구매했습니다.`, money: newMoney, moneyMultiplier: pd.moneyMultiplier });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("배율 구매 오류:", err); }
   });
@@ -6258,15 +6271,15 @@ io.on("connection", (socket) => {
         socket.emit("admin:moneyResult", { ok: false, reason: "코인 조절 기록에 실패했습니다." });
         return;
       }
-      pd.money = afterMoney;
+      let newMoney = afterMoney;
       try {
-        await savePlayerData(id, pd);
-        if (tx) await finishEconomyTx(tx, pd.money);
+        newMoney = await savePlayerData(id, pd, { coinDelta: actualDelta });
+        if (tx) await finishEconomyTx(tx, newMoney);
       } catch (e) {
         if (tx) await abortEconomyTx(tx);
         throw e;
       }
-      socket.emit("admin:moneyResult", { ok: true, nickname: pd.nickname, money: pd.money, message: `'${nickname}' 님의 돈을 ${amount}원 ${amount >= 0 ? "추가" : "차감"}했습니다. (현재 ${pd.money}원)` });
+      socket.emit("admin:moneyResult", { ok: true, nickname: pd.nickname, money: newMoney, message: `'${nickname}' 님의 돈을 ${amount}원 ${amount >= 0 ? "추가" : "차감"}했습니다. (현재 ${newMoney}원)` });
       if (onlineNicks.has(normKey(nickname))) {
         const tId = onlineNicks.get(normKey(nickname));
         const ts = io.sockets.sockets.get(tId);
@@ -7197,13 +7210,18 @@ io.on("connection", (socket) => {
       }
       myPd.referredBy = refNick;
       myPd.referredAt = new Date().toISOString();
-      myPd.money = Math.max(0, (Number(myPd.money) || 0) + REFERRAL_JOIN_COIN);
       refPd.referralCount = Math.max(0, Math.floor(Number(refPd.referralCount) || 0)) + 1;
-      refPd.money = Math.max(0, (Number(refPd.money) || 0) + REFERRAL_INVITE_COIN);
+      let myBalance = myPd.money;
+      let refBalance = refPd.money;
       try {
-        await Promise.all([savePlayerData(myId, myPd), savePlayerData(refId, refPd)]);
-        await finishEconomyTx(txMine, myPd.money);
-        await finishEconomyTx(txRef, refPd.money);
+        const [myMoney, refMoney] = await Promise.all([
+          savePlayerData(myId, myPd, { coinDelta: REFERRAL_JOIN_COIN }),
+          savePlayerData(refId, refPd, { coinDelta: REFERRAL_INVITE_COIN })
+        ]);
+        myBalance = myMoney;
+        refBalance = refMoney;
+        await finishEconomyTx(txMine, myMoney);
+        await finishEconomyTx(txRef, refMoney);
       } catch (e) {
         await abortEconomyTx(txMine);
         await abortEconomyTx(txRef);
@@ -7218,13 +7236,13 @@ io.on("connection", (socket) => {
           from: myNick,
           count: refPd.referralCount,
           coin: REFERRAL_INVITE_COIN,
-          money: Math.max(0, Math.floor(Number(refPd.money) || 0))
+          money: Math.max(0, Math.floor(Number(refBalance) || 0))
         });
       }
 
       socket.emit("referral:result", {
         ok: true, referredBy: refNick, coin: REFERRAL_JOIN_COIN,
-        money: Math.max(0, Math.floor(Number(myPd.money) || 0)),
+        money: Math.max(0, Math.floor(Number(myBalance) || 0)),
         message: `'${refNick}' 님을 추천인으로 등록했습니다. +${REFERRAL_JOIN_COIN}코인 지급!`
       });
       console.log(`[REFERRAL] '${myNick}' ← '${refNick}' (누적 ${refPd.referralCount}회)`);
@@ -7291,11 +7309,11 @@ io.on("connection", (socket) => {
       });
       if (!tx.ok) { socket.emit("mail:claim", { ok: false, reason: "이미 수령한 쪽지입니다." }); return; }
       entry.read = true;
-      myPd.money = Math.max(0, (Number(myPd.money) || 0) + coin);
       myPd.mail = mail;
+      let newMoney = myPd.money;
       try {
-        await savePlayerData(myId, myPd);
-        await finishEconomyTx(tx, myPd.money);
+        newMoney = await savePlayerData(myId, myPd, { coinDelta: coin });
+        await finishEconomyTx(tx, newMoney);
       } catch (e) {
         await abortEconomyTx(tx);
         throw e;
@@ -7303,7 +7321,7 @@ io.on("connection", (socket) => {
       const unread = mail.filter(m => !m?.read).length;
       socket.emit("mail:claim", {
         ok: true, id: mailId, coin,
-        money: Math.max(0, Math.floor(Number(myPd.money) || 0)),
+        money: Math.max(0, Math.floor(Number(newMoney) || 0)),
         unread,
         message: coin > 0 ? `쪽지를 수령했습니다. +${coin.toLocaleString()}코인!` : "쪽지를 확인했습니다."
       });
