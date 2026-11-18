@@ -4871,6 +4871,10 @@ async function loadSharedReplayFromUrl() {
 /* ---------------------------------------------------------
    단어 뜻 표시 — 서버의 우리말샘 Open API 프록시
 --------------------------------------------------------- */
+function dictionarySearchUrl(word) {
+  return `https://opendict.korean.go.kr/search/searchResult?query=${encodeURIComponent(word)}`;
+}
+
 async function showWordDefinition(word) {
   const modal = $("#wordDefModal");
   const title = $("#wordDefTitle");
@@ -4886,7 +4890,11 @@ async function showWordDefinition(word) {
   try {
     const res = await fetch(`/api/dictionary/definition?word=${encodeURIComponent(w)}`);
     const payload = await res.json();
-    if (!res.ok || !payload.ok) throw new Error(payload.reason || "사전 조회 실패");
+    if (!res.ok || !payload.ok) {
+      const error = new Error(payload.reason || "사전 조회 실패");
+      error.missingKey = !!payload.missingKey;
+      throw error;
+    }
     if (payload.entries.length) {
       body.innerHTML = `<div class="word-def-entries">${payload.entries.map((entry, index) => `
         <article class="word-def-entry">
@@ -4898,9 +4906,14 @@ async function showWordDefinition(word) {
         <div class="word-def-src">사전 출처: <a class="word-def-entry-link" href="https://opendict.korean.go.kr/service/openApiInfo" target="_blank" rel="noopener noreferrer">우리말샘</a> · <a class="word-def-entry-link" href="https://opendict.korean.go.kr/service/copyrightPolicy" target="_blank" rel="noopener noreferrer">CC BY-SA 2.0 대한민국</a></div>`;
       return;
     }
-    body.innerHTML = `<div class="word-def-none">우리말샘에서 '${escapeHtml(w)}'의 뜻풀이를 찾지 못했습니다.<br><a class="word-def-entry-link" href="https://opendict.korean.go.kr/search?query=${encodeURIComponent(w)}" target="_blank" rel="noopener noreferrer">우리말샘에서 직접 검색</a></div>`;
+    body.innerHTML = `<div class="word-def-none">우리말샘에서 '${escapeHtml(w)}'의 뜻풀이를 찾지 못했습니다.<br><a class="word-def-entry-link" href="${dictionarySearchUrl(w)}" target="_blank" rel="noopener noreferrer">우리말샘에서 직접 검색</a></div>`;
   } catch (error) {
-    body.innerHTML = `<div class="word-def-none">${escapeHtml(error.message || "사전 조회에 실패했습니다.")}<br><span class="word-def-hint">서버의 우리말샘 API 키 설정과 연결 상태를 확인해 주세요.</span></div>`;
+    const missingKey = !!(error && error.missingKey);
+    const message = missingKey ? "지금은 뜻풀이를 불러올 수 없습니다." : (error.message || "사전 조회에 실패했습니다.");
+    const hint = missingKey
+      ? "뜻풀이 서비스가 준비되기 전까지는 우리말샘에서 직접 검색해 주세요."
+      : "잠시 후 다시 시도해 주세요. 계속 실패하면 서버의 우리말샘 연결 상태를 확인해 주세요.";
+    body.innerHTML = `<div class="word-def-none">${escapeHtml(message)}<br><span class="word-def-hint">${hint}</span><br><a class="word-def-entry-link" href="${dictionarySearchUrl(w)}" target="_blank" rel="noopener noreferrer">우리말샘에서 직접 검색</a></div>`;
   }
 }
 

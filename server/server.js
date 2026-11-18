@@ -4454,7 +4454,11 @@ async function handleDictionaryDefinition(req, res) {
 
   const apiKey = String(process.env.OPENDICT_API_KEY || "").trim();
   if (!apiKey) {
-    return res.status(503).json({ ok: false, reason: "우리말샘 API 키가 서버에 설정되지 않았습니다." });
+    return res.status(503).json({
+      ok: false,
+      missingKey: true,
+      reason: "우리말샘 API 키가 서버에 설정되지 않았습니다."
+    });
   }
 
   try {

@@ -1064,6 +1064,7 @@ test("dictionary endpoint validates game words, handles missing keys, and caches
   c.process.env.OPENDICT_API_KEY = "";
   const missingKey = await invoke("나무");
   assert.equal(missingKey.code, 503);
+  assert.equal(missingKey.body.missingKey, true, "클라이언트가 키 미설정 안내를 구분할 수 있어야 합니다");
   assert.match(missingKey.body.reason, /API 키/);
   c.process.env.OPENDICT_API_KEY = "test-key";
   const first = await invoke("나무");
