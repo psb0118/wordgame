@@ -4892,7 +4892,11 @@ function requestReplayCoach() {
   }
   replayCoachPending = true;
   if (btn) { btn.disabled = true; btn.textContent = "🤖 분석 중..."; }
-  if (box) { box.classList.remove("hidden"); box.innerHTML = `<div class="coach-loading"><span class="coach-spinner"></span> AI가 이번 판의 선택을 복기하고 있어요...</div>`; }
+  if (box) {
+    box.classList.remove("hidden");
+    box.innerHTML = `<div class="coach-loading"><span class="coach-spinner"></span> AI가 이번 판의 선택을 복기하고 있어요...</div>`;
+    box.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+  }
   trackPanel("coach", "open");
   socket.emit("replay:coach", { flow, myIndex: stored ? null : playerIndex, result });
 }
@@ -4920,6 +4924,7 @@ function renderReplayCoach(data) {
       <span>최장 <b>${escapeHtml(stats.longestWord || "-")}</b></span>
     </div>
     <div class="coach-tips">${(data.tips || []).map(tip => `<div class="coach-tip"><span>${escapeHtml(tip.icon || "💡")}</span><div><b>${escapeHtml(tip.title || "")}</b><p>${escapeHtml(tip.body || "")}</p></div></div>`).join("")}</div>`;
+  box.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
 }
 
 /* ---------------------------------------------------------
@@ -5559,6 +5564,9 @@ document.addEventListener("DOMContentLoaded", () => {
     btn.addEventListener("click", () => {
       $all(".tabs button").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
+      if (window.matchMedia && window.matchMedia("(max-width: 860px)").matches) {
+        btn.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+      }
       const newMode = btn.dataset.mode;
 
       if (newMode !== currentMode && roomId) {

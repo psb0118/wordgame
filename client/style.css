@@ -5063,3 +5063,134 @@ html.dark .coach-head b, html.dark .coach-stats b { color: #e0e7ff; }
 html.dark .coach-tip { background: rgba(15, 23, 42, .55); }
 html.dark .coach-tip b { color: #e2e8f0; }
 html.dark .coach-tip p, html.dark .coach-stats { color: #cbd5e1; }
+
+/* =========================================================
+   모바일 마무리 — 하단 내비/플로팅 버튼/상단 겹침 보정
+   ========================================================= */
+.money-bar .nick-chip {
+  background: rgba(99, 102, 241, .10);
+  border-color: rgba(99, 102, 241, .24);
+  color: #4338ca;
+}
+.money-bar .nick-chip:hover {
+  background: rgba(99, 102, 241, .16);
+  border-color: rgba(99, 102, 241, .38);
+}
+.money-bar .nick-chip.guest {
+  background: #fef3c7;
+  border-color: #fcd34d;
+  color: #92400e;
+}
+.money-bar .mission-mini {
+  background: rgba(16, 185, 129, .12);
+  border-color: rgba(16, 185, 129, .30);
+  color: #047857;
+}
+
+@media (max-width: 860px) {
+  html { scroll-padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
+  body { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+  .nav-shell .tabs {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+  }
+  .nav-shell .tabs::-webkit-scrollbar { display: none; }
+  .nav-shell .tabs button {
+    min-height: 42px;
+    padding: 9px 11px;
+    scroll-snap-align: center;
+  }
+  /* 하단 내비게이션 바 안쪽에 유틸 버튼을 고정해 본문을 가리지 않게 한다. */
+  .nav-shell { padding-left: 54px; padding-right: 54px; }
+  .account-panel,
+  .friends-panel { max-height: calc(100vh - 140px - env(safe-area-inset-bottom)); }
+  .chat-wrap { bottom: calc(6px + env(safe-area-inset-bottom)); left: 6px; }
+  .how-wrap { bottom: calc(6px + env(safe-area-inset-bottom)); right: 6px; }
+  .chat-panel { max-height: calc(100vh - 90px); overflow-y: auto; }
+  .chat-btn,
+  .how-btn {
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    min-height: 42px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 0;
+  }
+  .chat-btn::before { content: "💬"; font-size: 20px; line-height: 1; }
+  .how-btn::before { content: "❓"; font-size: 20px; line-height: 1; }
+  .chat-unread { font-size: .7rem; }
+  .toast { bottom: calc(76px + env(safe-area-inset-bottom)); }
+}
+
+@media (max-width: 520px) {
+  header { padding-top: 44px; }
+  .account-wrap,
+  .friends-wrap { position: absolute; }
+  h1 { font-size: 1.7rem; }
+  header p { font-size: .82rem; line-height: 1.4; }
+  #myNickChip { display: none; }
+  #sideRankOpen {
+    position: absolute;
+    top: 12px;
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 38px;
+    padding: 0;
+    font-size: 0;
+  }
+  #sideRankOpen::before { content: "🏆"; font-size: 18px; line-height: 1; }
+  #sideRankOpen.hidden { display: none !important; }
+  .money-bar { gap: 8px; padding: 6px 9px; }
+  .money-bar .mission-mini { margin-left: auto; }
+  .season-cup-actions button { min-height: 40px; }
+  .daily-challenge-claim { min-height: 40px; }
+  .single-header { flex-direction: column; align-items: stretch; gap: 8px; margin-bottom: 10px; }
+  .single-header .stats { justify-content: center; gap: 8px 12px; margin: 0; font-size: .82rem; }
+  .single-header .game-status { justify-content: center; gap: 8px; }
+  .single-game-area { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; gap: 8px; margin: 12px 0; }
+  .last-char-box { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 10px; padding: 9px 12px; }
+  .last-char-label { margin: 0; font-size: .68rem; }
+  .last-char { font-size: 2.1rem; }
+  .last-hint { flex: 1 1 100%; margin: 0; font-size: .78rem; line-height: 1.35; }
+  .timer-box { min-width: 0; padding: 9px 10px; }
+  .timer-value { font-size: 1.8rem; }
+  .turn-indicator { display: grid; place-items: center; padding: 7px 10px; font-size: .72rem; }
+  .single-input-area { flex-wrap: wrap; gap: 6px; margin: 0 0 4px; }
+  .single-input-area input { flex: 1 1 100%; min-width: 0; padding: 12px 13px; font-size: 1rem; scroll-margin-bottom: 100px; }
+  .single-input-area button { flex: 1 1 0; min-width: 0; padding: 12px 10px; font-size: .9rem; }
+  .single-bottom { margin-top: 0; }
+  .history { max-height: 60px; scrollbar-width: none; -ms-overflow-style: none; }
+  .history::-webkit-scrollbar { display: none; }
+  .single-options-hint { display: none; }
+  #onlineInput, #rankedInput { scroll-margin-bottom: 100px; }
+  .entry { flex-wrap: wrap; gap: 8px; }
+  .entry input { flex: 1 1 100%; min-width: 0; padding: 12px 13px; }
+  .entry button { flex: 1 1 100%; }
+  .season-reward-item { white-space: normal; overflow-wrap: anywhere; text-align: left; }
+  .season-bar-reward { justify-content: flex-start; }
+  .replay-box { padding-top: 0; }
+  .replay-box > .admin-head {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    margin: 0 -16px 12px;
+    border-radius: 14px 14px 0 0;
+  }
+  .replay-coach-box { scroll-margin-top: 58px; }
+  .replay-list { max-height: none; overflow: visible; }
+  .replay-row { gap: 6px; padding: 6px 8px; font-size: .82rem; }
+  .replay-turn { min-width: 18px; }
+  .replay-who { min-width: 44px; flex: 0 1 52px; }
+  .replay-word { flex: 1 1 60px; min-width: 0; overflow-wrap: anywhere; }
+  .replay-depth { flex: 0 0 auto; white-space: nowrap; font-size: .66rem; padding: 2px 5px; }
+  .replay-actions { gap: 6px; }
+  .replay-actions button { padding: 9px 11px; font-size: .82rem; }
+}

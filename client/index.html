@@ -2,12 +2,12 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#6d28d9">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=46">
+  <link rel="stylesheet" href="style.css?v=63">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -607,7 +607,7 @@
     <div class="side-rank-foot"><button id="sideRankRefresh" type="button" class="side-rank-refresh">새로고침</button></div>
   </aside>
 
-  <button id="sideRankOpen" class="side-rank-open hidden">🏆 랭킹</button>
+  <button id="sideRankOpen" class="side-rank-open hidden" aria-label="실시간 랭킹">🏆 랭킹</button>
 
   <div id="bugModal" class="modal hidden">
     <div class="modal-box">
@@ -650,7 +650,7 @@
   </div>
 
   <div id="howWrap" class="how-wrap">
-    <button id="howBtn" class="how-btn" title="게임 방법">❓ 게임 방법</button>
+    <button id="howBtn" class="how-btn" title="게임 방법" aria-label="게임 방법">❓ 게임 방법</button>
     <div id="howModal" class="modal hidden">
       <div class="modal-box how-box">
         <div class="how-head">
@@ -760,7 +760,7 @@
 
   <!-- 실시간 채팅 (전체/방 자동 전환 — 로그인한 유저만 사용 가능) -->
   <div id="chatWrap" class="chat-wrap hidden">
-    <button id="chatBtn" class="chat-btn" title="채팅 열기">💬 채팅<span id="chatUnread" class="chat-unread hidden">0</span></button>
+    <button id="chatBtn" class="chat-btn" title="채팅 열기" aria-label="채팅 열기">💬 채팅<span id="chatUnread" class="chat-unread hidden">0</span></button>
     <div id="chatPanel" class="chat-panel hidden">
       <div class="chat-head">
         <span id="chatTitle">💬 전체 채팅</span>
@@ -795,7 +795,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
   <script src="live-ui.js?v=1"></script>
-  <script src="script.js?v=55"></script>
+  <script src="script.js?v=57"></script>
   <script src="firebase-auth.js?v=3"></script>
 </body>
 </html>
