@@ -734,24 +734,21 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
     const HARD_OPEN_CAP = 240;
     const deadline = Date.now() + HARD_OPEN_THREAT_BUDGET_MS;
 
-    /* 시작 턴에는 루트/희귀 루트를 먼저 검증한다. 압박 단어보다 루트가
-       우선이며, 루트가 없거나 안전하지 않을 때만 아래 좁은 후보로 내려간다. */
-    const rootSafe = [];
-    for (const s of scored.filter(item => item.tier >= 3).slice(0, 24)) {
-      if (Date.now() > deadline) break;
-      if (!safe(s.nw)) continue;
-      if (Date.now() > deadline) break;
-      const threat = losesToImmediateThreat(s.nw, used, WORD_INDEX, deadline);
-      if (threat === null) break;
-      if (!threat) rootSafe.push(s);
-    }
-    if (rootSafe.length) {
-      rootSafe.sort((a, b) => b.tier - a.tier || a.rareCount - b.rareCount || a.endBucket - b.endBucket || a.w.localeCompare(b.w));
-      return rootSafe[0].w;
-    }
-
-    /* 응수 폭이 좁은 후보만 먼저 추린다. endBucket은 끝 음절의 전체 응수
-       풀이므로 getCandidates를 모든 후보에 돌리지 않아도 좁은 순서를 얻는다. */
+    /* 시작 턴에는 루트/희귀 루트도 압박 수와 같은 후보군에서 함께 평가한다.
+       루트 보너스만으로 넓은 루트가 좁은 압박 수를 이기지 않도록, 실제 응수
+       폭이 넓을수록 점수를 깎는다. */
+    const openingScore = (s) =>
+      (s.tier === 4 ? 100 : s.tier === 3 ? 70 : 0)
+      + Math.max(0, 160 - s.endBucket) * 0.5;
+    /* 루트 후보와 좁은 압박 후보를 하나의 후보군으로 합친 뒤, 루트 보너스와
+       응수 폭을 함께 점수화한다. 후보를 점수순으로 검증하므로 넓은 루트가
+       검증 예산을 먼저 소모해 압박 수를 밀어내는 일도 막는다. */
+    const rootCandidates = scored.filter(item => item.tier >= 3)
+      .slice(0, 24)
+      .map(s => ({
+        ...s,
+        nextCount: getCandidates(s.nw, used, WORD_INDEX, HARD_OPEN_CAP + 1).length
+      }));
     const narrowed = scored.slice()
       .sort((a, b) => a.endBucket - b.endBucket || b.tier - a.tier || a.rareCount - b.rareCount || a.w.localeCompare(b.w))
       .slice(0, HARD_OPEN_SCAN_CAP)
@@ -759,22 +756,30 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
         ...s,
         nextCount: getCandidates(s.nw, used, WORD_INDEX, HARD_OPEN_CAP + 1).length
       }))
-      .filter(s => s.nextCount > 0 && s.nextCount <= HARD_OPEN_CAP)
-      .sort((a, b) => a.nextCount - b.nextCount || b.tier - a.tier || a.rareCount - b.rareCount || a.w.localeCompare(b.w));
+      .filter(s => s.nextCount > 0 && s.nextCount <= HARD_OPEN_CAP);
 
-    const safeNarrow = [];
+    const openings = new Map();
+    for (const s of rootCandidates) openings.set(s.w, s);
+    for (const s of narrowed) if (!openings.has(s.w)) openings.set(s.w, s);
+    const rankedOpenings = [...openings.values()]
+      .filter(s => s.nextCount > 0)
+      .sort((a, b) => openingScore(b) - openingScore(a)
+        || a.nextCount - b.nextCount
+        || b.tier - a.tier
+        || a.w.localeCompare(b.w));
+
+    const safeOpenings = [];
     let threatChecks = 0;
-    for (const s of narrowed) {
+    for (const s of rankedOpenings) {
       if (threatChecks >= HARD_OPEN_THREAT_CAP || Date.now() > deadline) break;
       if (!safe(s.nw)) continue;
       if (Date.now() > deadline) break;
       threatChecks++;
       const threat = losesToImmediateThreat(s.nw, used, WORD_INDEX, deadline);
       if (threat === null) break;   /* 예산 초과 — 아래 안전 폴백으로 */
-      if (!threat) safeNarrow.push(s);
+      if (!threat) safeOpenings.push(s);
     }
-    if (safeNarrow.length) {
-      safeNarrow.sort((a, b) => a.nextCount - b.nextCount || b.tier - a.tier || a.rareCount - b.rareCount || a.w.localeCompare(b.w));
+    if (safeOpenings.length) {
       const provenWins = [];
       const unknown = [];
       const winUsed = new Set(used);
@@ -784,7 +789,7 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
       _winDepth = 24;
       const budget = { nodes: 90000 };
       try {
-        for (const s of safeNarrow.slice(0, 28)) {
+        for (const s of safeOpenings.slice(0, 28)) {
           if (budget.nodes <= 0) break;
           winUsed.add(s.nw);
           const r = solveWin(s.nw, winUsed, 0, budget, WORD_INDEX);
@@ -797,11 +802,13 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
         _winDepth = prevDepth;
       }
       if (provenWins.length) {
-        provenWins.sort((a, b) => a.nextCount - b.nextCount || b.tier - a.tier || a.w.localeCompare(b.w));
+        provenWins.sort((a, b) => openingScore(b) - openingScore(a)
+          || a.nextCount - b.nextCount || b.tier - a.tier || a.w.localeCompare(b.w));
         return provenWins[0].w;
       }
       if (unknown.length) {
-        unknown.sort((a, b) => a.nextCount - b.nextCount || b.tier - a.tier || a.w.localeCompare(b.w));
+        unknown.sort((a, b) => openingScore(b) - openingScore(a)
+          || a.nextCount - b.nextCount || b.tier - a.tier || a.w.localeCompare(b.w));
         return unknown[0].w;
       }
     }

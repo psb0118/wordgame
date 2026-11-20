@@ -696,15 +696,15 @@ function openingWords(includeRoot) {
   return words;
 }
 
-test("hard AI opens with a root word when one is available", () => {
+test("hard AI chooses a narrow pressure over a broad root", () => {
   const d = syntheticAI(openingWords(true), { root: ["가족"] });
   const first = chooseSyntheticStart(d);
   const second = chooseSyntheticStart(d);
   assert.ok(first, "어려움 시작 단어를 골라야 합니다");
   assert.equal(first, second, "어려움은 같은 판에서 같은 최선 수를 골라야 합니다");
-  assert.equal(first, "가족", "루트 후보가 있으면 시작 단어로 루트를 골라야 합니다");
+  assert.notEqual(first, "가족", "넓은 루트보다 좁은 압박 수를 골라야 합니다");
   const replies = game.getCandidates(first, new Set([first]), d.WORD_INDEX);
-  assert.ok(replies.length > 0);
+  assert.ok(replies.length > 0 && replies.length <= 8, `압박 단어여야 합니다: ${first} (${replies.length})`);
   for (const reply of replies) {
     const used = new Set([first, reply]);
     assert.ok(game.getCandidates(reply, used, d.WORD_INDEX, 1).length > 0,
@@ -728,6 +728,60 @@ test("hard AI falls back to a narrow pressure word when no root is available", (
   assert.notEqual(first, "가족");
   const replies = game.getCandidates(first, new Set([first]), d.WORD_INDEX);
   assert.ok(replies.length > 0 && replies.length <= 8, `압박 단어여야 합니다: ${first} (${replies.length})`);
+});
+
+function isRootWord(d, word) {
+  return d.ROOT_WORDS.has(word) || d.RARE_ROOT_WORDS.has(word);
+}
+
+function easyOpening(d, syllable) {
+  const { c } = context(aiGlobals(d, { ONESHOT_FREE_TURNS: 1 }));
+  const room = {
+    id: `r-easy-${syllable}`, mode: "ai", difficulty: "easy", hostSocketId: "h",
+    players: [
+      { id: "h", socketId: "h", playerIndex: 0, nickname: "사람", isBot: false,
+        hearts: 2, alive: true, eliminated: false, connected: true, waiting: false, mistakes: 0 },
+      { id: "bot", socketId: "bot", playerIndex: 1, nickname: "AI", isBot: true,
+        hearts: 2, alive: true, eliminated: false, connected: true, waiting: false, mistakes: 0 },
+    ],
+    turnPlayerIndex: 1, turnNumber: 0, gameSessionId: 1,
+    started: true, finished: false, winner: null, loser: null,
+    currentWord: syllable, startSyllable: syllable, lastSyllable: null,
+    usedWords: new Set(),
+    history: [{ word: syllable, player: -1, nickname: "시작", depth: null, turn: 0 }],
+    hintsUsed: 0,
+  };
+  c.runAI(room, room.gameSessionId);
+  return room.history[1] ? room.history[1].word : null;
+}
+
+test("actual start syllables select roots for easy and normal, and hard combines root with pressure", () => {
+  const d = dict();
+  const starts = ["가", "기", "나", "다", "사", "마", "자", "시"];
+  let hardRoots = 0;
+  for (const syllable of starts) {
+    const normal = game.chooseAIStartWord(syllable, new Set(), d.WORD_SET, d.WORD_INDEX,
+      d.ATTACK_DEPTH, d.DEFENSE_WORDS, d.ROOT_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, { strong: false });
+    const hard = game.chooseAIStartWord(syllable, new Set(), d.WORD_SET, d.WORD_INDEX,
+      d.ATTACK_DEPTH, d.DEFENSE_WORDS, d.ROOT_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, { strong: true });
+    const easy = easyOpening(d, syllable);
+    assert.ok(isRootWord(d, normal), `${syllable}: normal 시작 '${normal}'이 루트가 아닙니다`);
+    assert.ok(isRootWord(d, easy), `${syllable}: easy 시작 '${easy}'가 루트가 아닙니다`);
+    assert.ok(hard, `${syllable}: hard 시작 단어가 없습니다`);
+
+    if (isRootWord(d, hard)) {
+      hardRoots++;
+      continue;
+    }
+    /* 하드가 루트를 포기했다면, 가장 좁은 루트보다 실제 응수가 더 좁은 압박 수여야 한다. */
+    const bestRootReplies = Math.min(...[...d.ROOT_WORDS, ...d.RARE_ROOT_WORDS]
+      .filter(w => w.startsWith(syllable))
+      .map(w => game.getCandidates(w, new Set(), d.WORD_INDEX).length));
+    const hardReplies = game.getCandidates(hard, new Set([hard]), d.WORD_INDEX).length;
+    assert.ok(hardReplies < bestRootReplies,
+      `${syllable}: hard '${hard}'가 루트(${bestRootReplies})보다 좁지 않습니다(${hardReplies})`);
+  }
+  assert.ok(hardRoots >= 6, `hard 실제 시작 8개 중 루트 선택이 너무 적습니다: ${hardRoots}/8`);
 });
 
 test("hard AI avoids handing the opponent a one-shot even in a wide position", () => {
