@@ -517,7 +517,7 @@ function opponentHasOneShot(word, usedSet, WORD_INDEX) {
   used.add(word);
   let examined = 0;
   for (const reply of getCandidates(word, used, WORD_INDEX)) {
-    if (++examined > 1200) return false;   /* 넓은 말밭은 증명 불가로 본다 */
+    if (++examined > 8000) return false;   /* 넓은 말밭은 증명 불가로 본다 */
     const u2 = new Set(used);
     u2.add(reply);
     if (getCandidates(reply, u2, WORD_INDEX, 1).length === 0) return true;
@@ -532,13 +532,13 @@ function losesToImmediateThreat(word, usedSet, WORD_INDEX) {
   const used = new Set(usedSet);
   used.add(word);
   const opp = getCandidates(word, used, WORD_INDEX, 13);
-  if (opp.length > 12) return false;   /* 상대 응수가 넓으면 이 검사로는 단정 불가 */
+  if (opp.length > 12) return opponentHasOneShot(word, used, WORD_INDEX);
   for (const reply of opp) {
     const u2 = new Set(used);
     u2.add(reply);
     const ai = getCandidates(reply, u2, WORD_INDEX, 7);
     if (ai.length === 0) return true;
-    if (ai.length > 6) return false;   /* AI 선택지가 넓으면 3수 함정으로 단정하지 않는다 */
+    if (ai.length > 6) continue;   /* 이 응수는 단정 불가 — 다른 응수의 강제 패배는 계속 찾는다 */
     let hasSafeMove = false;
     for (const next of ai) {
       const u3 = new Set(u2);

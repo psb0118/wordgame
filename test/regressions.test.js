@@ -692,6 +692,22 @@ test("hard AI opens with a narrow pressure word instead of a broad root word", (
     `넓은 루트 단어 '${first}' 대신 좁은 압박 단어를 골라야 합니다`);
 });
 
+test("hard AI avoids handing the opponent a one-shot even in a wide position", () => {
+  const d = dict();
+  const used = new Set(["나릅", "늡늡"]);
+  const word = game.chooseAIWord("늡늡", used, d.WORD_SET, d.WORD_INDEX, d.ATTACK_DEPTH,
+    d.ROOT_WORDS, 2, d.DEFENSE_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, { strong: true, freeTurns: 1 });
+  assert.ok(word, "합법 수를 골라야 합니다");
+  assert.notEqual(word, "늡다리", "상대의 리튬 한방을 허용하는 수를 골랐습니다");
+  const after = new Set([...used, word]);
+  for (const reply of game.getCandidates(word, after, d.WORD_INDEX)) {
+    const u = new Set(after);
+    u.add(reply);
+    assert.ok(game.getCandidates(reply, u, d.WORD_INDEX, 1).length > 0,
+      `상대 응수 '${reply}'가 즉시 한방입니다`);
+  }
+});
+
 test("hard AI rejects a narrow move that gives the opponent a forced win", () => {
   const words = ["가나", "가다", "나끝", "다라", "라가"];
   /* 후보 목록을 160개 넘게 만들어, 예전의 "목록이 크면 증명 생략" 회귀를 덮는다.
