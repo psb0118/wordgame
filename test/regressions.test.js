@@ -676,16 +676,16 @@ test("chooseAIWord never returns attack or one-shot words before free turns end"
   }
 });
 
-test("hard AI opens with a narrow pressure word instead of a broad root word", () => {
+function openingWords(includeRoot) {
   const words = [
-    "가좁", "가족", "가람",
+    "가좁", "가람",
     "좁가", "좁나", "좁다", "좁라",
     "람가", "람나", "람다", "람라",
     "나무", "다리", "라면", "마차", "바다", "사과", "아가",
     "무가", "리가", "면가", "차가", "과가",
   ];
-  /* 가족은 응수를 160개 넘게 만들어 강제 승리 증명이 열리지 않게 한다.
-     그래야 오프닝이 "증명된 승리"가 아니라 좁은 압박 단어를 고르는지 검증된다. */
+  if (includeRoot) words.push("가족");
+  /* 가족은 응수를 160개 넘게 만들어 강제 승리 증명이 열리지 않게 한다. */
   const tails = ["가", "나", "다", "라", "마", "바", "사", "아"];
   for (let i = 0; i < 161; i++) {
     const a = tails[i % tails.length];
@@ -693,19 +693,41 @@ test("hard AI opens with a narrow pressure word instead of a broad root word", (
     const c = tails[Math.floor(i / (tails.length * tails.length)) % tails.length];
     words.push(`족${a}${b}${c}`);
   }
-  const d = syntheticAI(words, { root: ["가족"] });
+  return words;
+}
+
+test("hard AI opens with a root word when one is available", () => {
+  const d = syntheticAI(openingWords(true), { root: ["가족"] });
   const first = chooseSyntheticStart(d);
   const second = chooseSyntheticStart(d);
   assert.ok(first, "어려움 시작 단어를 골라야 합니다");
   assert.equal(first, second, "어려움은 같은 판에서 같은 최선 수를 골라야 합니다");
+  assert.equal(first, "가족", "루트 후보가 있으면 시작 단어로 루트를 골라야 합니다");
   const replies = game.getCandidates(first, new Set([first]), d.WORD_INDEX);
-  assert.ok(replies.length > 0 && replies.length <= 8, `압박 단어여야 합니다: ${first} (${replies.length})`);
+  assert.ok(replies.length > 0);
   for (const reply of replies) {
     const used = new Set([first, reply]);
     assert.ok(game.getCandidates(reply, used, d.WORD_INDEX, 1).length > 0,
       `상대 응수 '${reply}'에 AI가 즉시 죽는 시작 단어 '${first}'`);
   }
-  assert.notEqual(first, "가족", "넓은 루트 단어 대신 좁은 압박 단어를 골라야 합니다");
+});
+
+test("AI opening allows attack words only when the free-turn rule permits them", () => {
+  const words = ["가좁", "가람", "좁가", "좁나", "람가", "람나", "나무"];
+  const d = syntheticAI(words, { attack: ["가좁"] });
+  const banned = chooseSyntheticStart(d, "가", { strong: true });
+  assert.notEqual(banned, "가좁", "공격 금지 턴이 남아 있으면 시작 공격 단어를 고르면 안 됩니다");
+  const allowed = chooseSyntheticStart(d, "가", { strong: true, allowAttack: true });
+  assert.equal(allowed, "가좁", "공격 금지 턴이 0이면 시작 공격 단어를 고를 수 있어야 합니다");
+});
+
+test("hard AI falls back to a narrow pressure word when no root is available", () => {
+  const d = syntheticAI(openingWords(false));
+  const first = chooseSyntheticStart(d);
+  assert.ok(first, "루트가 없어도 시작 단어를 골라야 합니다");
+  assert.notEqual(first, "가족");
+  const replies = game.getCandidates(first, new Set([first]), d.WORD_INDEX);
+  assert.ok(replies.length > 0 && replies.length <= 8, `압박 단어여야 합니다: ${first} (${replies.length})`);
 });
 
 test("hard AI avoids handing the opponent a one-shot even in a wide position", () => {

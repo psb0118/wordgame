@@ -4368,18 +4368,21 @@ function runAI(room, gameSessionId) {
   const difficulty = room.difficulty || "normal";
   if (room.turnNumber === 0) {
     if (difficulty === "easy") {
-      /* 쉬움: 시작 음절에 맞는 안전한 단어를 무작위로 — 희귀 루트/공격·한방 단어를 노리지 않고
-         방어 단어는 절대 시작하지 않는다. 돌림 단어면 그것을 우선한다 */
+      /* 쉬움: 시작 음절에 맞는 안전한 단어 중 루트를 우선하고, 없으면 돌림/일반을
+         무작위로 고른다. 공격 금지 턴이 0일 때만 공격·한방 단어도 허용한다. */
+      const freeAttack = ONESHOT_FREE_TURNS === 0;
       const legal = getCandidates(room.startSyllable || "", room.usedWords, WORD_INDEX)
         .filter(w => w.startsWith(room.startSyllable)
-          && !isAttackWord(w, ATTACK_DEPTH)
-          && !isOneShot(w, room.usedWords, WORD_INDEX)
+          && (freeAttack || !isAttackWord(w, ATTACK_DEPTH))
+          && (freeAttack || !isOneShot(w, room.usedWords, WORD_INDEX))
           && !DEFENSE_WORDS.has(w));
+      const rootStart = legal.filter(w => ROOT_WORDS.has(w) || RARE_ROOT_WORDS.has(w));
       const dolrimStart = legal.filter(w => DOLRIM_WORDS.has(w));
-      const pool = dolrimStart.length > 0 ? dolrimStart : legal;
+      const pool = rootStart.length > 0 ? rootStart
+        : dolrimStart.length > 0 ? dolrimStart : legal;
       word = pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : null;
     } else {
-      word = chooseAIStartWord(room.startSyllable || "", room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, { strong: difficulty === "hard" });
+      word = chooseAIStartWord(room.startSyllable || "", room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, { strong: difficulty === "hard", allowAttack: ONESHOT_FREE_TURNS === 0 });
     }
   } else {
     if (difficulty === "easy") {
@@ -4416,7 +4419,7 @@ function runAI(room, gameSessionId) {
       /* 이미 시도한 단어를 피해 다른 시작 단어로 재시도 */
       const blocked = new Set(room.usedWords);
       blocked.add(word);
-      let retry = chooseAIStartWord(room.startSyllable || "", blocked, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, { strong: difficulty === "hard" });
+      let retry = chooseAIStartWord(room.startSyllable || "", blocked, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, { strong: difficulty === "hard", allowAttack: ONESHOT_FREE_TURNS === 0 });
       if (!retry) retry = pickAIFallbackWord(room, blocked);
       if (retry) playWord(room, player, retry, gameSessionId);
     } else {

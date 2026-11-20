@@ -624,6 +624,7 @@ function losesToImmediateThreat(word, usedSet, WORD_INDEX, deadline) {
 function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, opts) {
   const used = usedWords instanceof Set ? usedWords : new Set();
   const strong = !!(opts && opts.strong);
+  const allowAttack = !!(opts && opts.allowAttack);
   const defenseSet = DEFENSE_WORDS || new Set();
   const rootSet = ROOT_WORDS || new Set();
   const rareRootSet = RARE_ROOT_WORDS || new Set();
@@ -642,8 +643,14 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
   const legal = [];
   for (const w of getCandidates(syllableF, used, WORD_INDEX)) {
       if (!w.startsWith(syllableF)) continue;
-      if (isAttackWord(w, ATTACK_DEPTH)) continue;
+      const attack = isAttackWord(w, ATTACK_DEPTH);
+      if (attack && !allowAttack) continue;
       if (defenseSet.has(w)) continue;
+      if (attack) {
+        /* 공격 금지 턴이 0인 설정에서는 좁은 공격 단어도 시작 후보로 허용한다. */
+        legal.push(w);
+        continue;
+      }
       if (used.size === 0) {
         /* 턴0: 받아칠 수 있는 후보 = 끝음절 대응풀 - (스스로 같은 글자로 시작하면 -1)
            "유저가 답할 수 있는 단어가 넉넉한" 끝음절로만 연다.
@@ -660,8 +667,8 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
        playWord가 허용하는 단어가 하나라도 있으면 시작한다. */
     const emergency = getCandidates(syllableF, used, WORD_INDEX)
       .filter(w => w.startsWith(syllableF)
-        && !isAttackWord(w, ATTACK_DEPTH)
-        && !isOneShot(w, used, WORD_INDEX));
+        && (allowAttack || !isAttackWord(w, ATTACK_DEPTH))
+        && (allowAttack || !isOneShot(w, used, WORD_INDEX)));
     if (!emergency.length) return null;
     emergency.sort((a, b) => tierOf(b) - tierOf(a) || a.localeCompare(b));
     return emergency[0];
@@ -726,6 +733,23 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
   if (strong) {
     const HARD_OPEN_CAP = 240;
     const deadline = Date.now() + HARD_OPEN_THREAT_BUDGET_MS;
+
+    /* 시작 턴에는 루트/희귀 루트를 먼저 검증한다. 압박 단어보다 루트가
+       우선이며, 루트가 없거나 안전하지 않을 때만 아래 좁은 후보로 내려간다. */
+    const rootSafe = [];
+    for (const s of scored.filter(item => item.tier >= 3).slice(0, 24)) {
+      if (Date.now() > deadline) break;
+      if (!safe(s.nw)) continue;
+      if (Date.now() > deadline) break;
+      const threat = losesToImmediateThreat(s.nw, used, WORD_INDEX, deadline);
+      if (threat === null) break;
+      if (!threat) rootSafe.push(s);
+    }
+    if (rootSafe.length) {
+      rootSafe.sort((a, b) => b.tier - a.tier || a.rareCount - b.rareCount || a.endBucket - b.endBucket || a.w.localeCompare(b.w));
+      return rootSafe[0].w;
+    }
+
     /* 응수 폭이 좁은 후보만 먼저 추린다. endBucket은 끝 음절의 전체 응수
        풀이므로 getCandidates를 모든 후보에 돌리지 않아도 좁은 순서를 얻는다. */
     const narrowed = scored.slice()
