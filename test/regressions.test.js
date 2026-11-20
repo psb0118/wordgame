@@ -755,11 +755,21 @@ function easyOpening(d, syllable) {
   return room.history[1] ? room.history[1].word : null;
 }
 
-test("actual start syllables select roots for easy and normal, and hard combines root with pressure", () => {
+test("actual start syllables match the fixed hard opening table and keep easy/normal on roots", () => {
   const d = dict();
-  const starts = ["가", "기", "나", "다", "사", "마", "자", "시"];
-  let hardRoots = 0;
-  for (const syllable of starts) {
+  /* 실제 사전 기준 hard 오프닝 기대값. 가/나/다/사/마/시는 좁은 루트,
+     기/자는 좁은 루트가 없어 더 좁은 압박 수가 선택된다. */
+  const hardExpected = {
+    가: "가슴",
+    기: "기띰",
+    나: "나무꾼",
+    다: "다툼",
+    사: "사과즙",
+    마: "마라톤",
+    자: "자뜩",
+    시: "시스템",
+  };
+  for (const [syllable, expected] of Object.entries(hardExpected)) {
     const normal = game.chooseAIStartWord(syllable, new Set(), d.WORD_SET, d.WORD_INDEX,
       d.ATTACK_DEPTH, d.DEFENSE_WORDS, d.ROOT_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, { strong: false });
     const hard = game.chooseAIStartWord(syllable, new Set(), d.WORD_SET, d.WORD_INDEX,
@@ -767,21 +777,8 @@ test("actual start syllables select roots for easy and normal, and hard combines
     const easy = easyOpening(d, syllable);
     assert.ok(isRootWord(d, normal), `${syllable}: normal 시작 '${normal}'이 루트가 아닙니다`);
     assert.ok(isRootWord(d, easy), `${syllable}: easy 시작 '${easy}'가 루트가 아닙니다`);
-    assert.ok(hard, `${syllable}: hard 시작 단어가 없습니다`);
-
-    if (isRootWord(d, hard)) {
-      hardRoots++;
-      continue;
-    }
-    /* 하드가 루트를 포기했다면, 가장 좁은 루트보다 실제 응수가 더 좁은 압박 수여야 한다. */
-    const bestRootReplies = Math.min(...[...d.ROOT_WORDS, ...d.RARE_ROOT_WORDS]
-      .filter(w => w.startsWith(syllable))
-      .map(w => game.getCandidates(w, new Set(), d.WORD_INDEX).length));
-    const hardReplies = game.getCandidates(hard, new Set([hard]), d.WORD_INDEX).length;
-    assert.ok(hardReplies < bestRootReplies,
-      `${syllable}: hard '${hard}'가 루트(${bestRootReplies})보다 좁지 않습니다(${hardReplies})`);
+    assert.equal(hard, expected, `${syllable}: hard 시작 기대값이 바뀜`);
   }
-  assert.ok(hardRoots >= 6, `hard 실제 시작 8개 중 루트 선택이 너무 적습니다: ${hardRoots}/8`);
 });
 
 test("hard AI avoids handing the opponent a one-shot even in a wide position", () => {

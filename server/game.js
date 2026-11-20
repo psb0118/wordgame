@@ -516,6 +516,16 @@ const MIN_OPEN_REPLY_POOL = 4;
 const HARD_OPEN_SCAN_CAP = 96;
 const HARD_OPEN_THREAT_CAP = 40;
 const HARD_OPEN_THREAT_BUDGET_MS = 250;
+
+/* 어려움 오프닝의 루트 보너스와 압박 점수.
+   - 루트/희귀 루트는 각각 보너스를 받는다.
+   - 끝음절 응수 폭이 넓을수록 압박 점수가 낮아진다.
+   - 160개를 기준점으로 두어, 그보다 넓은 루트는 좁은 압박 수에 밀리게 한다.
+   - 이 값들은 "루트를 무조건 우선"하지 않고 루트와 압박을 함께 평가하기 위한 것이다. */
+const HARD_OPEN_ROOT_BONUS = 70;
+const HARD_OPEN_RARE_ROOT_BONUS = 100;
+const HARD_OPEN_PRESSURE_PIVOT = 160;
+const HARD_OPEN_PRESSURE_WEIGHT = 0.5;
 const THREAT_CACHE_LIMIT = 2048;
 
 /* (사전, 단어, 사용 단어) 단위 위협 판정 캐시. used가 큰 중반 국면은 키 비용이
@@ -738,8 +748,8 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
        루트 보너스만으로 넓은 루트가 좁은 압박 수를 이기지 않도록, 실제 응수
        폭이 넓을수록 점수를 깎는다. */
     const openingScore = (s) =>
-      (s.tier === 4 ? 100 : s.tier === 3 ? 70 : 0)
-      + Math.max(0, 160 - s.endBucket) * 0.5;
+      (s.tier === 4 ? HARD_OPEN_RARE_ROOT_BONUS : s.tier === 3 ? HARD_OPEN_ROOT_BONUS : 0)
+      + Math.max(0, HARD_OPEN_PRESSURE_PIVOT - s.endBucket) * HARD_OPEN_PRESSURE_WEIGHT;
     /* 루트 후보와 좁은 압박 후보를 하나의 후보군으로 합친 뒤, 루트 보너스와
        응수 폭을 함께 점수화한다. 후보를 점수순으로 검증하므로 넓은 루트가
        검증 예산을 먼저 소모해 압박 수를 밀어내는 일도 막는다. */
