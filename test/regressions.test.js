@@ -768,6 +768,20 @@ test("normal and hard AI prefer root words over ordinary replies", () => {
   }
 });
 
+test("normal AI chooses a root reply over an attack reply", () => {
+  const words = ["사가", "가나", "가공"];
+  const tails = ["가", "나", "다", "라", "마", "바", "사", "아"];
+  for (let i = 0; i < 65; i++) {
+    const a = tails[i % tails.length];
+    const b = tails[Math.floor(i / tails.length) % tails.length];
+    words.push(`나${a}${b}`, `공${a}${b}`);
+  }
+  const d = syntheticAI(words, { attack: ["가공"], root: ["가나"] });
+  const word = game.chooseAIWord("사가", new Set(["사가"]), d.WORD_SET, d.WORD_INDEX, d.ATTACK_DEPTH,
+    d.ROOT_WORDS, 2, d.DEFENSE_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, { strong: false, freeTurns: 1 });
+  assert.equal(word, "가나", "normal은 루트 후보가 있으면 공격 후보보다 루트를 골라야 합니다");
+});
+
 test("runAI uses a legal fallback instead of resigning when the selector returns null", () => {
   const d = syntheticAI(["사가", "가나", "나무"], { defense: ["가나"] });
   const { c } = context(aiGlobals(d, {

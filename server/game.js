@@ -1117,12 +1117,17 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     i.isRareRoot ||
     (i.isDolrim && funnelOf(i) >= 60 && rootFollow(i)));
   /* ③ 돌림 단어 — 펀넬 점수가 60 이상(상대 말밭을 좁게 묶음)이면 루트 팔로우와 무관하게
-        후보에 넣는다. ⑤ 공격 단어도 함께 확대 후보에 포함한다. */
+        후보에 넣는다. 공격 단어는 어려움에서만 루트/특수 후보와 경쟁시키고,
+        보통은 루트 후보가 없을 때의 일반 폴백에서 사용한다. */
   const extended = list.filter(i =>
     !special.includes(i) &&
-    (i.isAttack || (i.isDolrim && funnelOf(i) >= 60) || (strong && i.nextCount <= 8)));
+    ((strong && i.isAttack) || (i.isDolrim && funnelOf(i) >= 60) || (strong && i.nextCount <= 8)));
+  /* 보통은 루트/희귀 루트 후보가 있으면 그 안에서 고른다. 공격 단어는 강모드의
+     전술 후보이거나, 루트 후보가 전혀 없을 때의 일반 폴백에서만 사용한다. */
+  const rootCandidates = list.filter(i => i.isRoot || i.isRareRoot);
   let playPool = special;
-  if (extended.length) playPool = playPool.concat(extended);
+  if (!strong && rootCandidates.length) playPool = rootCandidates;
+  else if (extended.length) playPool = playPool.concat(extended);
   if (!playPool.length) playPool = list;
 
   /* ⑤ 공격 단어를 쓸 때는 공격 깊이가 낮은 순으로 고른다 — 깊이가 가장 낮은(승리가
