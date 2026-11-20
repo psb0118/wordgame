@@ -6088,3 +6088,204 @@ document.addEventListener("visibilitychange", () => {
     socket.emit("client:visibility", { visible: document.visibilityState === "visible" });
   }
 });
+
+/* ---------------------------------------------------------
+   모바일 UX — 뒤로가기 / 키보드 / 미니 HUD
+--------------------------------------------------------- */
+(function initMobileUx() {
+  const mobileQuery = window.matchMedia ? window.matchMedia("(max-width: 860px)") : null;
+  const isMobile = () => !mobileQuery || mobileQuery.matches;
+  const $one = (sel) => document.querySelector(sel);
+  const isShown = (el) => !!el
+    && !el.classList.contains("hidden")
+    && !el.classList.contains("closed")
+    && getComputedStyle(el).display !== "none";
+
+  /* 안드로이드 뒤로가기: 열린 패널/모달을 먼저 닫는다. */
+  function initBackNavigation() {
+    const specs = [
+      { sel: "#roomList", close: "#roomListClose" },
+      { sel: "#sideRank", close: "#sideRankClose" },
+      { sel: "#friendsPanel", close: "#friendsClose" },
+      { sel: "#accountPanel", close: "#accountClose" },
+      { sel: "#chatPanel", close: "#chatClose" },
+      { sel: "#tutorialModal", close: "#tutorClose" },
+      { sel: "#wordDefModal", close: "#wordDefClose" },
+      { sel: "#bugModal", close: "#bugClose" },
+      { sel: "#adminModal", close: "[data-admin-close]" },
+      { sel: "#howModal", close: "[data-how-close]" },
+      { sel: "#replayModal", close: "#replayClose" }
+    ];
+    const found = [];
+    const states = new Map();
+    for (const spec of specs) {
+      const el = $one(spec.sel);
+      if (!el) continue;
+      const entry = { ...spec, el };
+      found.push(entry);
+      states.set(el, { open: isShown(el) });
+    }
+    if (!found.length) return;
+
+    let suppressNextPop = false;
+    let suppressTimer = 0;
+    const pushOverlayState = () => {
+      if (!isMobile()) return;
+      try {
+        const base = history.state && typeof history.state === "object" ? history.state : {};
+        history.pushState({ ...base, kkOverlay: true }, "", location.href);
+      } catch (e) { /* 파일/iframe 환경에서는 히스토리 조작이 막힐 수 있다 */ }
+    };
+    const closeOverlay = (entry) => {
+      const state = states.get(entry.el);
+      if (state) state.open = false;
+      const button = entry.el.querySelector(entry.close);
+      if (button) { button.click(); return; }
+      entry.el.classList.add("hidden");
+      entry.el.classList.add("closed");
+    };
+    const topVisible = () => {
+      for (let i = found.length - 1; i >= 0; i -= 1) {
+        if (isShown(found[i].el)) return found[i];
+      }
+      return null;
+    };
+
+    if (found.some((entry) => isShown(entry.el))) pushOverlayState();
+    const observer = new MutationObserver(() => {
+      for (const entry of found) {
+        const state = states.get(entry.el);
+        const shown = isShown(entry.el);
+        if (!state || shown === state.open) continue;
+        state.open = shown;
+        if (shown) {
+          pushOverlayState();
+        } else if (isMobile() && history.state && history.state.kkOverlay && !suppressNextPop) {
+          suppressNextPop = true;
+          clearTimeout(suppressTimer);
+          suppressTimer = setTimeout(() => { suppressNextPop = false; }, 800);
+          history.back();
+        }
+      }
+    });
+    for (const entry of found) {
+      observer.observe(entry.el, { attributes: true, attributeFilter: ["class", "style", "hidden"] });
+    }
+    window.addEventListener("popstate", () => {
+      if (suppressNextPop) {
+        suppressNextPop = false;
+        clearTimeout(suppressTimer);
+        return;
+      }
+      if (!isMobile()) return;
+      const entry = topVisible();
+      if (entry) closeOverlay(entry);
+    });
+  }
+
+  /* 모바일 키보드: visualViewport 높이를 기준으로 입력 영역을 위로 확보한다. */
+  function initKeyboardHandling() {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    let frame = 0;
+    let wasOpen = false;
+    let lastInput = null;
+
+    const isTextInput = (el) => !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") && !el.disabled;
+    const apply = () => {
+      frame = 0;
+      const active = isTextInput(document.activeElement) ? document.activeElement : lastInput;
+      const keyboard = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+      const open = isMobile() && !!active && keyboard > 120;
+      document.documentElement.classList.toggle("kb-open", open);
+      document.body.classList.toggle("kb-open", open);
+      document.documentElement.style.setProperty("--kb-offset", `${open ? keyboard : 0}px`);
+      if (open && !wasOpen) {
+        const area = active.closest(".single-input-area, .entry, .chat-input-row");
+        if (area) requestAnimationFrame(() => area.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" }));
+      }
+      wasOpen = open;
+    };
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(apply);
+    };
+
+    viewport.addEventListener("resize", schedule);
+    viewport.addEventListener("scroll", schedule);
+    window.addEventListener("resize", schedule);
+    document.addEventListener("focusin", (event) => {
+      if (isTextInput(event.target)) lastInput = event.target;
+      schedule();
+    });
+    document.addEventListener("focusout", () => {
+      setTimeout(() => {
+        if (!isTextInput(document.activeElement)) lastInput = null;
+        schedule();
+      }, 120);
+    });
+    schedule();
+  }
+
+  /* 본 게임 영역이 화면을 벗어났을 때만 작은 HUD를 띄운다. */
+  function initMobileHud() {
+    const hud = $one("#mobileHud");
+    if (!hud) return;
+    const lastEl = $one("#mhLast");
+    const timerEl = $one("#mhTimer");
+    const turnEl = $one("#mhTurn");
+    let frame = 0;
+    const overlayOpen = () => !!document.querySelector(
+      ".modal:not(.hidden), #accountPanel:not(.hidden), #friendsPanel:not(.hidden), #chatPanel:not(.hidden), #sideRank:not(.closed), #roomList:not(.hidden)"
+    );
+    const update = () => {
+      frame = 0;
+      const panel = ["single", "online", "ranked"].includes(currentMode)
+        ? document.querySelector(`#${currentMode}.panel`)
+        : null;
+      const timerBox = modeGet("timerBox");
+      const timerRect = timerBox ? timerBox.getBoundingClientRect() : null;
+      const timerVisible = !!timerRect && timerRect.bottom > 0 && timerRect.top < window.innerHeight;
+      const show = isMobile()
+        && !!panel && !panel.classList.contains("hidden")
+        && !!gameState && gameState.started && !gameState.finished
+        && !timerVisible
+        && !document.body.classList.contains("kb-open")
+        && !overlayOpen();
+      if (!show) { hud.classList.add("hidden"); return; }
+
+      const last = modeGet("last")?.textContent.trim() || "-";
+      const timer = modeGet("timer")?.textContent.trim() || "-";
+      const turn = modeGet("turnIndicator");
+      if (last === "-" || timer === "-") { hud.classList.add("hidden"); return; }
+      if (lastEl) lastEl.textContent = last;
+      if (timerEl) timerEl.textContent = timer;
+      if (turnEl) {
+        turnEl.textContent = turn?.dataset.turn === "mine"
+          ? "내 턴"
+          : turn?.dataset.turn === "ai"
+            ? "AI 턴"
+            : (turn?.textContent.trim() || "");
+      }
+      hud.classList.toggle("urgent", timerBox?.dataset.urgent === "true");
+      hud.classList.toggle("mine", turn?.dataset.turn === "mine");
+      hud.classList.remove("hidden");
+    };
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(update);
+    };
+    window.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    setInterval(update, 350);
+    update();
+  }
+
+  function start() {
+    initBackNavigation();
+    initKeyboardHandling();
+    initMobileHud();
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
+  else start();
+})();

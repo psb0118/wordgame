@@ -7,7 +7,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=63">
+  <link rel="stylesheet" href="style.css?v=65">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -784,6 +784,13 @@
     <button id="practiceQuit" class="secondary" type="button">나가기</button>
   </div>
 
+  <!-- 모바일 게임 HUD — 본 게임 영역이 화면 밖으로 나갔을 때만 표시 -->
+  <div id="mobileHud" class="mobile-hud hidden" aria-hidden="true">
+    <span class="mh-last" id="mhLast">-</span>
+    <span class="mh-timer" id="mhTimer">-</span>
+    <span class="mh-turn" id="mhTurn"></span>
+  </div>
+
   <!-- 전역 알림 — 현재 탭에 메시지 영역이 없거나 숨겨져 있을 때 사용 -->
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
@@ -795,7 +802,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
   <script src="live-ui.js?v=1"></script>
-  <script src="script.js?v=57"></script>
+  <script src="script.js?v=59"></script>
   <script src="firebase-auth.js?v=3"></script>
 </body>
 </html>

@@ -5194,3 +5194,85 @@ html.dark .coach-tip p, html.dark .coach-stats { color: #cbd5e1; }
   .replay-actions { gap: 6px; }
   .replay-actions button { padding: 9px 11px; font-size: .82rem; }
 }
+
+/* 모바일 게임 HUD — 끝 글자/타이머/턴을 스크롤 중에도 유지 */
+.mobile-hud { display: none; }
+
+@media (max-width: 860px) {
+  .mobile-hud:not(.hidden) {
+    position: fixed;
+    top: calc(8px + env(safe-area-inset-top));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 70;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    max-width: calc(100vw - 24px);
+    padding: 5px 10px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    box-shadow: var(--shadow-sm);
+    color: var(--text-dim);
+    font-size: .76rem;
+    pointer-events: none;
+  }
+  .mh-last {
+    color: var(--accent);
+    font-size: 1.05rem;
+    font-weight: 800;
+    line-height: 1;
+  }
+  .mh-last::before {
+    content: "끝 ";
+    color: var(--text-faint);
+    font-size: .62rem;
+    font-weight: 700;
+  }
+  .mh-timer {
+    min-width: 3.2em;
+    color: var(--text);
+    font-weight: 800;
+    text-align: center;
+  }
+  .mobile-hud.urgent .mh-timer { color: var(--red); }
+  .mh-turn {
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: var(--card-soft);
+    color: var(--text-faint);
+    font-size: .64rem;
+    font-weight: 800;
+    white-space: nowrap;
+  }
+  .mh-turn:empty { display: none; }
+  .mobile-hud.mine .mh-turn { background: var(--green-soft); color: #047857; }
+
+  /* 키보드가 올라오면 내비게이션을 잠시 감춰 입력 영역을 확보한다. */
+  .nav-shell { transition: transform .18s ease, opacity .18s ease; }
+  html.kb-open { scroll-padding-bottom: calc(var(--kb-offset, 0px) + 20px); }
+  body.kb-open { padding-bottom: calc(var(--kb-offset, 0px) + 20px); }
+  body.kb-open .nav-shell {
+    transform: translateY(130%);
+    opacity: 0;
+    pointer-events: none;
+  }
+  body.kb-open .chat-wrap,
+  body.kb-open .how-wrap {
+    opacity: 0;
+    pointer-events: none;
+  }
+  /* 채팅 입력 중에는 채팅창 자체를 키보드 위로 올린다. */
+  body.kb-open .chat-wrap:has(.chat-panel:not(.hidden)) {
+    bottom: calc(var(--kb-offset, 0px) + 8px + env(safe-area-inset-bottom));
+    opacity: 1;
+    pointer-events: auto;
+  }
+  body.kb-open .chat-panel { max-height: calc(100dvh - var(--kb-offset, 0px) - 90px); }
+  body.kb-open .mobile-hud { display: none !important; }
+  body.kb-open .toast { bottom: calc(var(--kb-offset, 0px) + 14px); }
+  body.kb-open .single-input-area input,
+  body.kb-open .entry input,
+  body.kb-open .chat-input-row input { scroll-margin-bottom: calc(var(--kb-offset, 0px) + 20px); }
+}
