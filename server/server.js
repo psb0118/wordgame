@@ -15,6 +15,11 @@ const wordbookStore = require("./wordbook.js");
 const replayShare = require("./replay-share.js");
 const netLimit = require("./net-limit.js");
 const roomSnapshots = require("./room-snapshot.js");
+const inventory = require("./inventory.js");
+const dailyChallenge = require("./daily-challenge.js");
+const replayCoach = require("./replay-coach.js");
+const seasonCup = require("./season-cup.js");
+const panelMetrics = require("./panel-metrics.js");
 const {
   DUEUM, normalizeWord, allowedFirstChars, canConnect,
   loadData, hasWord, getAttackDepth, isAttackWord,
@@ -1804,6 +1809,7 @@ function migratePlayerData(p) {
   p.nameChanges = Math.floor(p.nameChanges);
   if (!Array.isArray(p.titles)) p.titles = [];
   p.currentTitle = typeof p.currentTitle === "string" ? p.currentTitle : "";
+  inventory.ensure(p);
   p.lastCheckDate = typeof p.lastCheckDate === "string" ? p.lastCheckDate : "";
   p.attendanceStreak = Number.isFinite(p.attendanceStreak) ? Math.max(0, Math.floor(p.attendanceStreak)) : 0;
   if (!Array.isArray(p.recentGames)) p.recentGames = [];
@@ -1831,6 +1837,7 @@ function migratePlayerData(p) {
   p.daily = initDailyData(p.daily, getKstDate());
   p.weekly = initWeeklyData(p.weekly, getKstWeek());
   p.monthly = initMonthlyData(p.monthly, getKstMonth());
+  p.dailyChallenge = dailyChallenge.normalizeState(p.dailyChallenge, getKstDate());
   if (!p.season || typeof p.season !== "object") p.season = null;
   else p.season = {
     season: String(p.season.season || ""),
@@ -2009,6 +2016,7 @@ async function savePlayerData(playerId, data, opts = {}) {
   safe.ratingBoostGames = Math.max(0, Math.floor(num(safe.ratingBoostGames, 0)));
   safe.titles = Array.isArray(safe.titles) ? safe.titles.filter(t => t && typeof t === "object") : [];
   safe.currentTitle = typeof safe.currentTitle === "string" ? safe.currentTitle : "";
+  inventory.ensure(safe);
   safe.lastCheckDate = typeof safe.lastCheckDate === "string" ? safe.lastCheckDate : "";
   safe.attendanceStreak = Math.max(0, Math.floor(num(safe.attendanceStreak, 0)));
   safe.recentGames = Array.isArray(safe.recentGames) ? safe.recentGames.slice(-10).filter(g => g && typeof g === "object") : [];
@@ -2018,6 +2026,7 @@ async function savePlayerData(playerId, data, opts = {}) {
   safe.daily = initDailyData(safe.daily, getKstDate());
   safe.weekly = initWeeklyData(safe.weekly, getKstWeek());
   safe.monthly = initMonthlyData(safe.monthly, getKstMonth());
+  safe.dailyChallenge = dailyChallenge.normalizeState(safe.dailyChallenge, getKstDate());
   if (dbMode === "pg") {
     /* 코인 변동은 저장된 잔액에 원자적으로 더한다 — 동시 지급/구매가 서로의
        갱신을 덮어쓰지 않도록 INSERT/UPDATE 모두 money 식을 차분으로 계산한다. */
@@ -2410,6 +2419,7 @@ async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mo
   let loserProtected = false;
   if (mode === "ranked" && lChange < 0 && Number(loser.shieldTickets || 0) > 0 && opts.noShield !== true) {
     loser.shieldTickets = Math.max(0, Number(loser.shieldTickets) - 1);
+    inventory.bumpRevision(loser);
     lChange = 0;
     loserProtected = true;
   }
@@ -2433,8 +2443,14 @@ async function updateRating(winnerId, loserId, winnerNickname, loserNickname, mo
     if (opts.placementWinner !== false) rankSeason.recordPlacementResult(winner);
     if (opts.placementLoser !== false) rankSeason.recordPlacementResult(loser);
   }
-  if (opts.decBoostWinner) winner.ratingBoostGames = Math.max(0, (winner.ratingBoostGames || 0) - 1);
-  if (opts.decBoostLoser) loser.ratingBoostGames = Math.max(0, (loser.ratingBoostGames || 0) - 1);
+  if (opts.decBoostWinner) {
+    winner.ratingBoostGames = Math.max(0, (winner.ratingBoostGames || 0) - 1);
+    inventory.bumpRevision(winner);
+  }
+  if (opts.decBoostLoser) {
+    loser.ratingBoostGames = Math.max(0, (loser.ratingBoostGames || 0) - 1);
+    inventory.bumpRevision(loser);
+  }
   /* 레이팅 추이 스냅샷(랭크+멀티 동시 기록, 날짜당 1점) — 아이템 탭 그래프용 */
   pushRatingHistory(winner);
   pushRatingHistory(loser);
@@ -2579,6 +2595,101 @@ const TOURNAMENT_QUEUE = [];
 const TOURNAMENT_QUEUE_MAP = new Map();
 const TOURNAMENT_RECENT = [];
 
+/* 예약 토너먼트 — 시즌 컵. 예약은 계정 단위로 저장하고, KST 21:00에
+   온라인 예약자를 자동으로 대회 큐에 넣는다. 경기 엔진은 기존 tournament를
+   그대로 사용하고, seasonCup 플래그가 붙은 방만 추가 보상을 받는다. */
+let seasonCupStore = null;
+let seasonCupLoadPromise = null;
+let seasonCupTicker = null;
+function seasonCupStorePath() { return path.join(RUNTIME_DATA_DIR, "season-cup.json"); }
+
+async function ensureSeasonCupStore() {
+  if (seasonCupStore) return seasonCupStore;
+  if (!seasonCupLoadPromise) {
+    seasonCupLoadPromise = loadStoreJSON("seasonCup", seasonCupStorePath(), null)
+      .then(raw => {
+        seasonCupStore = seasonCup.sanitizeStore(raw);
+        return seasonCupStore;
+      })
+      .catch(err => {
+        console.warn("시즌 컵 저장소 로드 실패:", err.message);
+        seasonCupStore = seasonCup.sanitizeStore(null);
+        return seasonCupStore;
+      })
+      .finally(() => { seasonCupLoadPromise = null; });
+  }
+  return seasonCupLoadPromise;
+}
+
+function saveSeasonCupStore() {
+  try {
+    writeStoreFile(seasonCupStorePath(), seasonCupStore || seasonCup.sanitizeStore(null), "seasonCup");
+  } catch (err) {
+    console.warn("시즌 컵 저장소 쓰기 실패:", err.message);
+  }
+}
+
+function seasonCupInfoFor(account) {
+  const store = seasonCupStore || seasonCup.sanitizeStore(null);
+  const myAccount = normKey(account);
+  const info = seasonCup.info(Date.now(), {
+    reservations: store.reservations,
+    onlineAccounts: [...onlineNicks.keys()],
+    myAccount
+  });
+  const nextReservation = store.reservations.find(entry => entry.account === myAccount && entry.slot !== info.slot) || null;
+  return {
+    ...info,
+    reservedNicks: store.reservations
+      .filter(entry => entry.slot === info.slot)
+      .slice(-12)
+      .map(entry => entry.nickname),
+    nextReservedSlot: nextReservation ? nextReservation.slot : "",
+    myNextReserved: !!nextReservation
+  };
+}
+
+async function processSeasonCupStart() {
+  const store = await ensureSeasonCupStore();
+  const now = Date.now();
+  const info = seasonCup.info(now, {
+    reservations: store.reservations,
+    onlineAccounts: [...onlineNicks.keys()]
+  });
+  if (info.state !== "live" || store.lastStarted === info.slot) return info;
+  store.lastStarted = info.slot;
+  const slotReservations = store.reservations.filter(entry => entry.slot === info.slot);
+  let queued = 0;
+  for (const entry of slotReservations) {
+    const socketId = onlineNicks.get(normKey(entry.account));
+    if (!socketId || !io.sockets.sockets.has(socketId) || TOURNAMENT_QUEUE_MAP.has(socketId)) continue;
+    try {
+      const pd = await getPlayerData(socketId);
+      if (addToTournamentQueue(socketId, pd.nickname || entry.nickname, Number(pd.ranked && pd.ranked.rating) || 1000, {
+        seasonCup: true, cupSlot: info.slot
+      })) queued += 1;
+    } catch (err) { console.warn("시즌 컵 자동 참가 실패:", entry.account, err.message); }
+  }
+  store.history.push({ slot: info.slot, queued, at: new Date(now).toISOString() });
+  if (store.history.length > 20) store.history = store.history.slice(-20);
+  saveSeasonCupStore();
+  if (queued > 0) {
+    io.emit("seasonCup:started", { ok: true, slot: info.slot, queued });
+    broadcastTournamentQueue();
+    tryMatchTournament();
+  }
+  return info;
+}
+
+function ensureSeasonCupTicker() {
+  if (seasonCupTicker) return;
+  seasonCupTicker = setInterval(() => {
+    processSeasonCupStart().catch(err => console.warn("시즌 컵 자동 시작 확인 실패:", err.message));
+  }, 30000);
+  if (typeof seasonCupTicker.unref === "function") seasonCupTicker.unref();
+}
+if (cluster.isGameCore) ensureSeasonCupTicker();
+
 /* =========================================================
    계정 복구·기기 연결
    - 복구 코드: 계정마다 한 번 발급/재발급. 해시만 저장하고 원문은 발급 시 1회만 보여준다.
@@ -2676,6 +2787,8 @@ async function getRankingPayload(socketId) {
       lastCheckDate: data.lastCheckDate || ""
     },
     recentGames: Array.isArray(data.recentGames) ? data.recentGames.slice(-10) : [],
+    inventory: inventory.serialize(data),
+    dailyChallenge: dailyChallenge.publicState(data.dailyChallenge, getKstDate()),
     daily: initDailyData(data.daily, getKstDate()),
     weekly: initWeeklyData(data.weekly, getKstWeek()),
     monthly: initMonthlyData(data.monthly, getKstMonth())
@@ -2984,6 +3097,7 @@ async function closeSeason(key) {
       const alreadyPaid = !!(tx && tx.duplicate);
       if (rew.title && !pd.titles.some(t => t && t.id === rew.title.id)) {
         pd.titles.push({ id: rew.title.id, name: rew.title.name });
+        inventory.bumpRevision(pd);
         if (!pd.currentTitle) pd.currentTitle = rew.title.name;
       }
       /* 시즌 종료 — 다음 시즌을 위해 레이팅을 1000 기준으로 일부만 이월하고
@@ -3113,6 +3227,13 @@ async function recordMatchHistory(room, winnerIndex, loserIndex) {
       const result = winnerIndex === null ? "draw"
         : (winTeam !== null && winTeam !== undefined) ? (p.teamOf === winTeam ? "win" : "lose")
         : (p.playerIndex === winnerIndex ? "win" : "lose");
+      pd.dailyChallenge = dailyChallenge.applyGame(pd.dailyChallenge, {
+        mode: room.mode || "single",
+        words: wordCount,
+        longWords: mine.filter(h => h && String(h.word || "").length >= 4).length,
+        attacks: mine.filter(h => h && (h.oneShot || Number(h.depth) > 0)).length,
+        win: result === "win"
+      }, getKstDate());
       /* 업적 — 판/승/단어/한방/장문/파티 승수를 누적하고 해금 조건 평가 */
       const a = achievementStats(pd);
       a.games += 1;
@@ -3151,6 +3272,14 @@ async function recordMatchHistory(room, winnerIndex, loserIndex) {
       const achCoin = newAch.reduce((sum, d) => sum + (Number(d.coin) || 0), 0);
       const newMoney = await savePlayerData(accountId, pd, { coinDelta: achCoin });
       if (newAch.length) await recordAchievementLedger(accountId, newAch, newMoney);
+      const challengeSocket = p.socketId ? io.sockets.sockets.get(p.socketId) : null;
+      if (challengeSocket) {
+        challengeSocket.emit("daily:challenge", {
+          ok: true,
+          challenge: dailyChallenge.publicState(pd.dailyChallenge, getKstDate()),
+          money: newMoney
+        });
+      }
       if (newAch.length) {
         const as = p.socketId ? io.sockets.sockets.get(p.socketId) : null;
         if (as) as.emit("achievements:unlocked", {
@@ -3263,9 +3392,12 @@ function startRankedGame(a, b) {
 /* =========================================================
    랭크 대회 — 큐/방/정산
 ========================================================= */
-function addToTournamentQueue(socketId, nickname, rating) {
+function addToTournamentQueue(socketId, nickname, rating, opts = {}) {
   if (TOURNAMENT_QUEUE_MAP.has(socketId)) return false;
-  TOURNAMENT_QUEUE.push({ socketId, nickname, rating, joinedAt: Date.now() });
+  TOURNAMENT_QUEUE.push({
+    socketId, nickname, rating, joinedAt: Date.now(),
+    seasonCup: !!opts.seasonCup, cupSlot: opts.cupSlot || ""
+  });
   TOURNAMENT_QUEUE_MAP.set(socketId, true);
   return true;
 }
@@ -3286,7 +3418,8 @@ function broadcastTournamentQueue() {
     const nearbyCount = TOURNAMENT_QUEUE.reduce(
       (count, other) => count + (other !== q && Math.abs(other.rating - q.rating) <= 200 ? 1 : 0), 0);
     io.to(q.socketId).emit("tournament:queueSize", {
-      size, needed: Math.max(0, TOURNAMENT_SIZE - size), nearbyCount, oldestWaitMs
+      size, needed: Math.max(0, TOURNAMENT_SIZE - size), nearbyCount, oldestWaitMs,
+      seasonCupQueued: TOURNAMENT_QUEUE.filter(entry => entry.seasonCup).length
     });
   }
   if (size === 0) io.emit("tournament:queueSize", { size: 0, needed: TOURNAMENT_SIZE });
@@ -3322,6 +3455,8 @@ function startTournamentGame(entries) {
     mode: "tournament",
     tournament: true,
     tournamentId: "T" + roomId,
+    seasonCup: entries.some(entry => entry.seasonCup),
+    seasonCupSlot: (entries.find(entry => entry.seasonCup) || {}).cupSlot || "",
     players: [],
     currentWord: null,
     turnPlayerIndex: 0,
@@ -3350,6 +3485,7 @@ function startTournamentGame(entries) {
     registerOnline(entry.socketId, entry.nickname);
     s.emit("tournament:matched", {
       ok: true, roomId, playerIndex: index,
+      seasonCup: !!room.seasonCup,
       players: entries.map((e, i) => ({ nickname: e.nickname, rating: e.rating, isMe: i === index })),
       state: getPublicRoomState(room)
     });
@@ -3400,12 +3536,18 @@ async function settleTournamentGame(resultRoom, winnerIndex, roomId, gameSession
   winnerData = await getPlayerData(winnerId);
   winnerData.ranked.streak = Math.max(0, Number(winnerData.ranked.streak) || 0) + 1;
   winnerData.ranked.bestStreak = Math.max(Number(winnerData.ranked.bestStreak) || 0, winnerData.ranked.streak);
+  /* 시즌 컵 우승 — 일반 대회와 별도로 챔피언 칭호와 추가 코인을 준다. */
+  if (resultRoom.seasonCup && !winnerData.titles.some(t => t && t.id === "t_season_cup")) {
+    winnerData.titles.push({ id: "t_season_cup", name: "시즌 컵 챔피언" });
+    if (!winnerData.currentTitle) winnerData.currentTitle = "시즌 컵 챔피언";
+    inventory.bumpRevision(winnerData);
+  }
   /* 대회 우승은 상대 수와 무관하게 배치고사 1판으로 계산한다. */
   rankSeason.recordPlacementResult(winnerData);
   await savePlayerData(winnerId, winnerData);
 
   const base = rollMoney() * Math.max(1, losers.length);
-  const earned = computeMoneyReward(base, winnerData);
+  const earned = computeMoneyReward(base, winnerData) + (resultRoom.seasonCup ? 120000 : 0);
   if (earned > 0) {
     const tx = await beginEconomyTx({
       accountId: winnerId,
@@ -3436,6 +3578,15 @@ async function settleTournamentGame(resultRoom, winnerIndex, roomId, gameSession
   /* 대회 우승은 길드 주간 대항전 60점 */
   await awardGuildWeekPoints(winnerId, 60, roomId);
   await recordMatchHistory(resultRoom, winnerIndex, null);
+  if (resultRoom.seasonCup && winner.socketId) {
+    const ws = io.sockets.sockets.get(winner.socketId);
+    if (ws) ws.emit("seasonCup:reward", {
+      ok: true,
+      coins: 120000,
+      title: { id: "t_season_cup", name: "시즌 컵 챔피언" },
+      message: "시즌 컵 우승! 챔피언 칭호와 추가 코인을 받았습니다."
+    });
+  }
   for (const p of humans) {
     if (!p.socketId) continue;
     const s = io.sockets.sockets.get(p.socketId);
@@ -3682,6 +3833,8 @@ function getPublicRoomState(room) {
     restored: !!room.restored,
     tournament: !!room.tournament,
     tournamentId: room.tournamentId || null,
+    seasonCup: !!room.seasonCup,
+    seasonCupSlot: room.seasonCupSlot || null,
     currentWord: room.currentWord,
     startSyllable: room.startSyllable || null,
     turnPlayer: room.turnPlayerIndex,
@@ -3955,6 +4108,8 @@ async function finishGame(room, winnerIndex, loserIndex) {
   /* UI에서 바로 재시작하거나 방이 정리되어도 저장할 경기 결과는 바뀌지 않는다. */
   const resultRoom = {
     mode: room.mode,
+    seasonCup: !!room.seasonCup,
+    seasonCupSlot: room.seasonCupSlot || "",
     players: room.players.map(p => ({ ...p })),
     history: (room.history || []).map(h => ({ ...h }))
   };
@@ -4656,6 +4811,7 @@ app.get("/api/metrics", metricsAccess, (req, res) => {
     players: playerCache.size,
     rankedQueue: RANKED_QUEUE.length,
     tournamentQueue: TOURNAMENT_QUEUE.length,
+    panels: panelMetrics.snapshot(),
     db: dbMode,
     push: pushManager.isEnabled(),
     cluster: cluster.health(),
@@ -4981,6 +5137,14 @@ io.on("connection", (socket) => {
     ok: true, words: WORD_SET.size, attackWords: Object.keys(ATTACK_DEPTH).length,
     maxPlayers: MAX_PLAYERS, turnTime: TURN_TIME, maxHearts: MAX_HEARTS,
     customApproved: customWords.approved.length, customPending: customWords.pending.length
+  });
+
+  /* 제품 패널 계측 — 개인정보 없이 화면/액션 카운터만 남긴다. */
+  socket.on("panel:event", (data) => {
+    const now = Date.now();
+    if (socket.data.panelEventAt && now - socket.data.panelEventAt < 250) return;
+    socket.data.panelEventAt = now;
+    panelMetrics.track(data && data.panel, data && data.action ? data.action : "view");
   });
 
   socket.on("room:create", async (data) => {
@@ -5736,6 +5900,99 @@ io.on("connection", (socket) => {
     broadcastTournamentQueue();
   });
 
+  /* -- 예약 토너먼트 · 시즌 컵 --------------------------- */
+  socket.on("seasonCup:info", async () => {
+    try {
+      await processSeasonCupStart();
+      const pd = await getPlayerData(socket.id);
+      socket.emit("seasonCup:info", { ok: true, ...seasonCupInfoFor(pd.nickname) });
+    } catch (err) {
+      console.error("시즌 컵 조회 오류:", err);
+      socket.emit("seasonCup:info", { ok: false, reason: "시즌 컵 정보를 불러오지 못했습니다." });
+    }
+  });
+
+  socket.on("seasonCup:reserve", accountLocked(socket, async () => {
+    try {
+      if (!socketFirebaseUid.get(socket.id)) {
+        socket.emit("seasonCup:result", { ok: false, reason: "시즌 컵은 Google 로그인 후 예약할 수 있습니다." });
+        return;
+      }
+      const pd = await getPlayerData(socket.id);
+      const nickname = String(pd.nickname || "").trim();
+      const account = normKey(nickname);
+      if (!account || isGhostRecord(pd)) {
+        socket.emit("seasonCup:result", { ok: false, reason: "닉네임을 먼저 설정해주세요." });
+        return;
+      }
+      const store = await ensureSeasonCupStore();
+      const now = Date.now();
+      const current = seasonCup.info(now, { reservations: store.reservations, onlineAccounts: [...onlineNicks.keys()] });
+      const slot = current.state === "live" ? seasonCup.slotKey(seasonCup.nextSlot(now)) : current.slot;
+      store.reservations = store.reservations.filter(entry => !(entry.account === account && entry.slot === slot));
+      store.reservations.push({ account, nickname, slot, reservedAt: new Date(now).toISOString() });
+      saveSeasonCupStore();
+      const info = seasonCupInfoFor(nickname);
+      socket.emit("seasonCup:result", {
+        ok: true, message: current.state === "live" ? "다음 시즌 컵을 예약했습니다." : "시즌 컵을 예약했습니다.",
+        reservedSlot: slot, info
+      });
+    } catch (err) {
+      console.error("시즌 컵 예약 오류:", err);
+      socket.emit("seasonCup:result", { ok: false, reason: "시즌 컵을 예약하지 못했습니다." });
+    }
+  }));
+
+  socket.on("seasonCup:cancel", accountLocked(socket, async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const account = normKey(pd.nickname);
+      const store = await ensureSeasonCupStore();
+      const before = store.reservations.length;
+      store.reservations = store.reservations.filter(entry => entry.account !== account);
+      if (before !== store.reservations.length) saveSeasonCupStore();
+      socket.emit("seasonCup:result", {
+        ok: true, message: before !== store.reservations.length ? "시즌 컵 예약을 취소했습니다." : "예약된 시즌 컵이 없습니다.",
+        info: seasonCupInfoFor(pd.nickname)
+      });
+    } catch (err) {
+      console.error("시즌 컵 예약 취소 오류:", err);
+      socket.emit("seasonCup:result", { ok: false, reason: "예약을 취소하지 못했습니다." });
+    }
+  }));
+
+  socket.on("seasonCup:enter", accountLocked(socket, async () => {
+    try {
+      if (!socketFirebaseUid.get(socket.id)) {
+        socket.emit("seasonCup:result", { ok: false, reason: "시즌 컵은 Google 로그인 후 참가할 수 있습니다." });
+        return;
+      }
+      const pd = await getPlayerData(socket.id);
+      const nickname = String(pd.nickname || "").trim();
+      const account = normKey(nickname);
+      const info = await processSeasonCupStart();
+      if (info.state !== "live") {
+        socket.emit("seasonCup:result", { ok: false, reason: "시즌 컵 진행 시간이 아닙니다.", info: seasonCupInfoFor(nickname) });
+        return;
+      }
+      const store = await ensureSeasonCupStore();
+      if (!store.reservations.some(entry => entry.account === account && entry.slot === info.slot)) {
+        socket.emit("seasonCup:result", { ok: false, reason: "시즌 컵은 예약자만 참가할 수 있습니다.", info: seasonCupInfoFor(nickname) });
+        return;
+      }
+      addToTournamentQueue(socket.id, nickname, Number(pd.ranked && pd.ranked.rating) || 1000, {
+        seasonCup: true, cupSlot: info.slot
+      });
+      socket.emit("tournament:queueStatus", { ok: true, queued: true });
+      socket.emit("seasonCup:result", { ok: true, message: "시즌 컵 대기열에 참가했습니다.", info: seasonCupInfoFor(nickname) });
+      broadcastTournamentQueue();
+      tryMatchTournament();
+    } catch (err) {
+      console.error("시즌 컵 참가 오류:", err);
+      socket.emit("seasonCup:result", { ok: false, reason: "시즌 컵에 참가하지 못했습니다." });
+    }
+  }));
+
   /* -- 랭크 복수전 (다시 대결) --------------------------- */
   socket.on("ranked:rematch", async () => {
     try {
@@ -6032,6 +6289,8 @@ io.on("connection", (socket) => {
         shieldTickets: pd.shieldTickets || 0,
         shieldPrice: SHOP_SHIELD_PRICE,
         ratingHistory: pd.ratingHistory || [],
+        inventory: inventory.serialize(pd),
+        dailyChallenge: dailyChallenge.publicState(pd.dailyChallenge, getKstDate()),
         isAdmin: isAdminPd(pd)
       });
     } catch (err) { console.error("상점 조회 오류:", err); }
@@ -6072,6 +6331,7 @@ io.on("connection", (socket) => {
       }
       pd.titles.push({ id: title.id, name: title.name });
       pd.currentTitle = title.name;
+      inventory.bumpRevision(pd);
       let newMoney = pd.money;
       try {
         newMoney = await savePlayerData(socket.id, pd, { coinDelta: -title.price });
@@ -6099,6 +6359,7 @@ io.on("connection", (socket) => {
         titleName = title.name;
       }
       pd.currentTitle = titleName;
+      inventory.bumpRevision(pd);
       await savePlayerData(socket.id, pd);
       socket.emit("shop:result", { ok: true, message: `칭호 '${titleName}'(으)로 변경했습니다.`, currentTitle: pd.currentTitle, titles: pd.titles });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
@@ -6111,6 +6372,7 @@ io.on("connection", (socket) => {
       const pd = await getPlayerData(socket.id);
       if (!pd.currentTitle) { socket.emit("shop:result", { ok: true, message: "장착 중인 칭호가 없습니다.", currentTitle: "" }); return; }
       pd.currentTitle = "";
+      inventory.bumpRevision(pd);
       await savePlayerData(socket.id, pd);
       socket.emit("shop:result", { ok: true, message: "칭호를 해제했습니다.", currentTitle: "" });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
@@ -6198,6 +6460,7 @@ io.on("connection", (socket) => {
       if (mission.title && !pd.titles.some(t => t.id === mission.title.id)) {
         pd.titles.push({ id: mission.title.id, name: mission.title.name });
         if (!pd.currentTitle) pd.currentTitle = mission.title.name;
+        inventory.bumpRevision(pd);
         message += ` 칭호 '${mission.title.name}'을 획득했습니다.`;
       }
       let newMoney = pd.money;
@@ -6218,7 +6481,8 @@ io.on("connection", (socket) => {
           weekly: buildMissionProgress(WEEKLY_MISSIONS, initWeeklyData(pd.weekly, getKstWeek())),
           monthly: buildMissionProgress(MONTHLY_MISSIONS, initMonthlyData(pd.monthly, getKstMonth()))
         },
-        money: newMoney, titles: pd.titles, currentTitle: pd.currentTitle
+        money: newMoney, titles: pd.titles, currentTitle: pd.currentTitle,
+        inventory: inventory.serialize(pd)
       });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
       socket.emit("shop:info", {
@@ -6228,6 +6492,8 @@ io.on("connection", (socket) => {
         potionPrice: SHOP_POTION_PRICE, multiplierPrices: SHOP_MULTIPLIER_PRICES,
         shieldTickets: pd.shieldTickets || 0, shieldPrice: SHOP_SHIELD_PRICE,
         ratingHistory: pd.ratingHistory || [],
+        inventory: inventory.serialize(pd),
+        dailyChallenge: dailyChallenge.publicState(pd.dailyChallenge, getKstDate()),
         isAdmin: isAdminPd(pd)
       });
     } catch (err) { console.error("미션 보상 수령 오류:", err); }
@@ -6248,6 +6514,7 @@ io.on("connection", (socket) => {
         return;
       }
       pd.shieldTickets = (pd.shieldTickets || 0) + 1;
+      inventory.bumpRevision(pd);
       let newMoney = pd.money;
       try {
         newMoney = await savePlayerData(socket.id, pd, { coinDelta: -SHOP_SHIELD_PRICE });
@@ -6276,6 +6543,7 @@ io.on("connection", (socket) => {
         return;
       }
       pd.ratingBoostGames += 10;
+      inventory.bumpRevision(pd);
       let newMoney = pd.money;
       try {
         newMoney = await savePlayerData(socket.id, pd, { coinDelta: -SHOP_POTION_PRICE });
@@ -6307,6 +6575,7 @@ io.on("connection", (socket) => {
         return;
       }
       pd.moneyMultiplier = target;
+      inventory.bumpRevision(pd);
       let newMoney = pd.money;
       try {
         newMoney = await savePlayerData(socket.id, pd, { coinDelta: -row.price });
@@ -6318,6 +6587,66 @@ io.on("connection", (socket) => {
       socket.emit("shop:result", { ok: true, message: `영구 돈 ${target}배를 구매했습니다.`, money: newMoney, moneyMultiplier: pd.moneyMultiplier });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("배율 구매 오류:", err); }
+  }));
+
+  /* -- 데일리 챌린지 ------------------------------------ */
+  socket.on("daily:challenge", async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      socket.emit("daily:challenge", {
+        ok: true,
+        challenge: dailyChallenge.publicState(pd.dailyChallenge, getKstDate()),
+        money: pd.money
+      });
+    } catch (err) {
+      console.error("데일리 챌린지 조회 오류:", err);
+      socket.emit("daily:challenge", { ok: false, reason: "챌린지를 불러오지 못했습니다." });
+    }
+  });
+
+  socket.on("daily:challengeClaim", accountLocked(socket, async () => {
+    try {
+      const pd = await getPlayerData(socket.id);
+      const accountId = normKey(pd.nickname) || normKey(socketNicks.get(socket.id)) || socket.id;
+      const today = getKstDate();
+      pd.dailyChallenge = dailyChallenge.normalizeState(pd.dailyChallenge, today);
+      const challenge = dailyChallenge.publicState(pd.dailyChallenge, today);
+      if (!challenge.complete) {
+        socket.emit("daily:challenge", { ok: false, reason: "아직 챌린지를 완료하지 못했습니다.", challenge });
+        return;
+      }
+      if (challenge.claimed) {
+        socket.emit("daily:challenge", { ok: false, reason: "이미 보상을 받았습니다.", challenge });
+        return;
+      }
+      const tx = await beginEconomyTx({
+        accountId, idemKey: `daily-challenge:${accountId}:${today}`,
+        delta: challenge.reward, reason: "daily_challenge", ref: today
+      });
+      if (!tx.ok) {
+        socket.emit("daily:challenge", { ok: false, reason: tx.duplicate ? "이미 보상을 받았습니다." : "보상 기록에 실패했습니다.", challenge });
+        return;
+      }
+      pd.dailyChallenge = { ...pd.dailyChallenge, claimed: true, claimedAt: new Date().toISOString() };
+      let newMoney = pd.money;
+      try {
+        newMoney = await savePlayerData(socket.id, pd, { coinDelta: challenge.reward });
+        await finishEconomyTx(tx, newMoney);
+      } catch (e) {
+        await abortEconomyTx(tx);
+        throw e;
+      }
+      socket.emit("daily:challenge", {
+        ok: true,
+        message: `데일리 챌린지 보상 +${challenge.reward.toLocaleString("ko-KR")}코인`,
+        challenge: dailyChallenge.publicState(pd.dailyChallenge, today),
+        money: newMoney
+      });
+      socket.emit("player:ranking", await getRankingPayload(socket.id));
+    } catch (err) {
+      console.error("데일리 챌린지 보상 오류:", err);
+      socket.emit("daily:challenge", { ok: false, reason: "보상을 수령하지 못했습니다." });
+    }
   }));
 
   /* -- 버그 제보 ----------------------------------------- */
@@ -6581,6 +6910,32 @@ io.on("connection", (socket) => {
     }
   }));
 
+  /* -- AI 복기 코치 ------------------------------------ */
+  socket.on("replay:coach", (data) => {
+    try {
+      const now = Date.now();
+      if (socket.data.coachAt && now - socket.data.coachAt < 1500) {
+        socket.emit("replay:coach", { ok: false, reason: "잠시 후 다시 분석해주세요." });
+        return;
+      }
+      const flow = replayShare.sanitizeFlow(data && data.flow);
+      if (!flow) {
+        socket.emit("replay:coach", { ok: false, reason: "분석할 리플레이가 부족합니다." });
+        return;
+      }
+      socket.data.coachAt = now;
+      const result = replayCoach.analyze(flow, {
+        myIndex: data && data.myIndex,
+        result: data && data.result,
+        win: data && data.win === true
+      });
+      socket.emit("replay:coach", result);
+    } catch (err) {
+      console.error("리플레이 코치 오류:", err);
+      socket.emit("replay:coach", { ok: false, reason: "복기 분석에 실패했습니다." });
+    }
+  });
+
   /* -- 리플레이 공유 링크 ------------------------------ */
   socket.on("replay:share", async (data) => {
     try {
@@ -6646,7 +7001,8 @@ io.on("connection", (socket) => {
         adminEmail: ADMIN_EMAILS[0] || "",
         config: getConfig(),
         startSyllables: STARTING_SYLLABLES,
-        watchlist: watchNicks
+        watchlist: watchNicks,
+        panels: panelMetrics.snapshot()
       });
     } catch (err) { console.error("관리자 패널 오류:", err); }
   });

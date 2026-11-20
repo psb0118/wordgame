@@ -7,7 +7,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=44">
+  <link rel="stylesheet" href="style.css?v=46">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -302,6 +302,23 @@
           <p>하트를 모두 잃으면 탈락하고, 마지막까지 살아남으면 랭크 승리와 코인 보상을 받습니다. Google 로그인이 필요합니다.</p>
         </div>
       </div>
+      <div id="seasonCupCard" class="season-cup-card">
+        <div class="season-cup-head">
+          <div>
+            <span class="season-cup-eyebrow">SEASON CUP · 예약 토너먼트</span>
+            <b id="seasonCupTitle">다음 시즌 컵을 예약하세요</b>
+          </div>
+          <span id="seasonCupBadge" class="season-cup-badge">예약 가능</span>
+        </div>
+        <div id="seasonCupStatus" class="season-cup-status">시즌 컵 정보를 불러오는 중...</div>
+        <div id="seasonCupMeta" class="season-cup-meta"></div>
+        <div class="season-cup-actions">
+          <button id="seasonCupReserveBtn" type="button">시즌 컵 예약</button>
+          <button id="seasonCupEnterBtn" type="button" class="hidden">지금 참가</button>
+          <button id="seasonCupCancelBtn" type="button" class="secondary hidden">예약 취소</button>
+        </div>
+        <div id="seasonCupMsg" class="season-cup-msg" role="status" aria-live="polite"></div>
+      </div>
       <div class="onlineTop">
         <button id="tournamentQueueBtn">🏟️ 대회 참가</button>
         <button id="tournamentCancelBtn" class="secondary hidden">참가 취소</button>
@@ -408,6 +425,18 @@
     <section id="season" class="panel hidden">
       <div class="season-panel-head">
         <div id="seasonPanelBar" class="season-bar-wrap hidden"></div>
+      </div>
+      <div id="dailyChallengeCard" class="daily-challenge-card">
+        <div class="daily-challenge-copy">
+          <span class="daily-challenge-eyebrow">DAILY CHALLENGE</span>
+          <b id="dailyChallengeTitle">오늘의 챌린지</b>
+          <span id="dailyChallengeDescription" class="daily-challenge-desc">불러오는 중...</span>
+        </div>
+        <div class="daily-challenge-progress">
+          <div class="daily-challenge-track"><span id="dailyChallengeBar"></span></div>
+          <span id="dailyChallengeCount">0 / 0</span>
+        </div>
+        <button id="dailyChallengeClaim" type="button" class="daily-challenge-claim" disabled>보상 받기</button>
       </div>
       <div class="mission-group">
         <div class="mission-group-title">📋 일일 미션 <span class="mission-period" id="missionPeriodDaily"></span></div>
@@ -684,11 +713,13 @@
       </div>
       <div id="replayList" class="replay-list"></div>
       <div class="replay-actions">
+        <button id="replayCoach" class="replay-coach-btn" type="button">🤖 AI 복기 코치</button>
         <button id="replayCopy" class="secondary" type="button">결과 복사</button>
         <button id="replayShare" class="secondary" type="button">공유 링크</button>
         <span id="replayCopyStatus" class="replay-copy-status" role="status" aria-live="polite"></span>
         <span id="replayShareStatus" class="replay-share-status" role="status" aria-live="polite"></span>
       </div>
+      <div id="replayCoachBox" class="replay-coach-box hidden" aria-live="polite"></div>
       <div class="replay-hint">단어를 클릭하면 뜻을 볼 수 있어요.</div>
     </div>
   </div>
@@ -764,7 +795,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
   <script src="live-ui.js?v=1"></script>
-  <script src="script.js?v=53"></script>
+  <script src="script.js?v=55"></script>
   <script src="firebase-auth.js?v=3"></script>
 </body>
 </html>

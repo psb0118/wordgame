@@ -4859,3 +4859,207 @@ html.dark .acc-rename-info {
 @media (prefers-reduced-motion: reduce) {
   .reaction-bubble { animation-duration: .01ms; }
 }
+
+/* =========================================================
+   v3 제품 UI — 데일리 챌린지 · 시즌 컵 · 복기 코치 · VFX
+   ========================================================= */
+
+.panel:not(.hidden) {
+  animation: panelEnter .32s cubic-bezier(.2,.8,.2,1);
+}
+@keyframes panelEnter {
+  from { opacity: 0; transform: translateY(8px) scale(.995); }
+  to { opacity: 1; transform: none; }
+}
+
+.daily-challenge-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 16px;
+  margin: 0 0 18px;
+  padding: 16px 18px;
+  overflow: hidden;
+  border: 1px solid rgba(16, 185, 129, .32);
+  border-radius: 18px;
+  background:
+    radial-gradient(340px 120px at 10% 0%, rgba(52, 211, 153, .24), transparent 70%),
+    linear-gradient(135deg, rgba(236, 253, 245, .98), rgba(239, 246, 255, .92));
+  box-shadow: 0 14px 30px -18px rgba(5, 150, 105, .45);
+}
+.daily-challenge-card::after {
+  content: "";
+  position: absolute;
+  inset: auto -40px -70px auto;
+  width: 180px;
+  height: 180px;
+  border-radius: 50%;
+  background: rgba(16, 185, 129, .08);
+  pointer-events: none;
+}
+.daily-challenge-card.complete { border-color: rgba(16, 185, 129, .6); }
+.daily-challenge-card.claimed { opacity: .78; }
+.daily-challenge-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.daily-challenge-eyebrow { font-size: 10px; font-weight: 900; letter-spacing: .14em; color: #059669; }
+.daily-challenge-copy b { font-size: 1.05rem; color: #064e3b; }
+.daily-challenge-desc { font-size: 12px; color: #047857; line-height: 1.45; }
+.daily-challenge-progress { display: flex; flex-direction: column; gap: 5px; min-width: 120px; }
+.daily-challenge-track { height: 8px; overflow: hidden; border-radius: 999px; background: rgba(5, 150, 105, .14); }
+.daily-challenge-track span { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, #34d399, #10b981); transition: width .5s cubic-bezier(.2,.8,.2,1); }
+.daily-challenge-progress > span { font-size: 11px; font-weight: 800; color: #047857; text-align: right; font-variant-numeric: tabular-nums; }
+.daily-challenge-claim {
+  min-width: 104px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, .08) !important;
+  color: #64748b !important;
+  box-shadow: none;
+  font-size: 12px;
+}
+.daily-challenge-claim.ready {
+  background: linear-gradient(135deg, #10b981, #059669) !important;
+  color: #fff !important;
+  box-shadow: 0 8px 18px -8px rgba(5, 150, 105, .8);
+  animation: readyPulse 2s ease-in-out infinite;
+}
+@keyframes readyPulse {
+  50% { box-shadow: 0 8px 24px -6px rgba(16, 185, 129, .9); transform: translateY(-1px); }
+}
+
+.season-cup-card {
+  position: relative;
+  margin: 16px 0;
+  padding: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(129, 140, 248, .26);
+  border-radius: 18px;
+  background:
+    radial-gradient(420px 180px at 100% 0%, rgba(168, 85, 247, .18), transparent 70%),
+    linear-gradient(145deg, #111827, #1e1b4b 70%, #172554);
+  color: #e5e7eb;
+  box-shadow: 0 20px 40px -26px rgba(49, 46, 129, .75);
+}
+.season-cup-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(rgba(255,255,255,.16) .7px, transparent .7px);
+  background-size: 18px 18px;
+  opacity: .35;
+  pointer-events: none;
+}
+.season-cup-card.live { border-color: rgba(251, 191, 36, .65); box-shadow: 0 20px 50px -22px rgba(245, 158, 11, .55); }
+.season-cup-head { position: relative; display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.season-cup-head > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.season-cup-eyebrow { color: #a5b4fc; font-size: 10px; font-weight: 900; letter-spacing: .16em; }
+.season-cup-head b { font-size: 1.02rem; color: #fff; }
+.season-cup-badge {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(165, 180, 252, .15);
+  color: #c7d2fe;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .08em;
+}
+.season-cup-badge[data-state="live"] { background: rgba(251, 191, 36, .2); color: #fde68a; animation: livePulse 1.6s ease-in-out infinite; }
+@keyframes livePulse { 50% { box-shadow: 0 0 0 5px rgba(251, 191, 36, .08); } }
+.season-cup-status { position: relative; margin-top: 10px; color: #cbd5e1; font-size: 12.5px; line-height: 1.5; }
+.season-cup-meta { position: relative; display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; color: #c7d2fe; font-size: 11.5px; }
+.season-cup-meta b { color: #fde68a; }
+.season-cup-actions { position: relative; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.season-cup-actions button { padding: 9px 13px; border-radius: 10px; font-size: 12px; }
+.season-cup-actions .secondary { background: rgba(255,255,255,.08) !important; color: #e5e7eb !important; border-color: rgba(255,255,255,.16) !important; }
+.season-cup-msg { position: relative; min-height: 16px; margin-top: 8px; font-size: 11.5px; font-weight: 700; color: #c7d2fe; }
+.season-cup-msg[data-type="ok"] { color: #86efac; }
+.season-cup-msg[data-type="error"] { color: #fca5a5; }
+
+.replay-coach-btn { background: linear-gradient(135deg, #0ea5e9, #6366f1) !important; }
+.replay-coach-box {
+  margin: 12px 0;
+  padding: 14px;
+  border: 1px solid rgba(99, 102, 241, .24);
+  border-radius: 14px;
+  background: linear-gradient(145deg, rgba(238, 242, 255, .95), rgba(245, 243, 255, .88));
+}
+.coach-loading { display: flex; align-items: center; gap: 9px; color: #4f46e5; font-size: 12.5px; font-weight: 700; }
+.coach-spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(99,102,241,.25); border-top-color: #6366f1; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.coach-head { display: flex; align-items: center; gap: 12px; }
+.coach-head > div { display: flex; flex-direction: column; gap: 2px; }
+.coach-head b { color: #312e81; font-size: 13px; }
+.coach-grade { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 13px; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; font-size: 20px; font-weight: 900; box-shadow: 0 8px 18px -8px rgba(99,102,241,.8); }
+.coach-grade[data-grade="S"] { background: linear-gradient(135deg, #f59e0b, #fbbf24); color: #451a03; }
+.coach-grade[data-grade="A"] { background: linear-gradient(135deg, #10b981, #34d399); color: #052e16; }
+.coach-score { color: #6366f1; font-size: 11px; font-weight: 800; }
+.coach-stats { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 10px 0; padding: 8px 10px; border-radius: 10px; background: rgba(99,102,241,.07); color: #475569; font-size: 11px; }
+.coach-stats b { color: #312e81; }
+.coach-tips { display: flex; flex-direction: column; gap: 7px; }
+.coach-tip { display: flex; gap: 8px; padding: 8px 9px; border-radius: 10px; background: rgba(255,255,255,.7); }
+.coach-tip > span { font-size: 16px; line-height: 1.2; }
+.coach-tip b { display: block; margin-bottom: 2px; color: #1e293b; font-size: 12px; }
+.coach-tip p { margin: 0; color: #64748b; font-size: 11.5px; line-height: 1.5; }
+.coach-empty { color: #64748b; font-size: 12px; text-align: center; padding: 8px; }
+
+.admin-panel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; margin-top: 10px; }
+.admin-panel-row { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 6px; align-items: center; padding: 7px 9px; border-radius: 9px; background: rgba(99,102,241,.06); font-size: 11px; }
+.admin-panel-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.admin-panel-row b { color: #4f46e5; }
+.admin-panel-row em { font-style: normal; color: #94a3b8; font-size: 10px; }
+
+.celebration-layer { position: fixed; inset: 0; z-index: 200; pointer-events: none; overflow: hidden; }
+.celebration-layer span {
+  position: absolute;
+  top: -12px;
+  left: var(--x);
+  width: 8px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--color);
+  opacity: 0;
+  animation: confettiFall 1.55s cubic-bezier(.15,.65,.35,1) var(--delay) forwards;
+}
+@keyframes confettiFall {
+  0% { opacity: 0; transform: translate3d(0, -20px, 0) rotate(0); }
+  12% { opacity: 1; }
+  100% { opacity: 0; transform: translate3d(var(--drift), 82vh, 0) rotate(var(--spin)); }
+}
+
+.shop-item,
+.item-card,
+.mission-group {
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+}
+.shop-item:hover,
+.item-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(99, 102, 241, .22);
+  box-shadow: 0 14px 26px -20px rgba(79, 70, 229, .45);
+}
+
+@media (max-width: 640px) {
+  .daily-challenge-card { grid-template-columns: 1fr; gap: 10px; }
+  .daily-challenge-claim { width: 100%; }
+  .daily-challenge-progress { min-width: 0; }
+  .season-cup-card { padding: 15px; }
+  .season-cup-head b { font-size: .95rem; }
+  .coach-stats { gap: 5px 10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel:not(.hidden), .daily-challenge-claim.ready, .season-cup-badge[data-state="live"] { animation: none; }
+  .celebration-layer { display: none; }
+  .shop-item, .item-card { transition: none; }
+}
+
+/* 다크 모드 보정 */
+html.dark .daily-challenge-card { background: linear-gradient(135deg, rgba(6, 78, 59, .7), rgba(15, 23, 42, .8)); border-color: rgba(52, 211, 153, .28); }
+html.dark .daily-challenge-copy b { color: #d1fae5; }
+html.dark .daily-challenge-desc, html.dark .daily-challenge-progress > span { color: #a7f3d0; }
+html.dark .replay-coach-box { background: linear-gradient(145deg, rgba(30, 27, 75, .9), rgba(15, 23, 42, .86)); border-color: rgba(129, 140, 248, .25); }
+html.dark .coach-head b, html.dark .coach-stats b { color: #e0e7ff; }
+html.dark .coach-tip { background: rgba(15, 23, 42, .55); }
+html.dark .coach-tip b { color: #e2e8f0; }
+html.dark .coach-tip p, html.dark .coach-stats { color: #cbd5e1; }

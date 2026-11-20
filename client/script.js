@@ -90,6 +90,12 @@ let wordDefCurrent = "";
 let myPlacement = null;
 let pushState = { supported: false, enabled: false, count: 0, max: 5, hasNickname: false };
 let dailyCounters = null;
+let dailyChallengeState = null;
+let seasonCupState = null;
+let seasonCupTicker = null;
+let seasonCupMsgTimer = null;
+let lastInventoryRevision = -1;
+let replayCoachPending = false;
 
 /* 실시간 랭킹 패널 상태 */
 let sideRankMode = "ranked";
@@ -310,6 +316,7 @@ function openAdminPanel() {
   if (myAdminRole === "none") { showMessage("관리자 권한이 없습니다.", "error"); return; }
   adminModalOpen = true;
   modal.classList.remove("hidden");
+  trackPanel("admin", "open");
   const body = $("#adminBody");
   if (body) body.innerHTML = `<div class="admin-loading">불러오는 중...</div>`;
   if (socket && socketConnected) socket.emit("admin:getPanel");
@@ -624,6 +631,7 @@ function initSocket() {
     tournamentQueued = false;
     tournamentQueueStats = null;
     stopTournamentTicker();
+    stopSeasonCupTicker();
     updateTournamentQueueUI();
     updateRankedQueueUI();
     stopCountdown();
@@ -670,11 +678,18 @@ function initSocket() {
     lastRankedStreak = rankedStreak;
     renderRankedStreakChip();
     if (typeof data.money === "number") moneyBalance = data.money;
-    moneyMultiplier = data.moneyMultiplier || 1;
-    ratingBoostGames = data.ratingBoostGames || 0;
+    if (data.inventory) applyInventorySnapshot(data.inventory);
+    else {
+      moneyMultiplier = data.moneyMultiplier || 1;
+      ratingBoostGames = data.ratingBoostGames || 0;
+      if (Array.isArray(data.titles)) ownedTitles = data.titles;
+      currentTitle = data.currentTitle || "";
+    }
     if (Number.isFinite(Number(data.nameChanges))) { myNameChanges = Number(data.nameChanges); updateRenameInfo(); }
-    if (Array.isArray(data.titles)) ownedTitles = data.titles;
-    currentTitle = data.currentTitle || "";
+    if (data.dailyChallenge) {
+      dailyChallengeState = data.dailyChallenge;
+      renderDailyChallenge();
+    }
     renderMoneyBar();
     renderAccountScoresStatic();
     renderItems();
@@ -765,6 +780,44 @@ function initSocket() {
     tournamentQueueStats = { ...data, receivedAt: Date.now() };
     renderTournamentQueueInfo();
     startTournamentTicker();
+  });
+
+  socket.on("seasonCup:info", (data) => {
+    if (!data) return;
+    if (data.ok === false) { seasonCupMsg(data.reason || "시즌 컵 정보를 불러오지 못했습니다.", "error"); return; }
+    seasonCupState = data;
+    seasonCupState.receivedAt = Date.now();
+    renderSeasonCup();
+    startSeasonCupTicker();
+    if (currentMode !== "tournament") stopSeasonCupTicker();
+  });
+
+  socket.on("seasonCup:result", (data) => {
+    if (!data) return;
+    if (data.info) { seasonCupState = { ...data.info, receivedAt: Date.now() }; renderSeasonCup(); }
+    if (data.message) {
+      seasonCupMsg(data.message, data.ok ? "ok" : "error");
+      if (data.ok && data.reservedSlot) { playSound("cash"); celebrate("reserve"); }
+    } else if (data.ok === false && data.reason) {
+      seasonCupMsg(data.reason, "error");
+    }
+    if (data.ok) socket.emit("seasonCup:info");
+  });
+
+  socket.on("seasonCup:started", (data) => {
+    if (!data) return;
+    showMessage(`🏆 시즌 컵이 시작되었습니다! 예약자 ${Number(data.queued) || 0}명이 자동 참가했습니다.`, "win");
+    playSound("start");
+    celebrate("cup");
+    socket.emit("seasonCup:info");
+  });
+
+  socket.on("seasonCup:reward", (data) => {
+    if (!data) return;
+    showMessage(data.message || "시즌 컵 우승 보상을 받았습니다!", "win");
+    playSound("win");
+    celebrate("cup");
+    socket.emit("player:getRanking");
   });
 
   socket.on("tournament:matched", (data) => {
@@ -977,10 +1030,17 @@ function initSocket() {
     if (!data) return;
     shopInfo = data;
     moneyBalance = data.money;
-    moneyMultiplier = data.moneyMultiplier;
-    ratingBoostGames = data.ratingBoostGames;
-    ownedTitles = data.titles || [];
-    currentTitle = data.currentTitle || "";
+    if (data.inventory) applyInventorySnapshot(data.inventory);
+    else {
+      moneyMultiplier = data.moneyMultiplier;
+      ratingBoostGames = data.ratingBoostGames;
+      ownedTitles = data.titles || [];
+      currentTitle = data.currentTitle || "";
+    }
+    if (data.dailyChallenge) {
+      dailyChallengeState = data.dailyChallenge;
+      renderDailyChallenge();
+    }
     renderMoneyBar();
     renderShop();
   });
@@ -989,6 +1049,9 @@ function initSocket() {
     if (!data) return;
     showMessage(data.reason || data.message || (data.ok ? "성공했습니다." : "실패했습니다."), data.ok ? "success" : "error");
     if (data.ok) {
+      if (Array.isArray(data.titles) || typeof data.ratingBoostGames === "number" || typeof data.shieldTickets === "number" || typeof data.moneyMultiplier === "number") {
+        lastInventoryRevision = Math.max(0, lastInventoryRevision) + 1;
+      }
       if (typeof data.money === "number") moneyBalance = data.money;
       if (Array.isArray(data.titles)) ownedTitles = data.titles;
       if (typeof data.currentTitle === "string" && data.currentTitle !== currentTitle) {
@@ -1036,11 +1099,29 @@ function initSocket() {
     }
     if (data.daily) dailyCounters = data.daily;
     if (typeof data.money === "number") moneyBalance = data.money;
-    if (Array.isArray(data.titles)) ownedTitles = data.titles;
-    if (typeof data.currentTitle === "string") currentTitle = data.currentTitle;
+    if (data.inventory) applyInventorySnapshot(data.inventory);
+    else if (Array.isArray(data.titles)) ownedTitles = data.titles;
+    if (typeof data.currentTitle === "string" && !data.inventory) currentTitle = data.currentTitle;
     renderMoneyBar();
     renderMissions();
     renderShop();
+  });
+
+  /* -- 데일리 챌린지 ---------------------------------- */
+  socket.on("daily:challenge", (data) => {
+    if (!data) return;
+    if (data.challenge) {
+      dailyChallengeState = data.challenge;
+      renderDailyChallenge();
+    }
+    if (typeof data.money === "number") moneyBalance = data.money;
+    if (data.message) {
+      showMessage(data.message, data.ok ? "success" : "error");
+      if (data.ok) { playSound("cash"); celebrate("challenge"); }
+    } else if (data.ok === false && data.reason) {
+      showMessage(data.reason, "error");
+    }
+    renderMoneyBar();
   });
 
   /* -- 출석체크 --------------------------------------- */
@@ -1259,6 +1340,11 @@ function initSocket() {
     if (!data || !data.ok || !Array.isArray(data.items)) return;
     wordbookSynced = true;
     applyWordbookItems(data.items);
+  });
+
+  socket.on("replay:coach", (data) => {
+    replayCoachPending = false;
+    renderReplayCoach(data);
   });
 
   socket.on("replay:shareResult", async (data) => {
@@ -1906,6 +1992,7 @@ function initSocket() {
     if (iWon) {
       showMessage(myStateP && myStateP.team != null ? "소속 팀이 승리했습니다!" : "게임에서 승리했습니다!", "win");
       playSound("win");
+      celebrate("win");
       if (currentMode === "single" && !isPractice) {
         localStats.wins++;
         localStats.games++;
@@ -2897,6 +2984,34 @@ function applyFx(el, cls, ms = 700) {
   el._fxTimer = setTimeout(() => el.classList.remove(cls), ms);
 }
 
+/* 제품 패널 계측 — 개인정보 없이 화면/행동만 서버 카운터에 더한다. */
+function trackPanel(panel, action = "view") {
+  if (socket && socketConnected) socket.emit("panel:event", { panel, action });
+}
+
+/* 가벼운 축하 VFX — 과한 애니메이션을 피하려 OS 설정을 존중한다. */
+function celebrate(kind = "win") {
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const layer = document.createElement("div");
+  layer.className = "celebration-layer";
+  const palette = kind === "cup"
+    ? ["#fbbf24", "#f59e0b", "#fde68a", "#a855f7"]
+    : kind === "challenge"
+      ? ["#34d399", "#10b981", "#a7f3d0", "#60a5fa"]
+      : ["#818cf8", "#a855f7", "#f472b6", "#fbbf24"];
+  for (let i = 0; i < 26; i++) {
+    const piece = document.createElement("span");
+    piece.style.setProperty("--x", `${Math.random() * 100}%`);
+    piece.style.setProperty("--delay", `${Math.random() * 0.22}s`);
+    piece.style.setProperty("--drift", `${(Math.random() - 0.5) * 160}px`);
+    piece.style.setProperty("--spin", `${Math.random() * 720 - 360}deg`);
+    piece.style.setProperty("--color", palette[i % palette.length]);
+    layer.appendChild(piece);
+  }
+  document.body.appendChild(layer);
+  setTimeout(() => layer.remove(), 1900);
+}
+
 /* ---------------------------------------------------------
    돈 바 (상단 바 + 계정 패널)
 --------------------------------------------------------- */
@@ -3025,6 +3140,133 @@ function renderShop() {
     });
   });
   renderItems();
+}
+
+/* 계정 인벤토리 스냅샷 — revision이 낮은 응답은 무시한다. */
+function applyInventorySnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return;
+  const revision = Number(snapshot.revision) || 0;
+  if (revision < lastInventoryRevision) return;
+  lastInventoryRevision = revision;
+  moneyMultiplier = Math.max(1, Number(snapshot.moneyMultiplier) || 1);
+  ratingBoostGames = Math.max(0, Number(snapshot.ratingBoostGames) || 0);
+  ownedTitles = Array.isArray(snapshot.titles) ? snapshot.titles : [];
+  currentTitle = String(snapshot.currentTitle || "");
+  if (shopInfo) {
+    shopInfo.moneyMultiplier = moneyMultiplier;
+    shopInfo.ratingBoostGames = ratingBoostGames;
+    shopInfo.titles = ownedTitles;
+    shopInfo.currentTitle = currentTitle;
+    shopInfo.shieldTickets = Math.max(0, Number(snapshot.shieldTickets) || 0);
+    shopInfo.inventory = snapshot;
+  }
+  renderMoneyBar();
+  renderItems();
+  if (shopInfo) renderShop();
+}
+
+/* 데일리 챌린지 카드 */
+function renderDailyChallenge() {
+  const card = $("#dailyChallengeCard");
+  if (!card) return;
+  const c = dailyChallengeState;
+  const title = $("#dailyChallengeTitle");
+  const desc = $("#dailyChallengeDescription");
+  const bar = $("#dailyChallengeBar");
+  const count = $("#dailyChallengeCount");
+  const claim = $("#dailyChallengeClaim");
+  if (!c) {
+    if (title) title.textContent = "오늘의 챌린지";
+    if (desc) desc.textContent = "로그인하면 오늘의 챌린지가 열립니다.";
+    if (bar) bar.style.width = "0%";
+    if (count) count.textContent = "0 / 0";
+    if (claim) { claim.disabled = true; claim.textContent = "보상 받기"; }
+    return;
+  }
+  if (title) title.textContent = c.title || "오늘의 챌린지";
+  if (desc) desc.textContent = `${c.description || ""} · 보상 ${Number(c.reward || 0).toLocaleString()}코인`;
+  if (bar) bar.style.width = `${Math.min(100, Number(c.percent) || 0)}%`;
+  if (count) count.textContent = `${c.progress || 0} / ${c.target || 0}`;
+  if (claim) {
+    claim.disabled = !c.complete || c.claimed;
+    claim.textContent = c.claimed ? "수령 완료 ✓" : c.complete ? "보상 받기" : "진행 중";
+    claim.classList.toggle("ready", !!c.complete && !c.claimed);
+  }
+  card.classList.toggle("complete", !!c.complete);
+  card.classList.toggle("claimed", !!c.claimed);
+}
+
+/* 시즌 컵 — 예약/카운트다운/참가 */
+function seasonCupMsg(text, type = "") {
+  const el = $("#seasonCupMsg");
+  if (!el) return;
+  el.textContent = text || "";
+  el.dataset.type = type;
+  clearTimeout(seasonCupMsgTimer);
+  seasonCupMsgTimer = setTimeout(() => { el.textContent = ""; }, 5000);
+}
+
+function formatCupTime(ms) {
+  const total = Math.max(0, Math.floor(Number(ms) / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return h > 0 ? `${h}시간 ${String(m).padStart(2, "0")}분` : `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function renderSeasonCup() {
+  const card = $("#seasonCupCard");
+  if (!card) return;
+  const info = seasonCupState;
+  const title = $("#seasonCupTitle");
+  const badge = $("#seasonCupBadge");
+  const status = $("#seasonCupStatus");
+  const meta = $("#seasonCupMeta");
+  const reserve = $("#seasonCupReserveBtn");
+  const enter = $("#seasonCupEnterBtn");
+  const cancel = $("#seasonCupCancelBtn");
+  if (!info) {
+    if (title) title.textContent = "다음 시즌 컵을 예약하세요";
+    if (badge) { badge.textContent = "불러오는 중"; badge.dataset.state = "loading"; }
+    if (status) status.textContent = "시즌 컵 정보를 불러오는 중...";
+    if (meta) meta.textContent = "";
+    if (reserve) reserve.classList.remove("hidden");
+    if (enter) enter.classList.add("hidden");
+    if (cancel) cancel.classList.add("hidden");
+    return;
+  }
+  const live = info.state === "live";
+  const reserved = !!info.myReserved || !!info.myNextReserved;
+  if (title) title.textContent = live ? `시즌 컵 진행 중 · ${info.label}` : `다음 시즌 컵 · ${info.label}`;
+  if (badge) {
+    badge.textContent = live ? "LIVE" : "예약 가능";
+    badge.dataset.state = live ? "live" : "upcoming";
+  }
+  if (status) {
+    if (live) status.textContent = `지금 참가할 수 있습니다. 종료까지 ${formatCupTime(info.endAt - Date.now())}`;
+    else status.textContent = `시작까지 ${formatCupTime(info.startAt - Date.now())} · 예약자만 참가할 수 있어요.`;
+  }
+  if (meta) {
+    const reservedCount = Number(info.reservedCount) || 0;
+    meta.innerHTML = `<span>예약 <b>${reservedCount}</b>명</span><span>온라인 예약 <b>${Number(info.onlineReservedCount) || 0}</b>명</span><span>우승 <b>${Number(info.rewards && info.rewards.winnerCoins || 120000).toLocaleString()}코인</b> + 칭호</span>`;
+  }
+  if (reserve) {
+    reserve.classList.toggle("hidden", (live && info.myNextReserved) || (!live && info.myReserved));
+    reserve.textContent = live ? "다음 컵 예약" : "시즌 컵 예약";
+  }
+  if (enter) enter.classList.toggle("hidden", !(live && info.myReserved));
+  if (cancel) cancel.classList.toggle("hidden", !reserved);
+  card.classList.toggle("live", live);
+  card.classList.toggle("reserved", reserved);
+}
+
+function startSeasonCupTicker() {
+  if (seasonCupTicker) return;
+  seasonCupTicker = setInterval(renderSeasonCup, 1000);
+}
+
+function stopSeasonCupTicker() {
+  if (seasonCupTicker) { clearInterval(seasonCupTicker); seasonCupTicker = null; }
 }
 
 /* ---------------------------------------------------------
@@ -3645,6 +3887,18 @@ function renderAdminBody(data) {
     </div>
   ` : "";
 
+  /* 제품 패널 계측 — 어떤 화면/행동이 실제로 쓰이는지 보여준다. */
+  const panelRows = (Array.isArray(data.panels) ? data.panels : []).slice(0, 16);
+  const panelCard = isSuper ? `
+    <div class="admin-card admin-panel-metrics">
+      <h4>제품 패널 계측</h4>
+      <div class="admin-info">개인정보 없이 패널 조회·예약·보상 수령 같은 제품 이벤트만 집계합니다.</div>
+      <div class="admin-panel-grid">
+        ${panelRows.length ? panelRows.map(row => `<div class="admin-panel-row"><span>${escapeHtml(row.panel)}</span><b>${Number(row.count) || 0}</b><em>${escapeHtml(row.action)}</em></div>`).join("") : '<div class="admin-info">아직 수집된 패널 이벤트가 없습니다.</div>'}
+      </div>
+    </div>
+  ` : "";
+
   /* 관리자: 단어 승인 (커스텀 사전) — 최고 관리자 전용 */
   const wordCard = isSuper ? `
     <div class="admin-card">
@@ -3665,6 +3919,7 @@ function renderAdminBody(data) {
     ${statsCard}
     ${moneyCard}
     ${noticeCard}
+    ${panelCard}
     ${wordCard}
     ${bugCard}
     ${modCard}
@@ -3997,6 +4252,7 @@ function openAccountPanel(force) {
   accountPanelOpen = open;
   updateChatVisibility(); /* 계정 패널이 채팅을 가리지 않도록 채팅을 숨겼다/되살린다 */
   if (open) {
+    trackPanel("account", "open");
     renderAccountInfo(myNickname);
     if (socket && socketConnected) { socket.emit("referral:status"); socket.emit("mail:list"); socket.emit("guild:info"); socket.emit("push:status"); }
     renderPushStatus();
@@ -4221,6 +4477,7 @@ function toggleFriendsPanel(force) {
   friendsPanelOpen = typeof force === "boolean" ? force : !friendsPanelOpen;
   panel.classList.toggle("hidden", !friendsPanelOpen);
   if (friendsPanelOpen) {
+    trackPanel("friends", "open");
     socket?.emit("friends:list");
     $("#friendsAddInput")?.focus();
   }
@@ -4553,6 +4810,9 @@ function showReplay(data) {
 
   const winnerIdx = data ? data.winner : (st ? st.winner : null);
   const winnerName = data && data.winnerName ? data.winnerName : "";
+  const coachBox = $("#replayCoachBox");
+  if (coachBox) { coachBox.classList.add("hidden"); coachBox.innerHTML = ""; }
+  replayCoachPending = false;
   if (head) {
     head.textContent = data && data.summary
       ? String(data.summary)
@@ -4577,6 +4837,7 @@ function showReplay(data) {
     w.addEventListener("click", () => showWordDefinition(w.dataset.defWord));
   });
   modal.classList.remove("hidden");
+  trackPanel("replay", "open");
 }
 
 /* 저장된 전적의 단어 흐름을 같은 리플레이 모달로 다시 본다 */
@@ -4597,8 +4858,68 @@ function showStoredReplay(game) {
     winner: null,
     winnerName: "",
     stored: true,
+    result: game.result || "",
     summary: game.summary || `${resultText} · vs ${game.vs || "?"} · ${game.wordCount ?? history.length}단어`
   });
+}
+
+/* AI 복기 코치 — 리플레이 흐름을 서버에 보내 결정적 피드백을 받는다. */
+function requestReplayCoach() {
+  if (replayCoachPending) return;
+  const box = $("#replayCoachBox");
+  const btn = $("#replayCoach");
+  const hist = lastReplayData && lastReplayData.state && Array.isArray(lastReplayData.state.history)
+    ? lastReplayData.state.history : [];
+  if (hist.length < 2) return;
+  if (!socket || !socketConnected) {
+    if (box) { box.classList.remove("hidden"); box.innerHTML = `<div class="coach-empty">서버 연결 후 복기 코치를 사용할 수 있어요.</div>`; }
+    return;
+  }
+  const stored = !!(lastReplayData && lastReplayData.stored);
+  const flow = hist.map(item => ({
+    w: item.word,
+    n: item.nickname,
+    m: stored ? !!item.mine : item.player === playerIndex,
+    d: item.depth,
+    t: item.turn,
+    o: !!item.oneShot
+  })).filter(item => item.w);
+  if (flow.length < 2) return;
+  let result = lastReplayData && lastReplayData.result;
+  if (!result && !stored && lastReplayData) {
+    const winner = lastReplayData.winner;
+    result = winner == null ? "draw" : (winner === playerIndex ? "win" : "lose");
+  }
+  replayCoachPending = true;
+  if (btn) { btn.disabled = true; btn.textContent = "🤖 분석 중..."; }
+  if (box) { box.classList.remove("hidden"); box.innerHTML = `<div class="coach-loading"><span class="coach-spinner"></span> AI가 이번 판의 선택을 복기하고 있어요...</div>`; }
+  trackPanel("coach", "open");
+  socket.emit("replay:coach", { flow, myIndex: stored ? null : playerIndex, result });
+}
+
+function renderReplayCoach(data) {
+  const box = $("#replayCoachBox");
+  const btn = $("#replayCoach");
+  if (btn) { btn.disabled = false; btn.textContent = "🤖 AI 복기 코치"; }
+  if (!box) return;
+  if (!data || !data.ok) {
+    box.classList.remove("hidden");
+    box.innerHTML = `<div class="coach-empty">${escapeHtml((data && data.reason) || "복기 분석에 실패했습니다.")}</div>`;
+    return;
+  }
+  const stats = data.stats || {};
+  box.classList.remove("hidden");
+  box.innerHTML = `<div class="coach-head">
+      <span class="coach-grade" data-grade="${escapeHtml(data.grade || "B")}">${escapeHtml(data.grade || "B")}</span>
+      <div><b>${escapeHtml(data.headline || "복기 결과")}</b><div class="coach-score">플레이 점수 ${Number(data.score) || 0}/100</div></div>
+    </div>
+    <div class="coach-stats">
+      <span>내 단어 <b>${Number(stats.myWords) || 0}</b></span>
+      <span>평균 길이 <b>${Number(stats.avgLength) || 0}</b>자</span>
+      <span>공격 <b>${Number(stats.attacks) || 0}</b></span>
+      <span>최장 <b>${escapeHtml(stats.longestWord || "-")}</b></span>
+    </div>
+    <div class="coach-tips">${(data.tips || []).map(tip => `<div class="coach-tip"><span>${escapeHtml(tip.icon || "💡")}</span><div><b>${escapeHtml(tip.title || "")}</b><p>${escapeHtml(tip.body || "")}</p></div></div>`).join("")}</div>`;
 }
 
 /* ---------------------------------------------------------
@@ -5176,7 +5497,11 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#tutorClose")?.addEventListener("click", () => finishTutorial());
   $("#practiceQuit")?.addEventListener("click", () => quitTutorialPractice());
   $("#tutorialReplayBtn")?.addEventListener("click", () => showTutorial(true));
-  $("#replayClose")?.addEventListener("click", () => $("#replayModal")?.classList.add("hidden"));
+  $("#replayClose")?.addEventListener("click", () => {
+    $("#replayModal")?.classList.add("hidden");
+    $("#replayCoachBox")?.classList.add("hidden");
+  });
+  $("#replayCoach")?.addEventListener("click", requestReplayCoach);
   $("#replayCopy")?.addEventListener("click", copyReplayResult);
   $("#replayShare")?.addEventListener("click", shareCurrentReplay);
   $("#wordDefClose")?.addEventListener("click", () => $("#wordDefModal")?.classList.add("hidden"));
@@ -5241,6 +5566,8 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       currentMode = newMode;
+      trackPanel(newMode, "view");
+      if (currentMode !== "tournament") stopSeasonCupTicker();
       $all(".panel").forEach(p => p.classList.add("hidden"));
       const target = $(`#${currentMode}`);
       if (target) target.classList.remove("hidden");
@@ -5255,6 +5582,8 @@ document.addEventListener("DOMContentLoaded", () => {
       } else if (currentMode === "tournament") {
         updateTournamentQueueUI();
         renderTournamentQueueInfo();
+        if (socket && socketConnected) socket.emit("seasonCup:info");
+        startSeasonCupTicker();
       } else if (currentMode === "shop") {
         if (socket && socketConnected) {
           socket.emit("shop:list");
@@ -5271,7 +5600,7 @@ document.addEventListener("DOMContentLoaded", () => {
         renderWordbook();
       } else if (currentMode === "season") {
     refreshSeasonBar();
-    if (socket && socketConnected) socket.emit("missions:status");
+    if (socket && socketConnected) { socket.emit("missions:status"); socket.emit("daily:challenge"); }
   } else if (currentMode === "achievements") {
     fetchAchievements();
   } else if (currentMode === "guild") {
@@ -5283,6 +5612,8 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   /* 초기 로드 — 튜토리얼 표시 여부를 결정한 뒤 싱글플레이를 자동 시작한다 */
+  renderDailyChallenge();
+  renderSeasonCup();
   initTutorialFlow();
 
   /* 싱글플레이 — 튜토리얼 실습 중이면 먼저 튜토리얼을 마친다 */
@@ -5411,6 +5742,32 @@ document.addEventListener("DOMContentLoaded", () => {
     stopTournamentTicker();
     updateTournamentQueueUI();
     socket.emit("tournament:cancel");
+  });
+
+  /* 데일리 챌린지 */
+  $("#dailyChallengeClaim")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) { showMessage("서버에 연결 중입니다...", "waiting"); return; }
+    socket.emit("daily:challengeClaim");
+    trackPanel("dailyChallenge", "claim");
+  });
+
+  /* 시즌 컵 예약 */
+  $("#seasonCupReserveBtn")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) { seasonCupMsg("서버에 연결 중입니다.", "error"); return; }
+    if (!isLoggedIn()) { seasonCupMsg("시즌 컵은 Google 로그인 후 예약할 수 있습니다.", "error"); openAccountPanel(true); return; }
+    if (!requireNickname()) return;
+    socket.emit("seasonCup:reserve");
+    trackPanel("seasonCup", "reserve");
+  });
+  $("#seasonCupEnterBtn")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) { seasonCupMsg("서버에 연결 중입니다.", "error"); return; }
+    socket.emit("seasonCup:enter");
+    trackPanel("seasonCup", "enter");
+  });
+  $("#seasonCupCancelBtn")?.addEventListener("click", () => {
+    if (!socket || !socketConnected) return;
+    socket.emit("seasonCup:cancel");
+    trackPanel("seasonCup", "cancel");
   });
 
   /* 계정 복구 · 기기 연결 */

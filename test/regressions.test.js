@@ -10,6 +10,11 @@ const vm = require("node:vm");
 const game = require("../server/game.js");
 const rankSeason = require("../server/rank-season.js");
 const guildWeek = require("../server/guild-week.js");
+const inventory = require("../server/inventory.js");
+const dailyChallenge = require("../server/daily-challenge.js");
+const replayCoach = require("../server/replay-coach.js");
+const seasonCup = require("../server/season-cup.js");
+const panelMetrics = require("../server/panel-metrics.js");
 const source = fs.readFileSync(
   process.env.WORDGAME_TEST_SOURCE || path.join(__dirname, "../server/server.js"), "utf8"
 );
@@ -114,7 +119,7 @@ function context(extra = {}) {
     normalizeWord: game.normalizeWord,
     isAdminNick: () => false, findSubAdmin: () => null, watchNicks: [],
     getPlayerRoom: () => null,
-    rankSeason, guildWeek,
+    rankSeason, guildWeek, inventory, dailyChallenge, replayCoach, seasonCup, panelMetrics,
     notifyPush() {}, shouldNotifyTurn: () => false, awardGuildWeekPoints: async () => null,
     seasonRolloverPromise: null, guildWeekRolloverPromise: null,
     pushManager: { renameAccount: async () => ({ ok: true }) },
@@ -3229,6 +3234,21 @@ test("four-player tournament queue starts one survival room", () => {
   assert.equal(c.roomCapacity(room), 4, "대회 방 정원은 4명");
 });
 
+test("season cup entries start a tournament room with the cup slot", () => {
+  const { c } = context();
+  const slot = "2026-10-04T21:00";
+  for (let i = 0; i < 4; i++) {
+    const s = socket(`cup-${i}`);
+    c.io.sockets.sockets.set(s.id, s);
+    c.addToTournamentQueue(s.id, `cup${i}`, 1000 + i, { seasonCup: true, cupSlot: slot });
+  }
+  c.tryMatchTournament();
+  const room = [...c.ROOMS.values()][0];
+  assert.equal(room.seasonCup, true, "시즌 컵 예약자는 시즌 컵 방으로 묶인다");
+  assert.equal(room.seasonCupSlot, slot, "예약 슬롯이 방에 보존된다");
+  assert.equal(room.players.length, 4);
+});
+
 test("recovery codes are account-bound and device link codes are single-use", () => {
   const { c } = context();
   const code = c.randomRecoveryCode(10);
@@ -3297,6 +3317,58 @@ test("tournament finish settles ranked results and pays the winner once", async 
   assert.ok(ledger.some(h => h.reason === "tournament_win"), "대회 우승 코인이 원장에 기록된다");
   assert.equal(winner.recentGames.length, 1);
   assert.equal(winner.recentGames[0].mode, "tournament");
+});
+
+test("season cup winner receives the bonus and champion title", async () => {
+  const { c } = context();
+  const sockets = [];
+  for (let i = 0; i < 4; i++) {
+    const s = socket(`sc-${i}`);
+    sockets.push(s);
+    c.io.sockets.sockets.set(s.id, s);
+    seed(c, `sc${i}`, { money: 0 });
+    c.registerOnline(s.id, `sc${i}`);
+  }
+  const room = {
+    id: "SC1", mode: "tournament", tournament: true, seasonCup: true, seasonCupSlot: "2026-10-04T21:00",
+    hostSocketId: "sc-0",
+    players: sockets.map((s, i) => ({
+      id: s.id, socketId: s.id, playerIndex: i, nickname: `sc${i}`,
+      isBot: false, connected: true, eliminated: false, hearts: 1, mistakes: 0, waiting: false
+    })),
+    history: [], usedWords: new Set(), started: true, finished: false,
+    turnPlayerIndex: 0, turnNumber: 5, gameSessionId: 2
+  };
+  c.ROOMS.set("SC1", room);
+  await c.finishGame(room, 0, 3);
+  const winner = c.playerCache.get("sc0");
+  assert.ok(winner.money >= 120000, "시즌 컵 우승 추가 코인이 지급된다");
+  assert.ok(winner.titles.some(t => t && t.id === "t_season_cup"), "시즌 컵 챔피언 칭호가 지급된다");
+  assert.ok(sockets[0].emissions.some(([event]) => event === "seasonCup:reward"), "우승자에게 시즌 컵 보상 이벤트가 간다");
+});
+
+test("daily challenge progress tracks games and pays its reward once", async () => {
+  const { c, errors } = context();
+  const s = socket("s-daily");
+  c.socketNicks.set(s.id, "challenger");
+  const def = c.dailyChallenge.challengeForDate("2026-10-04");
+  seed(c, "challenger", {
+    money: 1000,
+    dailyChallenge: { date: "2026-10-04", progress: def.target, claimed: false, claimedAt: "" }
+  });
+  installHandler(c, "daily:challengeClaim", s);
+  const claim = s.handlers.get("daily:challengeClaim");
+  await claim();
+  let result = s.emissions.filter(([event]) => event === "daily:challenge").at(-1);
+  assert.equal(result[1].ok, true, "완료한 챌린지는 보상을 받을 수 있다");
+  assert.equal(c.playerCache.get("challenger").money, 1000 + def.reward);
+  assert.equal(c.playerCache.get("challenger").dailyChallenge.claimed, true);
+
+  await claim();
+  result = s.emissions.filter(([event]) => event === "daily:challenge").at(-1);
+  assert.equal(result[1].ok, false, "같은 날 보상을 두 번 받을 수 없다");
+  assert.equal(c.playerCache.get("challenger").money, 1000 + def.reward);
+  assert.equal(errors.length, 0, errors.join(" | "));
 });
 
 test("season soft reset seeds placement games and ranked wins consume them", async () => {
