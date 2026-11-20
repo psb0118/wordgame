@@ -941,8 +941,59 @@ const friendsMap = new Map();            /* 정규화 닉네임 -> Set<정규화
 const friendRequests = new Map();        /* 신청한 쪽 정규화 닉네임 -> Set<받는 쪽 정규화 닉네임> */
 const onlineNicks = new Map();           /* 정규화 닉네임 -> socketId(접속 중) */
 const socketNicks = new Map();           /* socketId -> 등록된 닉네임 (닉네임 재적용 전 새 소켓 구분) */
-const nameOps = new Set();               /* 진행 중인 이름 변경/선점 키 — 같은 계정·이름의 동시 요청 차단 */
+const nameOps = new Set();               /* 진행 중인 새 이름 선점 키 — 서로 다른 계정의 동시 이름 변경 차단 */
+const accountLocks = new Map();          /* 계정별 작업 큐 — 지갑·아이템·이름·출석 등 플레이어 저장을 직렬화 */
 const normKey = (nick) => String(nick || "").replace(/\s+/g, "").toLowerCase();
+
+function accountLockKey(accountId) {
+  const raw = String(accountId || "").trim();
+  return normKey(raw) || raw;
+}
+
+function accountKeyForSocket(socket) {
+  return accountLockKey(socketNicks.get(socket?.id)) || accountLockKey(socket?.id);
+}
+
+/* 계정별 비동기 뮤텍스. 이전 작업이 끝난 뒤 다음 작업이 시작되도록 꼬리를
+   연결한다. 잠금 해제 시 마지막 작업만 맵에서 제거해 대기 중인 작업의 순서를
+   보존한다. 키는 닉네임(계정) 하나이며, 이름 변경도 옛 계정 키로 들어온다. */
+async function withAccountLock(accountId, task) {
+  const key = accountLockKey(accountId);
+  if (!key) return task();
+  const previous = accountLocks.get(key) || Promise.resolve();
+  let releaseGate;
+  const gate = new Promise((resolve) => { releaseGate = resolve; });
+  const tail = previous.catch(() => {}).then(() => gate);
+  accountLocks.set(key, tail);
+  await previous.catch(() => {});
+  try {
+    return await task();
+  } finally {
+    releaseGate();
+    if (accountLocks.get(key) === tail) accountLocks.delete(key);
+  }
+}
+
+/* socket.on 핸들러를 계정 잠금으로 감싼다. keyFn은 대상 계정이 소켓과 다를 때만
+   쓴다(관리자 우편/돈 조절). 이름 변경은 옛 계정을 잠그고, 새 이름은 기존
+   nameOps로 잠근다 — 새 이름이 이미 남의 계정이면 거부되고, 같은 UID의 대상
+   행은 같은 계정 작업이므로 대상 계정을 별도로 잠그지 않는다. */
+function accountLocked(socket, handler, keyFn, opts = {}) {
+  return async (...args) => {
+    const key = accountLockKey(keyFn ? keyFn(...args) : accountKeyForSocket(socket));
+    if (!key) return handler(...args);
+    if (opts.rejectIfBusy && accountLocks.has(key)) {
+      if (opts.busyEvent) {
+        socket.emit(opts.busyEvent, {
+          ok: false,
+          reason: opts.busyReason || "계정 작업을 처리 중입니다. 잠시 후 다시 시도해주세요."
+        });
+      }
+      return;
+    }
+    return withAccountLock(key, () => handler(...args));
+  };
+}
 
 function applyFriendsData(data) {
   if (!data || typeof data !== "object") return;
@@ -4297,7 +4348,7 @@ function runAI(room, gameSessionId) {
       const pool = dolrimStart.length > 0 ? dolrimStart : legal;
       word = pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : null;
     } else {
-      word = chooseAIStartWord(room.startSyllable || "", room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS);
+      word = chooseAIStartWord(room.startSyllable || "", room.usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, { strong: difficulty === "hard" });
     }
   } else {
     if (difficulty === "easy") {
@@ -4334,7 +4385,7 @@ function runAI(room, gameSessionId) {
       /* 이미 시도한 단어를 피해 다른 시작 단어로 재시도 */
       const blocked = new Set(room.usedWords);
       blocked.add(word);
-      const retry = chooseAIStartWord(room.startSyllable || "", blocked, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS);
+      const retry = chooseAIStartWord(room.startSyllable || "", blocked, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, { strong: difficulty === "hard" });
       if (retry) playWord(room, player, retry, gameSessionId);
     } else {
       let fallbackPool = getCandidates(room.currentWord || "", room.usedWords, WORD_INDEX)
@@ -5904,7 +5955,7 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("출석 상태 오류:", err); }
   });
 
-  socket.on("attendance:check", async () => {
+  socket.on("attendance:check", accountLocked(socket, async () => {
     try {
       const pd = await getPlayerData(socket.id);
       const today = getKstDate();
@@ -5937,7 +5988,7 @@ io.on("connection", (socket) => {
       socket.emit("attendance:result", { ok: true, reward, streak, money: newMoney, checkedToday: true });
       console.log(`[ATTENDANCE] ${String(pd.nickname || "플레이어")} ${today} ${streak}일차 +${reward}원`);
     } catch (err) { console.error("출석체크 오류:", err); }
-  });
+  }));
 
   /* -- 상점 --------------------------------------------- */
   socket.on("shop:list", async () => {
@@ -5977,7 +6028,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("shop:buyTitle", async (data) => {
+  socket.on("shop:buyTitle", accountLocked(socket, async (data) => {
     try {
       const titleId = String(data?.titleId || "");
       const title = SHOP_TITLES.find(t => t.id === titleId);
@@ -6007,9 +6058,9 @@ io.on("connection", (socket) => {
       socket.emit("shop:result", { ok: true, message: `칭호 '${title.name}'을 구매했습니다.`, money: newMoney, titles: pd.titles, currentTitle: pd.currentTitle });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("칭호 구매 오류:", err); }
-  });
+  }));
 
-  socket.on("shop:setTitle", async (data) => {
+  socket.on("shop:setTitle", accountLocked(socket, async (data) => {
     try {
       const titleId = String(data?.titleId || "");
       const pd = await getPlayerData(socket.id);
@@ -6028,9 +6079,9 @@ io.on("connection", (socket) => {
       socket.emit("player:ranking", await getRankingPayload(socket.id));
       broadcastRoomState(getPlayerRoom(socket));
     } catch (err) { console.error("칭호 변경 오류:", err); }
-  });
+  }));
 
-  socket.on("shop:unsetTitle", async () => {
+  socket.on("shop:unsetTitle", accountLocked(socket, async () => {
     try {
       const pd = await getPlayerData(socket.id);
       if (!pd.currentTitle) { socket.emit("shop:result", { ok: true, message: "장착 중인 칭호가 없습니다.", currentTitle: "" }); return; }
@@ -6040,10 +6091,10 @@ io.on("connection", (socket) => {
       socket.emit("player:ranking", await getRankingPayload(socket.id));
       broadcastRoomState(getPlayerRoom(socket));
     } catch (err) { console.error("칭호 해제 오류:", err); }
-  });
+  }));
 
   /* -- 업적 목록 (해금 상태 + 총계) --------------------- */
-  socket.on("achievements:list", async () => {
+  socket.on("achievements:list", accountLocked(socket, async () => {
     try {
       const nickname = socketNicks.get(socket.id);
       if (!nickname) { socket.emit("achievements:list", { ok: false, reason: "닉네임을 먼저 설정해주세요." }); return; }
@@ -6061,7 +6112,7 @@ io.on("connection", (socket) => {
         unlockedCount: Object.keys(pd.achievements).length
       });
     } catch (error) { console.error("achievements:list 오류:", error); }
-  });
+  }));
 
   socket.on("missions:status", async () => {
     try {
@@ -6089,7 +6140,7 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("미션 조회 오류:", err); }
   });
 
-  socket.on("missions:claim", async (data) => {
+  socket.on("missions:claim", accountLocked(socket, async (data) => {
     try {
       const group = (data?.group === "weekly" || data?.group === "monthly") ? data.group : "daily";
       const missionId = String(data?.id || "");
@@ -6155,9 +6206,9 @@ io.on("connection", (socket) => {
         isAdmin: isAdminPd(pd)
       });
     } catch (err) { console.error("미션 보상 수령 오류:", err); }
-  });
+  }));
 
-  socket.on("shop:buyShield", async (data) => {
+  socket.on("shop:buyShield", accountLocked(socket, async (data) => {
     try {
       const pd = await getPlayerData(socket.id);
       if (pd.money < SHOP_SHIELD_PRICE) { socket.emit("shop:result", { ok: false, reason: "돈이 부족합니다." }); return; }
@@ -6183,9 +6234,9 @@ io.on("connection", (socket) => {
       socket.emit("shop:result", { ok: true, message: "랭크 보호 티켓 1장을 구매했습니다. (랭크 패배 1회 방어)", money: newMoney, shieldTickets: pd.shieldTickets });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("보호 티켓 구매 오류:", err); }
-  });
+  }));
 
-  socket.on("shop:buyPotion", async (data) => {
+  socket.on("shop:buyPotion", accountLocked(socket, async (data) => {
     try {
       const pd = await getPlayerData(socket.id);
       if (pd.money < SHOP_POTION_PRICE) { socket.emit("shop:result", { ok: false, reason: "돈이 부족합니다." }); return; }
@@ -6211,9 +6262,9 @@ io.on("connection", (socket) => {
       socket.emit("shop:result", { ok: true, message: "다음 10판 동안 레이팅 2배 물약을 구매했습니다.", money: newMoney, ratingBoostGames: pd.ratingBoostGames });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("물약 구매 오류:", err); }
-  });
+  }));
 
-  socket.on("shop:buyMultiplier", async (data) => {
+  socket.on("shop:buyMultiplier", accountLocked(socket, async (data) => {
     try {
       const target = Number(data?.multiplier);
       const row = SHOP_MULTIPLIER_PRICES.find(m => m.multiplier === target);
@@ -6242,7 +6293,7 @@ io.on("connection", (socket) => {
       socket.emit("shop:result", { ok: true, message: `영구 돈 ${target}배를 구매했습니다.`, money: newMoney, moneyMultiplier: pd.moneyMultiplier });
       socket.emit("player:ranking", await getRankingPayload(socket.id));
     } catch (err) { console.error("배율 구매 오류:", err); }
-  });
+  }));
 
   /* -- 버그 제보 ----------------------------------------- */
   socket.on("bug:submit", async (data) => {
@@ -6263,7 +6314,7 @@ io.on("connection", (socket) => {
   });
 
   /* -- 관리자: 돈 조절 (총관리자 전용) ------------------- */
-  socket.on("admin:setMoney", async (data) => {
+  socket.on("admin:setMoney", accountLocked(socket, async (data) => {
     try {
       const reg = await requireNickname(socket);
       if (!reg.ok) { socket.emit("admin:moneyResult", { ok: false, reason: reg.reason }); return; }
@@ -6305,7 +6356,7 @@ io.on("connection", (socket) => {
       }
       console.log(`[ADMIN] ${reg.nickname}님이 '${nickname}' 돈 ${amount}원 조절`);
     } catch (err) { console.error("돈 조절 오류:", err); }
-  });
+  }, (data) => normKey(String(data?.nickname || ""))));
 
   /* -- 관리자: 버그 제보 목록 (총관리자만) ---------------- */
   socket.on("admin:getBugs", async () => {
@@ -6433,7 +6484,7 @@ io.on("connection", (socket) => {
     return { ok: true, pd };
   };
 
-  socket.on("wordbook:list", async () => {
+  socket.on("wordbook:list", accountLocked(socket, async () => {
     try {
       const loaded = await loadWordbookForSocket();
       if (!loaded.ok) {
@@ -6451,9 +6502,9 @@ io.on("connection", (socket) => {
       console.error("단어장 조회 오류:", err);
       socket.emit("wordbook:listResult", { ok: false, reason: "단어장을 불러오지 못했습니다.", items: [] });
     }
-  });
+  }));
 
-  socket.on("wordbook:add", async (data) => {
+  socket.on("wordbook:add", accountLocked(socket, async (data) => {
     try {
       const loaded = await loadWordbookForSocket();
       if (!loaded.ok) { socket.emit("wordbook:updated", { ok: false, reason: loaded.reason }); return; }
@@ -6464,9 +6515,9 @@ io.on("connection", (socket) => {
       console.error("단어장 저장 오류:", err);
       socket.emit("wordbook:updated", { ok: false, reason: "단어장 저장에 실패했습니다." });
     }
-  });
+  }));
 
-  socket.on("wordbook:remove", async (data) => {
+  socket.on("wordbook:remove", accountLocked(socket, async (data) => {
     try {
       const loaded = await loadWordbookForSocket();
       if (!loaded.ok) { socket.emit("wordbook:updated", { ok: false, reason: loaded.reason }); return; }
@@ -6477,9 +6528,9 @@ io.on("connection", (socket) => {
       console.error("단어장 삭제 오류:", err);
       socket.emit("wordbook:updated", { ok: false, reason: "단어장 삭제에 실패했습니다." });
     }
-  });
+  }));
 
-  socket.on("wordbook:clear", async () => {
+  socket.on("wordbook:clear", accountLocked(socket, async () => {
     try {
       const loaded = await loadWordbookForSocket();
       if (!loaded.ok) { socket.emit("wordbook:updated", { ok: false, reason: loaded.reason }); return; }
@@ -6490,9 +6541,9 @@ io.on("connection", (socket) => {
       console.error("단어장 비우기 오류:", err);
       socket.emit("wordbook:updated", { ok: false, reason: "단어장을 비우지 못했습니다." });
     }
-  });
+  }));
 
-  socket.on("wordbook:merge", async (data) => {
+  socket.on("wordbook:merge", accountLocked(socket, async (data) => {
     try {
       const loaded = await loadWordbookForSocket();
       if (!loaded.ok) { socket.emit("wordbook:updated", { ok: false, reason: loaded.reason }); return; }
@@ -6503,7 +6554,7 @@ io.on("connection", (socket) => {
       console.error("단어장 동기화 오류:", err);
       socket.emit("wordbook:updated", { ok: false, reason: "단어장 동기화에 실패했습니다." });
     }
-  });
+  }));
 
   /* -- 리플레이 공유 링크 ------------------------------ */
   socket.on("replay:share", async (data) => {
@@ -6877,7 +6928,7 @@ io.on("connection", (socket) => {
   });
 
   /* 관리자: 개별 쪽지(우편) — 대상 쪽지함에 코인과 함께 저장 */
-  socket.on("admin:mailSend", async (data) => {
+  socket.on("admin:mailSend", accountLocked(socket, async (data) => {
     try {
       const reg = await requireNickname(socket);
       if (!reg.ok) { socket.emit("admin:mailResult", { ok: false, reason: reg.reason }); return; }
@@ -6931,7 +6982,7 @@ io.on("connection", (socket) => {
       console.error("쪽지 발송 오류:", err);
       socket.emit("admin:mailResult", { ok: false, reason: "쪽지 발송에 실패했습니다." });
     }
-  });
+  }, (data) => normKey(String(data?.nickname || ""))));
 
   /* -- 관전자 전용 채팅 — 플레이어 방 채팅과 완전히 분리된 채널 ---------- */
   socket.on("spectate:chat", (data) => {
@@ -7308,7 +7359,7 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("쪽지함 조회 오류:", err); socket.emit("mail:list", { ok: false, reason: "쪽지함을 불러오지 못했습니다." }); }
   });
 
-  socket.on("mail:claim", async (data) => {
+  socket.on("mail:claim", accountLocked(socket, async (data) => {
     try {
       const myNick = socketNicks.get(socket.id) || "";
       if (!myNick) { socket.emit("mail:claim", { ok: false, reason: "먼저 닉네임을 설정해주세요." }); return; }
@@ -7347,10 +7398,10 @@ io.on("connection", (socket) => {
       console.error("쪽지 수령 오류:", err);
       socket.emit("mail:claim", { ok: false, reason: "쪽지 수령에 실패했습니다." });
     }
-  });
+  }));
 
   /* -- 길드/클랜 — 생성 / 가입 / 나가기 / 추방 / 해산 ------- */
-  socket.on("guild:create", async (data) => {
+  socket.on("guild:create", accountLocked(socket, async (data) => {
     try {
       const nick = socketNicks.get(socket.id) || "";
       if (!nick) { socket.emit("guild:state", { ok: false, reason: "먼저 닉네임을 설정해주세요." }); return; }
@@ -7396,7 +7447,7 @@ io.on("connection", (socket) => {
         money: Math.max(0, Math.floor(Number(newMoney) || 0))
       });
     } catch (err) { console.error("길드 생성 오류:", err); socket.emit("guild:state", { ok: false, reason: "길드 생성에 실패했습니다." }); }
-  });
+  }));
 
   socket.on("guild:join", async (data) => {
     try {
@@ -7519,7 +7570,7 @@ io.on("connection", (socket) => {
   });
 
   /* -- 계정 복구 · 기기 연결 ----------------------------- */
-  socket.on("account:recoveryCode", async () => {
+  socket.on("account:recoveryCode", accountLocked(socket, async () => {
     try {
       const pd = await getPlayerData(socket.id);
       if (!pd.nickname || isGhostRecord(pd)) {
@@ -7538,7 +7589,7 @@ io.on("connection", (socket) => {
       console.error("복구 코드 발급 오류:", err);
       socket.emit("account:recoveryCode", { ok: false, reason: "복구 코드를 만들지 못했습니다." });
     }
-  });
+  }));
 
   socket.on("account:recover", async (data) => {
     try {
@@ -7614,8 +7665,8 @@ io.on("connection", (socket) => {
      - 이름 변경: 기존 계정 전체를 새 이름으로 승계하고 옛 행은 제거한다.
        같은 계정이 이름만 바꾼 경우에도 능력치·코인·랭킹이 초기화되지 않는다.
        비용은 1회 무료, 이후 회당 RENAME_PRICE */
-  socket.on("player:setName", async (data) => {
-    let nameOpKeys = null;
+  socket.on("player:setName", accountLocked(socket, async (data) => {
+    let nameOpKey = null;
     /* 같은 소켓에서 저장 버튼을 연타해도 두 요청이 겹치지 않게 한다. */
     if (socket.data?.nameUpdateInFlight) {
       socket.emit("player:nameUpdated", { ok: false, reason: "이름 변경을 처리 중입니다. 잠시 후 다시 시도해주세요." });
@@ -7652,14 +7703,15 @@ io.on("connection", (socket) => {
 
       /* 같은 계정이나 같은 새 이름을 동시에 처리하지 않는다. 두 탭/연타로
          비용이 두 번 차감되거나 다른 계정을 덮어쓰는 것을 막는다. */
-      nameOpKeys = [`name:${normKey(nickname)}`];
-      if (prevKey) nameOpKeys.push(`account:${prevKey}`);
-      if (nameOpKeys.some(key => nameOps.has(key))) {
-        nameOpKeys = null;   /* 다른 요청이 가진 잠금을 finally에서 풀지 않는다 */
+      /* 새 이름만 nameOps로 잠근다. 옛 계정은 위 accountLocked가 이미 잠갔으므로
+         같은 계정 키를 nameOps에 중복으로 넣지 않는다. */
+      nameOpKey = `name:${normKey(nickname)}`;
+      if (nameOps.has(nameOpKey)) {
+        nameOpKey = null;   /* 다른 요청이 가진 잠금을 finally에서 풀지 않는다 */
         socket.emit("player:nameUpdated", { ok: false, reason: "이름 변경을 처리 중입니다. 잠시 후 다시 시도해주세요." });
         return;
       }
-      for (const key of nameOpKeys) nameOps.add(key);
+      nameOps.add(nameOpKey);
 
       /* 이름 변경 전 검사 — 대상 이름 충돌과 비용을 선점 확인한다 */
       let renameCost = 0;
@@ -7810,9 +7862,13 @@ io.on("connection", (socket) => {
       socket.emit("player:nameUpdated", { ok: false, reason: "이름 변경 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요." });
     } finally {
       if (socket.data) socket.data.nameUpdateInFlight = false;
-      if (nameOpKeys) for (const key of nameOpKeys) nameOps.delete(key);
+      if (nameOpKey) nameOps.delete(nameOpKey);
     }
-  });
+  }, null, {
+    rejectIfBusy: true,
+    busyEvent: "player:nameUpdated",
+    busyReason: "이름 변경을 처리 중입니다. 잠시 후 다시 시도해주세요."
+  }));
 
   /* Firebase(Google) 로그인 — 검증된 UID/이메일을 소켓 세션에 기록한다.
      이름이 아직 없으면 needNickname으로 알리고, 이름은 player:setName에서 정한다.

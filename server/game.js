@@ -510,8 +510,49 @@ function startTables(WORD_INDEX, rootSet, rareRootSet) {
    희귀 끝음절이 그대로 섞여 유저를 강제한다. 따라서 반드시 3 이상으로 유지한다. */
 const MIN_OPEN_REPLY_POOL = 4;
 
-function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS) {
+/* 상대가 곧바로 한방을 낼 수 있는 응수가 있는지. 전체 응수를 세지 않고
+   '이 단어를 두면 상대의 다음 수 중 AI가 답할 수 없는 수'만 찾는다. */
+function opponentHasOneShot(word, usedSet, WORD_INDEX) {
+  const used = new Set(usedSet);
+  used.add(word);
+  let examined = 0;
+  for (const reply of getCandidates(word, used, WORD_INDEX)) {
+    if (++examined > 1200) return false;   /* 넓은 말밭은 증명 불가로 본다 */
+    const u2 = new Set(used);
+    u2.add(reply);
+    if (getCandidates(reply, u2, WORD_INDEX, 1).length === 0) return true;
+  }
+  return false;
+}
+
+/* AI가 word를 두었을 때, 상대의 응수 중 하나라도 "AI의 모든 다음 수가
+   상대 한방을 허용하는" 강제 패배 응수가 있으면 true. 상대 응수가 좁은
+   함정(예: 꿋꿋 → 꿋꿋이/꿋다)을 빠르게 걸러낸다. */
+function losesToImmediateThreat(word, usedSet, WORD_INDEX) {
+  const used = new Set(usedSet);
+  used.add(word);
+  const opp = getCandidates(word, used, WORD_INDEX, 13);
+  if (opp.length > 12) return false;   /* 상대 응수가 넓으면 이 검사로는 단정 불가 */
+  for (const reply of opp) {
+    const u2 = new Set(used);
+    u2.add(reply);
+    const ai = getCandidates(reply, u2, WORD_INDEX, 7);
+    if (ai.length === 0) return true;
+    if (ai.length > 6) return false;   /* AI 선택지가 넓으면 3수 함정으로 단정하지 않는다 */
+    let hasSafeMove = false;
+    for (const next of ai) {
+      const u3 = new Set(u2);
+      u3.add(next);
+      if (!opponentHasOneShot(next, u3, WORD_INDEX)) { hasSafeMove = true; break; }
+    }
+    if (!hasSafeMove) return true;
+  }
+  return false;
+}
+
+function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, opts) {
   const used = usedWords instanceof Set ? usedWords : new Set();
+  const strong = !!(opts && opts.strong);
   const defenseSet = DEFENSE_WORDS || new Set();
   const rootSet = ROOT_WORDS || new Set();
   const rareRootSet = RARE_ROOT_WORDS || new Set();
@@ -588,6 +629,52 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
   };
   const safe = used.size === 0 ? turn0Safe : usedSafe;
 
+  /* 어려움 전용 오프닝 — 상대의 실제 응수 폭이 좁은 압박 단어부터 검증한다.
+     일반 오프닝은 루트/희귀루트를 우선하느라 '가족'처럼 응수 폭이 넓은 단어를
+     고를 수 있다. 어려움에서는 먼저 좁은 후보(가듁·가스킷 등)를 강제 승리/패배
+     탐색으로 검증하고, 확정 승리 수가 있으면 그 수를, 없으면 검증을 통과한
+     가장 좁은 수를 고른다. 이 과정에서 상대가 한방으로 끝내는 수는 배제된다. */
+  if (strong) {
+    const HARD_OPEN_CAP = 240;
+    const narrowed = scored.map(s => ({
+      ...s,
+      nextCount: getCandidates(s.nw, used, WORD_INDEX, HARD_OPEN_CAP + 1).length
+    })).filter(s => s.nextCount > 0 && s.nextCount <= HARD_OPEN_CAP);
+    const safeNarrow = narrowed.filter(s => safe(s.nw) && !losesToImmediateThreat(s.nw, used, WORD_INDEX));
+    if (safeNarrow.length) {
+      safeNarrow.sort((a, b) => a.nextCount - b.nextCount || b.tier - a.tier || a.rareCount - b.rareCount || a.w.localeCompare(b.w));
+      const provenWins = [];
+      const unknown = [];
+      const winUsed = new Set(used);
+      const prevBranch = _winBranch;
+      const prevDepth = _winDepth;
+      _winBranch = 160;
+      _winDepth = 24;
+      const budget = { nodes: 90000 };
+      try {
+        for (const s of safeNarrow.slice(0, 28)) {
+          if (budget.nodes <= 0) break;
+          winUsed.add(s.nw);
+          const r = solveWin(s.nw, winUsed, 0, budget, WORD_INDEX);
+          winUsed.delete(s.nw);
+          if (r === -1) provenWins.push(s);
+          else if (r !== 1) unknown.push(s);
+        }
+      } finally {
+        _winBranch = prevBranch;
+        _winDepth = prevDepth;
+      }
+      if (provenWins.length) {
+        provenWins.sort((a, b) => a.nextCount - b.nextCount || b.tier - a.tier || a.w.localeCompare(b.w));
+        return provenWins[0].w;
+      }
+      if (unknown.length) {
+        unknown.sort((a, b) => a.nextCount - b.nextCount || b.tier - a.tier || a.w.localeCompare(b.w));
+        return unknown[0].w;
+      }
+    }
+  }
+
   /* ① 시작은 무조건 루트/희귀루트만 사용한다(방어·공격 단어는 이미 legal 단계에서 배제).
      루트/희귀루트 후보가 전혀 없을 때만 기존(넓은 후보)으로 폴백한다. */
   const rootPreferred = scored.filter(s => s.tier >= 3);
@@ -660,15 +747,14 @@ function solveWin(word, usedSet, depth, budget, WORD_INDEX) {
 ========================================================= */
 
 function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH, ROOT_WORDS, turnNumber, DEFENSE_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, opts) {
+  const strong = !!(opts && opts.strong);
+  const freeTurns = Number.isFinite(opts && opts.freeTurns) ? opts.freeTurns : 1;
   const candidates = getCandidates(currentWord, usedWords, WORD_INDEX);
   if (!candidates.length) return null;
 
-  /* 난이도 — strong(어려움): 강제 승리를 더 넓게/깊게 탐색하고 최선에 가깝게 고름 */
-  const strong = !!(opts && opts.strong);
   /* 앞 N턴 공격/한방 금지(server playWord 규칙) — 이 금지를 어긴 단어를 고르면
      playWord가 penalty로 거부하고 재시도도 같은 이유로 거부되어 AI가 수를 못 내고
      타임아웃 하트를 잃는다(= 조기 탈락). freeTurns는 server의 ONESHOT_FREE_TURNS. */
-  const freeTurns = Number.isFinite(opts && opts.freeTurns) ? opts.freeTurns : 1;
 
   const newUsed = new Set([...usedWords]);
   const defenseSet = DEFENSE_WORDS || new Set();
@@ -699,7 +785,8 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
       isDolrim: !!dolrimSet.has(w),
       isValue: w.endsWith("값"),
       lastSyl,
-      rarityCount
+      rarityCount,
+      tier: rareRootSet.has(w) ? 4 : (ROOT_WORDS && ROOT_WORDS.has(w)) ? 3 : dolrimSet.has(w) ? 2 : 1
     };
   });
 
@@ -721,6 +808,11 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
 
   const capSample = (arr) => {
     if (arr.length <= EVAL_CAP) return arr;
+    if (strong) {
+      return arr.slice().sort((a, b) =>
+        a.nextCount - b.nextCount || b.tier - a.tier || a.w.localeCompare(b.w)
+      ).slice(0, EVAL_CAP);
+    }
     const pool = [...arr];
     for (let i = pool.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -811,7 +903,7 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
         if (getCandidates(o2, o2Used, WORD_INDEX, 16).length === 0) { score -= 120; break; }
       }
     }
-    score += Math.random() * 8;
+    if (!strong) score += Math.random() * 8;
     return score;
   };
 
@@ -820,33 +912,62 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
     const scored = capSample(group).map(i => ({ i, s: oppScore(i) }));
     scored.sort((a, b) => b.s - a.s);
     const topScore = scored[0].s;
-    /* 어려움은 최선에 거의 결정적으로, 보통은 상위 몇 개 중 무작위(다양성) */
-    const band = strong ? 3 : 12;
+    /* 어려움은 최선 수를 결정적으로 고른다. 같은 점수면 상대 응수 폭이 좁은 수를
+       먼저 고정해, 같은 판에서 AI가 매번 다른 수를 내는 불안정성을 줄인다. */
+    if (strong) {
+      const top = scored.filter(x => x.s === topScore);
+      top.sort((a, b) => a.i.nextCount - b.i.nextCount || b.i.tier - a.i.tier || a.i.w.localeCompare(b.i.w));
+      return top[0].i.w;
+    }
+    const band = 12;
     const top = scored.filter(x => x.s >= topScore - band);
     return pick(top).i.w;
   };
 
   /* 1. 즉시 승리 */
   const wins = list.filter(i => i.nextCount === 0);
-  if (wins.length) return pick(wins).w;
+  if (wins.length) {
+    if (strong) return wins.slice().sort((a, b) => b.tier - a.tier || a.w.localeCompare(b.w))[0].w;
+    return pick(wins).w;
+  }
 
   /* 2. 승리/패배 증명 — 좁은 말밭(꾼·늬 등)에서 제한 네가맥스(canForceWin 품질 교체)로
         (a) 상대 차례가 지는 수(내 강제 승리)가 있으면 무조건 그 수를 둔다
         (b) 상대가 증명 가능하게 이기는 수(내 확정 패배)는 선택지에서 배제한다
         넓은 지점은 빠르게 포기하고 기존 전략으로 내려간다. nextCount가 16 Cap이라
         리스트가 너무 크면 스킵. */
+  /* 어려움은 후보 전체를 훑기 전에, 상대의 즉시 한방 위협이 있는 좁은 후보를
+     먼저 제거한다. 상대 응수가 96개 이하인 함정만 검사하므로 초반 대량 후보에서도
+     비용이 제한적이다. */
+  if (strong) {
+    const threatPool = list.slice()
+      .sort((a, b) => a.nextCount - b.nextCount || b.tier - a.tier || a.w.localeCompare(b.w))
+      .slice(0, 24);
+    const threatened = new Set(threatPool
+      .filter(i => losesToImmediateThreat(i.w, newUsed, WORD_INDEX))
+      .map(i => i.w));
+    if (threatened.size && threatened.size < list.length) list = list.filter(i => !threatened.has(i.w));
+  }
+
   const provenWins = [];
   const provenLosses = new Set();
-  if (list.length <= 160) {
+  /* 어려움은 전체 후보가 많아도 '상대 응수가 좁은' 후보를 골라 끝까지 증명한다.
+     이전 코드는 후보 목록이 160개를 넘으면 탐색 자체를 건너뛰어, 초반의 좁은
+     함정(예: 상대 둑 한 방)을 전혀 보지 못했다. 초반에는 후보가 수천 개라도
+     실제로 문제가 되는 수는 응수 폭이 좁은 소수이므로 그 소수부터 검사한다. */
+  const provePool = strong
+    ? list.slice().sort((a, b) => a.nextCount - b.nextCount || b.tier - a.tier || a.w.localeCompare(b.w)).slice(0, 48)
+    : (list.length <= 160 ? list : []);
+  if (provePool.length) {
     const winUsed = new Set(usedWords);
     const prevBranch = _winBranch;
     const prevDepth = _winDepth;
-    if (strong) { _winBranch = 160; _winDepth = 24; }
-    const budget = { nodes: strong ? WIN_NODE_CAP * 5 : WIN_NODE_CAP };
+    if (strong) { _winBranch = 200; _winDepth = 24; }
+    const budget = { nodes: strong ? WIN_NODE_CAP * 8 : WIN_NODE_CAP };
     try {
-      for (const item of list) {
-        const oppAll = getCandidates(item.w, winUsed, WORD_INDEX, strong ? 200 : WIN_BRANCH + 1);
-        if (oppAll.length > (strong ? 200 : WIN_BRANCH)) continue; /* 상대 응수가 넓어 증명 불가 */
+      for (const item of provePool) {
+        const oppAll = getCandidates(item.w, winUsed, WORD_INDEX, strong ? 240 : WIN_BRANCH + 1);
+        if (oppAll.length > (strong ? 240 : WIN_BRANCH)) continue; /* 상대 응수가 넓어 증명 불가 */
         winUsed.add(item.w);
         const r = solveWin(item.w, winUsed, 0, budget, WORD_INDEX);
         winUsed.delete(item.w);
@@ -859,7 +980,10 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
       _winDepth = prevDepth;
     }
   }
-  if (provenWins.length) return pick(provenWins);
+  if (provenWins.length) {
+    if (strong) return provenWins.sort((a, b) => a.localeCompare(b))[0];
+    return pick(provenWins);
+  }
   if (provenLosses.size) {
     const safe = list.filter(i => !provenLosses.has(i.w));
     if (safe.length) list = safe;
@@ -887,7 +1011,8 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
   /* ③ 돌림 단어 — 펀넬 점수가 60 이상(상대 말밭을 좁게 묶음)이면 루트 팔로우와 무관하게
         후보에 넣는다. ⑤ 공격 단어도 함께 확대 후보에 포함한다. */
   const extended = list.filter(i =>
-    !special.includes(i) && (i.isAttack || (i.isDolrim && funnelOf(i) >= 60)));
+    !special.includes(i) &&
+    (i.isAttack || (i.isDolrim && funnelOf(i) >= 60) || (strong && i.nextCount <= 8)));
   let playPool = special;
   if (extended.length) playPool = playPool.concat(extended);
   if (!playPool.length) playPool = list;

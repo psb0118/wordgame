@@ -60,10 +60,21 @@ function constFnSource(name) {
 function installHandler(c, event, socket) {
   const start = source.indexOf(`  socket.on("${event}",`);
   assert.ok(start >= 0, `missing handler: ${event}`);
-  const end = source.indexOf("\n  });", start);
-  assert.ok(end > start, `missing handler end: ${event}`);
+  const normalEnd = source.indexOf("\n  });", start);
+  const lockedEnd = source.indexOf("\n  }));", start);
+  /* keyFn을 받는 래퍼는 `}, (data) => ...));` 한 줄로 끝난다. 이 줄까지
+     잘라야 관리자 우편/돈 조절 핸들러를 다음 핸들러와 섞지 않는다. */
+  const keyFnStart = source.indexOf("\n  }, (", start);
+  const keyFnEnd = keyFnStart >= 0 ? source.indexOf("\n", keyFnStart + 1) : -1;
+  const ends = [
+    { end: normalEnd, close: 6 },
+    { end: lockedEnd, close: 7 },
+    { end: keyFnEnd, close: 0 },
+  ].filter(({ end: idx }) => idx > start);
+  const best = ends.reduce((a, b) => (a.end <= b.end ? a : b));
+  assert.ok(Number.isFinite(best.end), `missing handler end: ${event}`);
   c.socket = socket;
-  vm.runInContext(`(function(socket) {\n${source.slice(start, end + 6)}\n})(socket);`, c);
+  vm.runInContext(`(function(socket) {\n${source.slice(start, best.end + best.close)}\n})(socket);`, c);
 }
 
 function context(extra = {}) {
@@ -74,7 +85,7 @@ function context(extra = {}) {
   const c = vm.createContext({
     structuredClone, Buffer, crypto: require("crypto"),
     console: { log() {}, warn() {}, error(...args) { errors.push(args.join(" ")); } },
-    playerCache: new Map(), socketNicks: new Map(), onlineNicks: new Map(), nameOps: new Set(),
+    playerCache: new Map(), socketNicks: new Map(), onlineNicks: new Map(), nameOps: new Set(), accountLocks: new Map(),
     friendsMap: new Map(), friendRequests: new Map(),
     adminAuthed: new Map(), disconnectedPlayers: new Map(), REMATCHES: new Map(),
     socketFirebaseUid: new Map(), socketFirebaseEmail: new Map(),
@@ -154,6 +165,7 @@ function context(extra = {}) {
     vm.runInContext(constSource(name), c);
   }
   for (const name of [
+    "accountLockKey", "accountKeyForSocket", "withAccountLock", "accountLocked",
     "initPeriodData", "initDailyData", "initWeeklyData", "initMonthlyData",
     "migratePlayerData", "resolvePlayerId", "getPlayerData", "savePlayerData",
     "claimDisplayName", "verifyFirebaseIdToken",
@@ -658,6 +670,50 @@ test("chooseAIWord never returns attack or one-shot words before free turns end"
     assert.equal(game.isOneShot(word, used, d.WORD_INDEX), false,
       `free-turn 중 한방 단어 '${word}'를 냈습니다`);
   }
+});
+
+test("hard AI opens with a narrow pressure word instead of a broad root word", () => {
+  const d = dict();
+  const strongOpts = { strong: true };
+  const first = game.chooseAIStartWord("가", new Set(), d.WORD_SET, d.WORD_INDEX,
+    d.ATTACK_DEPTH, d.DEFENSE_WORDS, d.ROOT_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, strongOpts);
+  const second = game.chooseAIStartWord("가", new Set(), d.WORD_SET, d.WORD_INDEX,
+    d.ATTACK_DEPTH, d.DEFENSE_WORDS, d.ROOT_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, strongOpts);
+  assert.ok(first, "어려움 시작 단어를 골라야 합니다");
+  assert.equal(first, second, "어려움은 같은 판에서 같은 최선 수를 골라야 합니다");
+  const replies = game.getCandidates(first, new Set([first]), d.WORD_INDEX);
+  assert.ok(replies.length > 0 && replies.length <= 240, `압박 단어여야 합니다: ${first} (${replies.length})`);
+  for (const reply of replies) {
+    const used = new Set([first, reply]);
+    assert.ok(game.getCandidates(reply, used, d.WORD_INDEX, 1).length > 0,
+      `상대 응수 '${reply}'에 AI가 즉시 죽는 시작 단어 '${first}'`);
+  }
+  assert.ok(!["가족", "가방", "가드", "가이드", "가로등"].includes(first),
+    `넓은 루트 단어 '${first}' 대신 좁은 압박 단어를 골라야 합니다`);
+});
+
+test("hard AI rejects a narrow move that gives the opponent a forced win", () => {
+  const words = ["가나", "가다", "나끝", "다라", "라가"];
+  /* 후보 목록을 160개 넘게 만들어, 예전의 "목록이 크면 증명 생략" 회귀를 덮는다.
+     끝 음절을 '나'가 아닌 글자로 고정해, 가나의 유일한 응수인 나끝이 계속 한방이게 한다. */
+  const tails = ["고", "구", "기", "노", "누", "니", "도", "두", "디", "로", "루", "리", "모", "무", "미", "보", "부", "비", "소", "수"];
+  for (let i = 0; i < tails.length * tails.length; i++) {
+    const a = tails[i % tails.length];
+    const b = tails[Math.floor(i / tails.length) % tails.length];
+    words.push(`가더${a}${b}`);
+  }
+  for (const tail of tails) words.push(`${tail}가`);
+  const WORD_SET = new Set(words);
+  const WORD_INDEX = new Map();
+  for (const w of WORD_SET) {
+    const first = w[0];
+    if (!WORD_INDEX.has(first)) WORD_INDEX.set(first, []);
+    WORD_INDEX.get(first).push(w);
+  }
+  const word = game.chooseAIWord("가", new Set(["가"]), WORD_SET, WORD_INDEX, {},
+    new Set(), 1, new Set(), new Set(), new Set(), { strong: true, freeTurns: 1 });
+  assert.ok(word, "합법 수를 골라야 합니다");
+  assert.notEqual(word, "가나", "상대의 한방만 남기는 가나는 선택하면 안 됩니다");
 });
 
 test("runAI forwards the free-turn ban and never submits a banned word", () => {
@@ -2031,6 +2087,198 @@ test("missions claim pays coins and titles once, rejecting unmet and duplicate c
   await s.handlers.get("missions:claim")({ group: "daily", id: "nope" });
   res = lastResult();
   assert.equal(res.ok, false, "알 수 없는 미션은 거부된다");
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("concurrent title purchases keep both titles and charge each price once", async () => {
+  const { c, errors } = context();
+  const s = socket("s-title-race");
+  c.socketNicks.set(s.id, "title-racer");
+  seed(c, "title-racer", { money: 200000, titles: [] });
+  installHandler(c, "shop:buyTitle", s);
+  const buy = s.handlers.get("shop:buyTitle");
+  await Promise.all([
+    buy({ titleId: "t_rookie", requestId: "title-race-1" }),
+    buy({ titleId: "t_wordy", requestId: "title-race-2" })
+  ]);
+  const pd = c.playerCache.get("title-racer");
+  assert.equal(pd.money, 80000, "두 구매가 각각 차감되어야 한다");
+  assert.deepEqual(pd.titles.map(t => t.id).sort(), ["t_rookie", "t_wordy"], "동시 구매가 서로의 칭호를 덮어쓰지 않는다");
+  const results = s.emissions.filter(([event]) => event === "shop:result").map(([, data]) => data);
+  assert.equal(results.filter(r => r.ok).length, 2);
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("concurrent shield purchases cannot spend the same balance twice", async () => {
+  const { c, errors } = context();
+  const s = socket("s-shield-race");
+  c.socketNicks.set(s.id, "shield-racer");
+  seed(c, "shield-racer", { money: 2000000, shieldTickets: 0 });
+  installHandler(c, "shop:buyShield", s);
+  const buy = s.handlers.get("shop:buyShield");
+  await Promise.all([
+    buy({ requestId: "shield-race-1" }),
+    buy({ requestId: "shield-race-2" })
+  ]);
+  const pd = c.playerCache.get("shield-racer");
+  assert.equal(pd.money, 0, "잔액은 한 번만 차감된다");
+  assert.equal(pd.shieldTickets, 1, "티켓은 한 장만 지급된다");
+  const results = s.emissions.filter(([event]) => event === "shop:result").map(([, data]) => data);
+  assert.equal(results.filter(r => r.ok).length, 1);
+  assert.equal(results.filter(r => !r.ok).length, 1);
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("a purchase and a mission claim on one account do not overwrite each other", async () => {
+  const { c, errors } = context();
+  const s = socket("s-account-race");
+  c.socketNicks.set(s.id, "combo-racer");
+  seed(c, "combo-racer", {
+    money: 5000000,
+    shieldTickets: 0,
+    daily: { date: "2026-10-04", rankedWins: 0, oneShots: 0, streakDone: 1, claimed: [] }
+  });
+  installHandler(c, "shop:buyShield", s);
+  installHandler(c, "missions:claim", s);
+  await Promise.all([
+    s.handlers.get("shop:buyShield")({ requestId: "combo-shop" }),
+    s.handlers.get("missions:claim")({ group: "daily", id: "streakDone" })
+  ]);
+  const pd = c.playerCache.get("combo-racer");
+  assert.equal(pd.money, 3001000, "구매 차감과 미션 보상이 모두 반영된다");
+  assert.equal(pd.shieldTickets, 1, "구매 아이템이 미션 저장에 덮어쓰이지 않는다");
+  assert.ok(pd.daily.claimed.includes("streakDone"), "미션 수령 기록이 남는다");
+  assert.ok(pd.titles.some(t => t.id === "t_daily"), "미션 칭호도 남는다");
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("concurrent mission claims pay once", async () => {
+  const { c, errors } = context();
+  const s = socket("s-mission-race");
+  c.socketNicks.set(s.id, "mission-racer");
+  seed(c, "mission-racer", {
+    money: 90000,
+    daily: { date: "2026-10-04", rankedWins: 0, oneShots: 0, streakDone: 1, claimed: [] }
+  });
+  installHandler(c, "missions:claim", s);
+  const claim = s.handlers.get("missions:claim");
+  await Promise.all([
+    claim({ group: "daily", id: "streakDone" }),
+    claim({ group: "daily", id: "streakDone" })
+  ]);
+  const pd = c.playerCache.get("mission-racer");
+  assert.equal(pd.money, 91000, "보상은 한 번만 지급된다");
+  assert.equal(pd.daily.claimed.filter(id => id === "streakDone").length, 1);
+  const results = s.emissions.filter(([event]) => event === "missions:result").map(([, data]) => data);
+  assert.equal(results.filter(r => r.ok).length, 1);
+  assert.equal(results.filter(r => !r.ok).length, 1);
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("concurrent mail claims pay once", async () => {
+  const { c, errors } = context();
+  const s = socket("s-mail-race");
+  c.socketNicks.set(s.id, "mail-racer");
+  seed(c, "mail-racer", {
+    money: 5000,
+    mail: [{ id: "race-mail", title: "경합", body: "", coin: 800, at: "2026-10-01T00:00:00.000Z", read: false }]
+  });
+  installHandler(c, "mail:claim", s);
+  const claim = s.handlers.get("mail:claim");
+  await Promise.all([claim({ id: "race-mail" }), claim({ id: "race-mail" })]);
+  const pd = c.playerCache.get("mail-racer");
+  assert.equal(pd.money, 5800, "쪽지 코인은 한 번만 지급된다");
+  assert.equal(pd.mail.find(m => m.id === "race-mail").read, true);
+  const results = s.emissions.filter(([event]) => event === "mail:claim").map(([, data]) => data);
+  assert.equal(results.filter(r => r.ok).length, 1);
+  assert.equal(results.filter(r => !r.ok).length, 1);
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("attendance check and shop purchase serialize on one account", async () => {
+  const { c, errors } = context();
+  const s = socket("s-attendance-shop");
+  c.socketNicks.set(s.id, "attendance-racer");
+  seed(c, "attendance-racer", { money: 5000000, shieldTickets: 0, lastCheckDate: "", attendanceStreak: 0 });
+  installHandler(c, "attendance:check", s);
+  installHandler(c, "shop:buyShield", s);
+  await Promise.all([
+    s.handlers.get("attendance:check")(),
+    s.handlers.get("shop:buyShield")({ requestId: "attendance-shop" })
+  ]);
+  const pd = c.playerCache.get("attendance-racer");
+  assert.equal(pd.money, 3002000, "출석 보상과 보호 티켓 구매가 모두 반영된다");
+  assert.equal(pd.shieldTickets, 1, "구매 아이템이 출석 저장에 덮어쓰이지 않는다");
+  assert.equal(pd.lastCheckDate, "2026-10-04", "출석 날짜가 남는다");
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("two different accounts cannot claim the same new name concurrently", async () => {
+  const { c, errors } = context();
+  const s1 = socket("s-target-name-1");
+  const s2 = socket("s-target-name-2");
+  c.socketNicks.set(s1.id, "alice");
+  c.socketNicks.set(s2.id, "bob");
+  seed(c, "alice", { money: 2000000, nameChanges: 0 });
+  seed(c, "bob", { money: 2000000, nameChanges: 0 });
+  installHandler(c, "player:setName", s1);
+  installHandler(c, "player:setName", s2);
+  await Promise.all([
+    s1.handlers.get("player:setName")({ nickname: "shared" }),
+    s2.handlers.get("player:setName")({ nickname: "shared" })
+  ]);
+  const success = [s1, s2].flatMap(s => s.emissions.filter(([event, data]) => event === "player:nameUpdated" && data.ok));
+  assert.equal(success.length, 1, "새 이름 하나를 두 계정이 동시에 차지할 수 없다");
+  assert.ok(c.playerCache.has("shared"));
+  assert.equal(c.playerCache.has("alice") || c.playerCache.has("bob"), true, "패배한 계정은 옛 이름으로 남는다");
+  assert.equal(c.playerCache.has("alice") && c.playerCache.has("bob"), false, "승자 계정의 옛 행만 정리된다");
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("admin mail delivery and a claim on the same inbox serialize", async () => {
+  const { c, errors } = context();
+  const s = socket("s-mail-lock");
+  c.socketNicks.set(s.id, "mail-lock");
+  seed(c, "mail-lock", {
+    money: 5000,
+    mail: [{ id: "locked-mail", title: "기존", body: "", coin: 800, at: "2026-10-01T00:00:00.000Z", read: false }]
+  });
+  installHandler(c, "admin:mailSend", s);
+  installHandler(c, "mail:claim", s);
+  await Promise.all([
+    s.handlers.get("admin:mailSend")({ nickname: "mail-lock", title: "새 쪽지", coin: 100 }),
+    s.handlers.get("mail:claim")({ id: "locked-mail" })
+  ]);
+  const pd = c.playerCache.get("mail-lock");
+  assert.equal(pd.money, 5800, "기존 쪽지 코인은 한 번만 지급된다");
+  assert.equal(pd.mail.length, 2, "새 쪽지가 기존 쪽지를 덮어쓰지 않는다");
+  assert.equal(pd.mail.find(m => m.id === "locked-mail").read, true, "수령 상태가 보존된다");
+  assert.equal(pd.mail.find(m => m.title === "새 쪽지").read, false);
+  assert.equal(s.emissions.filter(([event, data]) => event === "mail:claim" && data.ok).length, 1);
+  assert.equal(s.emissions.filter(([event, data]) => event === "admin:mailResult" && data.ok).length, 1);
+  assert.equal(errors.length, 0, errors.join(" | "));
+});
+
+test("two sockets cannot rename the same account concurrently", async () => {
+  const { c, errors } = context();
+  const s1 = socket("s-name-race-1");
+  const s2 = socket("s-name-race-2");
+  c.socketNicks.set(s1.id, "name-racer");
+  c.socketNicks.set(s2.id, "name-racer");
+  seed(c, "name-racer", { money: 2000000, nameChanges: 0 });
+  installHandler(c, "player:setName", s1);
+  installHandler(c, "player:setName", s2);
+  await Promise.all([
+    s1.handlers.get("player:setName")({ nickname: "name-alpha" }),
+    s2.handlers.get("player:setName")({ nickname: "name-beta" })
+  ]);
+  const success = [s1, s2].flatMap(s => s.emissions.filter(([event, data]) => event === "player:nameUpdated" && data.ok));
+  const busy = [s1, s2].flatMap(s => s.emissions.filter(([event, data]) => event === "player:nameUpdated" && !data.ok && /처리 중/.test(String(data.reason || ""))));
+  assert.equal(success.length, 1, "한 요청만 이름 변경을 완료한다");
+  assert.equal(busy.length, 1, "다른 요청은 처리 중으로 거절한다");
+  assert.equal(c.playerCache.has("name-alpha") || c.playerCache.has("name-beta"), true);
+  assert.equal(c.playerCache.has("name-alpha") && c.playerCache.has("name-beta"), false, "새 이름 두 개가 동시에 생기지 않는다");
+  assert.equal(c.playerCache.has("name-racer"), false, "옛 이름 행은 정리된다");
   assert.equal(errors.length, 0, errors.join(" | "));
 });
 
