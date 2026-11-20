@@ -616,33 +616,28 @@ function dict() {
   return _dict;
 }
 
-let _fixture = null;
-/* 공격 단어 후보와 안전(비공격·비한방) 후보를 함께 가진 위치 — 실제 사전에서 탐색 */
-function attackFixture() {
-  if (_fixture) return _fixture;
-  const d = dict();
-  let examined = 0;
-  scan:
-  for (const arr of d.WORD_INDEX.values()) {
-    for (const w of arr) {
-      if (++examined > 40000) break scan;
-      const used = new Set([w]);
-      const cands = game.getCandidates(w, used, d.WORD_INDEX);
-      if (cands.length < 6) continue;
-      let atk = 0, safe = 0;
-      for (const x of cands) {
-        if (Number.isFinite(d.ATTACK_DEPTH[x])) atk++;
-        else if (!game.isOneShot(x, used, d.WORD_INDEX)) safe++;
-      }
-      if (atk >= 1 && safe >= 3) { _fixture = { word: w }; break scan; }
-    }
+/* AI 회귀 테스트는 실제 data/word.txt에 의존하지 않는다. 단어 파일이 바뀌어도
+   규칙(압박 오프닝, 한방 회피, free-turn 금지)만 검증하도록 합성 사전을 쓴다. */
+function syntheticAI(words, sets = {}) {
+  const WORD_SET = new Set(words);
+  const WORD_INDEX = new Map();
+  for (const w of WORD_SET) {
+    const first = w[0];
+    if (!WORD_INDEX.has(first)) WORD_INDEX.set(first, []);
+    WORD_INDEX.get(first).push(w);
   }
-  assert.ok(_fixture, "사전에서 공격 단어 후보가 있는 지점을 찾지 못했습니다");
-  return _fixture;
+  const ATTACK_DEPTH = Object.create(null);
+  for (const w of sets.attack || []) ATTACK_DEPTH[w] = 1;
+  return {
+    WORD_SET, WORD_INDEX, ATTACK_DEPTH,
+    ROOT_WORDS: new Set(sets.root || []),
+    RARE_ROOT_WORDS: new Set(sets.rareRoot || []),
+    DEFENSE_WORDS: new Set(sets.defense || []),
+    DOLRIM_WORDS: new Set(sets.dolrim || []),
+  };
 }
 
-function aiGlobals(extra = {}) {
-  const d = dict();
+function aiGlobals(d, extra = {}) {
   return {
     WORD_SET: d.WORD_SET, WORD_INDEX: d.WORD_INDEX, ATTACK_DEPTH: d.ATTACK_DEPTH,
     ROOT_WORDS: d.ROOT_WORDS, RARE_ROOT_WORDS: d.RARE_ROOT_WORDS,
@@ -657,12 +652,21 @@ function aiGlobals(extra = {}) {
   };
 }
 
+function chooseSyntheticStart(d, syllable = "가", opts = { strong: true }) {
+  return game.chooseAIStartWord(syllable, new Set(), d.WORD_SET, d.WORD_INDEX,
+    d.ATTACK_DEPTH, d.DEFENSE_WORDS, d.ROOT_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, opts);
+}
+
 test("chooseAIWord never returns attack or one-shot words before free turns end", () => {
-  const d = dict();
-  const fx = attackFixture();
-  const used = new Set([fx.word]);
+  const d = syntheticAI([
+    "사가", "가나", "가다", "가마", "가바", "가사", "가공",
+    "나무", "다리", "마차", "바다", "사과",
+    "무가", "리가", "차가", "다가", "과가", "공가",
+  ], { attack: ["가공"] });
+  const start = "사가";
+  const used = new Set([start]);
   for (let i = 0; i < 12; i++) {
-    const word = game.chooseAIWord(fx.word, used, d.WORD_SET, d.WORD_INDEX, d.ATTACK_DEPTH,
+    const word = game.chooseAIWord(start, used, d.WORD_SET, d.WORD_INDEX, d.ATTACK_DEPTH,
       d.ROOT_WORDS, 1, d.DEFENSE_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, { freeTurns: 3 });
     assert.ok(word, "free-turn 금지로 수를 아예 못 내면 안 됩니다");
     assert.equal(game.isAttackWord(word, d.ATTACK_DEPTH), false,
@@ -673,32 +677,49 @@ test("chooseAIWord never returns attack or one-shot words before free turns end"
 });
 
 test("hard AI opens with a narrow pressure word instead of a broad root word", () => {
-  const d = dict();
-  const strongOpts = { strong: true };
-  const first = game.chooseAIStartWord("가", new Set(), d.WORD_SET, d.WORD_INDEX,
-    d.ATTACK_DEPTH, d.DEFENSE_WORDS, d.ROOT_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, strongOpts);
-  const second = game.chooseAIStartWord("가", new Set(), d.WORD_SET, d.WORD_INDEX,
-    d.ATTACK_DEPTH, d.DEFENSE_WORDS, d.ROOT_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, strongOpts);
+  const words = [
+    "가좁", "가족", "가람",
+    "좁가", "좁나", "좁다", "좁라",
+    "람가", "람나", "람다", "람라",
+    "나무", "다리", "라면", "마차", "바다", "사과", "아가",
+    "무가", "리가", "면가", "차가", "과가",
+  ];
+  /* 가족은 응수를 160개 넘게 만들어 강제 승리 증명이 열리지 않게 한다.
+     그래야 오프닝이 "증명된 승리"가 아니라 좁은 압박 단어를 고르는지 검증된다. */
+  const tails = ["가", "나", "다", "라", "마", "바", "사", "아"];
+  for (let i = 0; i < 161; i++) {
+    const a = tails[i % tails.length];
+    const b = tails[Math.floor(i / tails.length) % tails.length];
+    const c = tails[Math.floor(i / (tails.length * tails.length)) % tails.length];
+    words.push(`족${a}${b}${c}`);
+  }
+  const d = syntheticAI(words, { root: ["가족"] });
+  const first = chooseSyntheticStart(d);
+  const second = chooseSyntheticStart(d);
   assert.ok(first, "어려움 시작 단어를 골라야 합니다");
   assert.equal(first, second, "어려움은 같은 판에서 같은 최선 수를 골라야 합니다");
   const replies = game.getCandidates(first, new Set([first]), d.WORD_INDEX);
-  assert.ok(replies.length > 0 && replies.length <= 240, `압박 단어여야 합니다: ${first} (${replies.length})`);
+  assert.ok(replies.length > 0 && replies.length <= 8, `압박 단어여야 합니다: ${first} (${replies.length})`);
   for (const reply of replies) {
     const used = new Set([first, reply]);
     assert.ok(game.getCandidates(reply, used, d.WORD_INDEX, 1).length > 0,
       `상대 응수 '${reply}'에 AI가 즉시 죽는 시작 단어 '${first}'`);
   }
-  assert.ok(!["가족", "가방", "가드", "가이드", "가로등"].includes(first),
-    `넓은 루트 단어 '${first}' 대신 좁은 압박 단어를 골라야 합니다`);
+  assert.notEqual(first, "가족", "넓은 루트 단어 대신 좁은 압박 단어를 골라야 합니다");
 });
 
 test("hard AI avoids handing the opponent a one-shot even in a wide position", () => {
-  const d = dict();
-  const used = new Set(["나릅", "늡늡"]);
-  const word = game.chooseAIWord("늡늡", used, d.WORD_SET, d.WORD_INDEX, d.ATTACK_DEPTH,
+  const d = syntheticAI([
+    "사가",
+    "가나", "가다", "가마", "가바", "가사", "가자",
+    "나가", "나고", "나구", "나기", "나다", "나마", "나바", "나사", "나아", "나자", "나차", "나카", "나타", "나끝",
+    "라면", "다리", "리가", "마차", "바다", "사과", "자가", "고가", "구가", "기가", "아가", "차가", "카가", "타가", "면가", "과가",
+  ]);
+  const used = new Set(["사가"]);
+  const word = game.chooseAIWord("사가", used, d.WORD_SET, d.WORD_INDEX, d.ATTACK_DEPTH,
     d.ROOT_WORDS, 2, d.DEFENSE_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, { strong: true, freeTurns: 1 });
   assert.ok(word, "합법 수를 골라야 합니다");
-  assert.notEqual(word, "늡다리", "상대의 리튬 한방을 허용하는 수를 골랐습니다");
+  assert.notEqual(word, "가나", "상대의 한방을 허용하는 가나는 선택하면 안 됩니다");
   const after = new Set([...used, word]);
   for (const reply of game.getCandidates(word, after, d.WORD_INDEX)) {
     const u = new Set(after);
@@ -719,24 +740,22 @@ test("hard AI rejects a narrow move that gives the opponent a forced win", () =>
     words.push(`가더${a}${b}`);
   }
   for (const tail of tails) words.push(`${tail}가`);
-  const WORD_SET = new Set(words);
-  const WORD_INDEX = new Map();
-  for (const w of WORD_SET) {
-    const first = w[0];
-    if (!WORD_INDEX.has(first)) WORD_INDEX.set(first, []);
-    WORD_INDEX.get(first).push(w);
-  }
-  const word = game.chooseAIWord("가", new Set(["가"]), WORD_SET, WORD_INDEX, {},
-    new Set(), 1, new Set(), new Set(), new Set(), { strong: true, freeTurns: 1 });
+  const d = syntheticAI(words);
+  const word = game.chooseAIWord("가", new Set(["가"]), d.WORD_SET, d.WORD_INDEX, d.ATTACK_DEPTH,
+    d.ROOT_WORDS, 1, d.DEFENSE_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, { strong: true, freeTurns: 1 });
   assert.ok(word, "합법 수를 골라야 합니다");
   assert.notEqual(word, "가나", "상대의 한방만 남기는 가나는 선택하면 안 됩니다");
 });
 
 test("runAI forwards the free-turn ban and never submits a banned word", () => {
-  const d = dict();
-  const fx = attackFixture();
+  const d = syntheticAI([
+    "사가", "가나", "가다", "가마", "가바", "가사", "가공",
+    "나무", "다리", "마차", "바다", "사과",
+    "무가", "리가", "차가", "다가", "과가", "공가",
+  ], { attack: ["가공"] });
+  const start = "사가";
   const seen = { opts: null };
-  const { c } = context(aiGlobals({
+  const { c } = context(aiGlobals(d, {
     ONESHOT_FREE_TURNS: 3,
     chooseAIWord: (...args) => { seen.opts = args[10]; return game.chooseAIWord(...args); },
     chooseAIStartWord: (...args) => game.chooseAIStartWord(...args),
@@ -751,9 +770,9 @@ test("runAI forwards the free-turn ban and never submits a banned word", () => {
     ],
     turnPlayerIndex: 1, turnNumber: 1, gameSessionId: 1,
     started: true, finished: false, winner: null, loser: null,
-    currentWord: fx.word, startSyllable: null, lastSyllable: null,
-    usedWords: new Set([fx.word]),
-    history: [{ word: fx.word, player: 0, nickname: "사람", depth: null, turn: 0 }],
+    currentWord: start, startSyllable: null, lastSyllable: null,
+    usedWords: new Set([start]),
+    history: [{ word: start, player: 0, nickname: "사람", depth: null, turn: 0 }],
     hintsUsed: 0,
   };
   c.runAI(room, room.gameSessionId);
@@ -773,7 +792,7 @@ test("runAI forwards the free-turn ban and never submits a banned word", () => {
 ========================================================= */
 test("approved custom word becomes playable immediately", async () => {
   const word = "코끼리사과";
-  const { c } = context(aiGlobals({
+  const { c } = context(aiGlobals(syntheticAI(["가나", "나무"]), {
     customWords: { pending: [], approved: [], rejected: [] },
     saveCustomWords() {},
     emitCustomWords() {},

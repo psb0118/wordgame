@@ -510,43 +510,114 @@ function startTables(WORD_INDEX, rootSet, rareRootSet) {
    희귀 끝음절이 그대로 섞여 유저를 강제한다. 따라서 반드시 3 이상으로 유지한다. */
 const MIN_OPEN_REPLY_POOL = 4;
 
+/* 어려움 오프닝의 위협 검증 상한. 후보 전체를 정밀 검사하면 사전 크기에 따라
+   한 번의 선택이 1초 이상 걸릴 수 있으므로, 응수 폭이 좁은 후보만 추린 뒤
+   검사 개수와 벽시계 예산을 함께 제한한다. */
+const HARD_OPEN_SCAN_CAP = 96;
+const HARD_OPEN_THREAT_CAP = 40;
+const HARD_OPEN_THREAT_BUDGET_MS = 250;
+const THREAT_CACHE_LIMIT = 2048;
+
+/* (사전, 단어, 사용 단어) 단위 위협 판정 캐시. used가 큰 중반 국면은 키 비용이
+   커지므로 2개 이하일 때만 캐시하고, 사전 객체별 WeakMap으로 분리한다. */
+const _threatCaches = new WeakMap();
+
+function threatCacheKey(kind, word, usedSet) {
+  if (!usedSet || usedSet.size > 2) return null;
+  const parts = [kind, word];
+  for (const usedWord of usedSet) parts.push(usedWord);
+  return parts.sort().join("\u0000");
+}
+
+function readThreatCache(WORD_INDEX, key) {
+  if (key === null || !WORD_INDEX || typeof WORD_INDEX !== "object") return undefined;
+  const cache = _threatCaches.get(WORD_INDEX);
+  if (!cache || !cache.has(key)) return undefined;
+  return cache.get(key);
+}
+
+function writeThreatCache(WORD_INDEX, key, value) {
+  if (key === null || !WORD_INDEX || typeof WORD_INDEX !== "object") return;
+  let cache = _threatCaches.get(WORD_INDEX);
+  if (!cache) {
+    cache = new Map();
+    _threatCaches.set(WORD_INDEX, cache);
+  }
+  if (cache.size >= THREAT_CACHE_LIMIT) cache.clear();
+  cache.set(key, value);
+}
+
 /* 상대가 곧바로 한방을 낼 수 있는 응수가 있는지. 전체 응수를 세지 않고
-   '이 단어를 두면 상대의 다음 수 중 AI가 답할 수 없는 수'만 찾는다. */
-function opponentHasOneShot(word, usedSet, WORD_INDEX) {
+   '이 단어를 두면 상대의 다음 수 중 AI가 답할 수 없는 수'만 찾는다.
+   deadline을 넘기면 null(미완료)을 돌려주고, 절대 true로 캐시하지 않는다. */
+function opponentHasOneShot(word, usedSet, WORD_INDEX, deadline) {
+  const key = threatCacheKey("one", word, usedSet);
+  const cached = readThreatCache(WORD_INDEX, key);
+  if (cached !== undefined) return cached;
+  if (deadline && Date.now() > deadline) return null;
+
   const used = new Set(usedSet);
   used.add(word);
   let examined = 0;
   for (const reply of getCandidates(word, used, WORD_INDEX)) {
-    if (++examined > 8000) return false;   /* 넓은 말밭은 증명 불가로 본다 */
+    if (++examined > 8000) {
+      writeThreatCache(WORD_INDEX, key, false);   /* 넓은 말밭은 증명 불가로 본다 */
+      return false;
+    }
+    if ((examined & 255) === 0 && deadline && Date.now() > deadline) return null;
     const u2 = new Set(used);
     u2.add(reply);
-    if (getCandidates(reply, u2, WORD_INDEX, 1).length === 0) return true;
+    if (getCandidates(reply, u2, WORD_INDEX, 1).length === 0) {
+      writeThreatCache(WORD_INDEX, key, true);
+      return true;
+    }
   }
+  writeThreatCache(WORD_INDEX, key, false);
   return false;
 }
 
 /* AI가 word를 두었을 때, 상대의 응수 중 하나라도 "AI의 모든 다음 수가
    상대 한방을 허용하는" 강제 패배 응수가 있으면 true. 상대 응수가 좁은
-   함정(예: 꿋꿋 → 꿋꿋이/꿋다)을 빠르게 걸러낸다. */
-function losesToImmediateThreat(word, usedSet, WORD_INDEX) {
+   함정(예: 꿋꿋 → 꿋꿋이/꿋다)을 빠르게 걸러낸다.
+   deadline을 넘기면 null(미완료)을 돌려준다. */
+function losesToImmediateThreat(word, usedSet, WORD_INDEX, deadline) {
+  const key = threatCacheKey("lose", word, usedSet);
+  const cached = readThreatCache(WORD_INDEX, key);
+  if (cached !== undefined) return cached;
+  if (deadline && Date.now() > deadline) return null;
+
   const used = new Set(usedSet);
   used.add(word);
   const opp = getCandidates(word, used, WORD_INDEX, 13);
-  if (opp.length > 12) return opponentHasOneShot(word, used, WORD_INDEX);
+  if (opp.length > 12) {
+    const result = opponentHasOneShot(word, used, WORD_INDEX, deadline);
+    if (result !== null) writeThreatCache(WORD_INDEX, key, result);
+    return result;
+  }
   for (const reply of opp) {
+    if (deadline && Date.now() > deadline) return null;
     const u2 = new Set(used);
     u2.add(reply);
     const ai = getCandidates(reply, u2, WORD_INDEX, 7);
-    if (ai.length === 0) return true;
+    if (ai.length === 0) {
+      writeThreatCache(WORD_INDEX, key, true);
+      return true;
+    }
     if (ai.length > 6) continue;   /* 이 응수는 단정 불가 — 다른 응수의 강제 패배는 계속 찾는다 */
     let hasSafeMove = false;
     for (const next of ai) {
       const u3 = new Set(u2);
       u3.add(next);
-      if (!opponentHasOneShot(next, u3, WORD_INDEX)) { hasSafeMove = true; break; }
+      const oneShot = opponentHasOneShot(next, u3, WORD_INDEX, deadline);
+      if (oneShot === null) return null;
+      if (!oneShot) { hasSafeMove = true; break; }
     }
-    if (!hasSafeMove) return true;
+    if (!hasSafeMove) {
+      writeThreatCache(WORD_INDEX, key, true);
+      return true;
+    }
   }
+  writeThreatCache(WORD_INDEX, key, false);
   return false;
 }
 
@@ -636,11 +707,30 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
      가장 좁은 수를 고른다. 이 과정에서 상대가 한방으로 끝내는 수는 배제된다. */
   if (strong) {
     const HARD_OPEN_CAP = 240;
-    const narrowed = scored.map(s => ({
-      ...s,
-      nextCount: getCandidates(s.nw, used, WORD_INDEX, HARD_OPEN_CAP + 1).length
-    })).filter(s => s.nextCount > 0 && s.nextCount <= HARD_OPEN_CAP);
-    const safeNarrow = narrowed.filter(s => safe(s.nw) && !losesToImmediateThreat(s.nw, used, WORD_INDEX));
+    const deadline = Date.now() + HARD_OPEN_THREAT_BUDGET_MS;
+    /* 응수 폭이 좁은 후보만 먼저 추린다. endBucket은 끝 음절의 전체 응수
+       풀이므로 getCandidates를 모든 후보에 돌리지 않아도 좁은 순서를 얻는다. */
+    const narrowed = scored.slice()
+      .sort((a, b) => a.endBucket - b.endBucket || b.tier - a.tier || a.rareCount - b.rareCount || a.w.localeCompare(b.w))
+      .slice(0, HARD_OPEN_SCAN_CAP)
+      .map(s => ({
+        ...s,
+        nextCount: getCandidates(s.nw, used, WORD_INDEX, HARD_OPEN_CAP + 1).length
+      }))
+      .filter(s => s.nextCount > 0 && s.nextCount <= HARD_OPEN_CAP)
+      .sort((a, b) => a.nextCount - b.nextCount || b.tier - a.tier || a.rareCount - b.rareCount || a.w.localeCompare(b.w));
+
+    const safeNarrow = [];
+    let threatChecks = 0;
+    for (const s of narrowed) {
+      if (threatChecks >= HARD_OPEN_THREAT_CAP || Date.now() > deadline) break;
+      if (!safe(s.nw)) continue;
+      if (Date.now() > deadline) break;
+      threatChecks++;
+      const threat = losesToImmediateThreat(s.nw, used, WORD_INDEX, deadline);
+      if (threat === null) break;   /* 예산 초과 — 아래 안전 폴백으로 */
+      if (!threat) safeNarrow.push(s);
+    }
     if (safeNarrow.length) {
       safeNarrow.sort((a, b) => a.nextCount - b.nextCount || b.tier - a.tier || a.rareCount - b.rareCount || a.w.localeCompare(b.w));
       const provenWins = [];
