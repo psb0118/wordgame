@@ -174,7 +174,7 @@ function context(extra = {}) {
     "getPlayerBySocket", "getPlayerByIndex", "getAlivePlayers", "findNextAlivePlayer",
     "stopTurnTimer", "startTurnTimer", "notifyTurnStart", "removePlayer",
     "loadChatHistory", "saveChatHistoryNow", "renameAccountRefs", "renameFirebaseAccount", "startKeepAlivePing",
-    "bumpMission", "bumpDaily", "playWord", "runAI",
+    "bumpMission", "bumpDaily", "playWord", "pickAIFallbackWord", "runAI",
     "pushRatingHistory", "applyWelcomeReward",
     "getBan", "getMute", "banGuard", "banGuardByUid", "readModEntries",
     "applyModeration", "saveModeration", "loadModeration",
@@ -745,6 +745,55 @@ test("hard AI rejects a narrow move that gives the opponent a forced win", () =>
     d.ROOT_WORDS, 1, d.DEFENSE_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, { strong: true, freeTurns: 1 });
   assert.ok(word, "합법 수를 골라야 합니다");
   assert.notEqual(word, "가나", "상대의 한방만 남기는 가나는 선택하면 안 됩니다");
+});
+
+test("AI keeps playing when only defense words remain", () => {
+  const d = syntheticAI(["사가", "가나", "나무"], { defense: ["가나"] });
+  const used = new Set(["사가"]);
+  for (const strong of [false, true]) {
+    const word = game.chooseAIWord("사가", used, d.WORD_SET, d.WORD_INDEX, d.ATTACK_DEPTH,
+      d.ROOT_WORDS, 2, d.DEFENSE_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, { strong, freeTurns: 1 });
+    assert.equal(word, "가나", "방어 단어뿐이어도 항복하지 않고 합법 수를 내야 합니다");
+  }
+  assert.equal(chooseSyntheticStart(d), "가나", "오프닝도 방어 단어 폴백으로 계속해야 합니다");
+});
+
+test("normal and hard AI prefer root words over ordinary replies", () => {
+  const d = syntheticAI(["사가", "가나", "가다", "나무", "다리"], { root: ["가나"] });
+  const used = new Set(["사가"]);
+  for (const strong of [false, true]) {
+    const word = game.chooseAIWord("사가", used, d.WORD_SET, d.WORD_INDEX, d.ATTACK_DEPTH,
+      d.ROOT_WORDS, 2, d.DEFENSE_WORDS, d.RARE_ROOT_WORDS, d.DOLRIM_WORDS, { strong, freeTurns: 1 });
+    assert.equal(word, "가나", "루트 후보가 있으면 일반 후보보다 루트를 골라야 합니다");
+  }
+});
+
+test("runAI uses a legal fallback instead of resigning when the selector returns null", () => {
+  const d = syntheticAI(["사가", "가나", "나무"], { defense: ["가나"] });
+  const { c } = context(aiGlobals(d, {
+    ONESHOT_FREE_TURNS: 1,
+    chooseAIWord: () => null,
+  }));
+  const start = "사가";
+  const room = {
+    id: "r-ai-fallback", mode: "ai", difficulty: "normal", hostSocketId: "h",
+    players: [
+      { id: "h", socketId: "h", playerIndex: 0, nickname: "사람", isBot: false,
+        hearts: 2, alive: true, eliminated: false, connected: true, waiting: false, mistakes: 0 },
+      { id: "bot", socketId: "bot", playerIndex: 1, nickname: "AI", isBot: true,
+        hearts: 2, alive: true, eliminated: false, connected: true, waiting: false, mistakes: 0 },
+    ],
+    turnPlayerIndex: 1, turnNumber: 1, gameSessionId: 1,
+    started: true, finished: false, winner: null, loser: null,
+    currentWord: start, startSyllable: null, lastSyllable: null,
+    usedWords: new Set([start]),
+    history: [{ word: start, player: 0, nickname: "사람", depth: null, turn: 0 }],
+    hintsUsed: 0,
+  };
+  c.runAI(room, room.gameSessionId);
+  assert.equal(room.finished, false, "합법 수가 있는데 게임을 끝내면 안 됩니다");
+  assert.equal(room.history.length, 2, "폴백 단어를 실제로 제출해야 합니다");
+  assert.equal(room.history[1].word, "가나");
 });
 
 test("runAI forwards the free-turn ban and never submits a banned word", () => {

@@ -4326,6 +4326,37 @@ function playWord(room, player, rawWord, gameSessionId) {
    AI 실행
 ========================================================= */
 
+/* 선택기가 null을 돌려주더라도 playWord가 허용하는 단어가 있으면 항복하지 않는다.
+   방어 단어/일반 단어까지 후보로 넓히되, 루트와 비방어 단어를 먼저 고른다. */
+function pickAIFallbackWord(room, exclude) {
+  if (!room) return null;
+  const isStart = room.turnNumber === 0;
+  const base = isStart ? room.startSyllable : room.currentWord;
+  if (!base) return null;
+  const blocked = exclude instanceof Set ? exclude : null;
+  let pool = getCandidates(base, room.usedWords, WORD_INDEX)
+    .filter(w => (!isStart || w.startsWith(base)))
+    .filter(w => (isStart || canConnect(base, w)))
+    .filter(w => !blocked || !blocked.has(w));
+  if (!pool.length) return null;
+
+  if (room.turnNumber < ONESHOT_FREE_TURNS) {
+    const legal = pool.filter(w =>
+      !isAttackWord(w, ATTACK_DEPTH) && !isOneShot(w, room.usedWords, WORD_INDEX));
+    if (!legal.length) return null;
+    pool = legal;
+  }
+
+  const isRoot = w => (ROOT_WORDS && ROOT_WORDS.has(w)) || (RARE_ROOT_WORDS && RARE_ROOT_WORDS.has(w));
+  const rootPool = pool.filter(isRoot);
+  const rootNonDefense = rootPool.filter(w => !DEFENSE_WORDS.has(w));
+  const nonDefense = pool.filter(w => !DEFENSE_WORDS.has(w));
+  const source = rootNonDefense.length ? rootNonDefense
+    : nonDefense.length ? nonDefense
+    : rootPool.length ? rootPool : pool;
+  return source[Math.floor(Math.random() * source.length)];
+}
+
 function runAI(room, gameSessionId) {
   if (!room || room.finished || !room.started || room.gameSessionId !== gameSessionId) return;
   if (room.mode !== "ai") return;
@@ -4369,13 +4400,13 @@ function runAI(room, gameSessionId) {
     }
   }
 
+  if (!word) word = pickAIFallbackWord(room);
   if (!word) {
     finishGame(room, findNextAlivePlayer(room, player.playerIndex), player.playerIndex);
     return;
   }
   if (room.turnNumber > 0 && room.currentWord && !canConnect(room.currentWord, word)) {
-    const fallbackPool = getCandidates(room.currentWord, room.usedWords, WORD_INDEX);
-    const valid = fallbackPool.find(w => canConnect(room.currentWord, w));
+    const valid = pickAIFallbackWord(room);
     if (valid) word = valid;
     else { finishGame(room, findNextAlivePlayer(room, player.playerIndex), player.playerIndex); return; }
   }
@@ -4385,22 +4416,13 @@ function runAI(room, gameSessionId) {
       /* 이미 시도한 단어를 피해 다른 시작 단어로 재시도 */
       const blocked = new Set(room.usedWords);
       blocked.add(word);
-      const retry = chooseAIStartWord(room.startSyllable || "", blocked, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, { strong: difficulty === "hard" });
+      let retry = chooseAIStartWord(room.startSyllable || "", blocked, WORD_SET, WORD_INDEX, ATTACK_DEPTH, DEFENSE_WORDS, ROOT_WORDS, RARE_ROOT_WORDS, DOLRIM_WORDS, { strong: difficulty === "hard" });
+      if (!retry) retry = pickAIFallbackWord(room, blocked);
       if (retry) playWord(room, player, retry, gameSessionId);
     } else {
-      let fallbackPool = getCandidates(room.currentWord || "", room.usedWords, WORD_INDEX)
-        .filter(w => canConnect(room.currentWord || "", w));
-      /* 앞 N턴 금지 규칙이 걸린 재시도도 공격/한방/방어 단어는 다시 거부되므로
-         같은 규칙을 통과하는 후보만 남긴다(금지 대상만 걸러내고 전부 걸리면 원래 풀 유지) */
-      if (room.turnNumber < ONESHOT_FREE_TURNS) {
-        const legalNow = fallbackPool.filter(w =>
-          !isAttackWord(w, ATTACK_DEPTH) && !isOneShot(w, room.usedWords, WORD_INDEX) && !DEFENSE_WORDS.has(w));
-        if (legalNow.length) fallbackPool = legalNow;
-      }
-      if (fallbackPool.length > 0) {
-        const retry = fallbackPool[Math.floor(Math.random() * fallbackPool.length)];
-        playWord(room, player, retry, gameSessionId);
-      }
+      /* 공격/한방 금지, 연결, 중복 사용을 모두 통과하는 대체 수를 고른다. */
+      const retry = pickAIFallbackWord(room);
+      if (retry) playWord(room, player, retry, gameSessionId);
     }
   }
 }

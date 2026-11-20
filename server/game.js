@@ -634,7 +634,11 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
   /* 끝 음절 별 상대 대응풀(endSizes)과 첫 글자 별 요약 테이블을 한 번에 세운다 */
   const { endSizes, endPool, rareFirstCnt, deadFirstCnt } = startTables(WORD_INDEX, rootSet, rareRootSet);
 
-  /* 시작 단어 후보 — 공격/방어/한방(끝음절 0-대응풀) 배제 */
+  const tierOf = (nw) => rareRootSet.has(nw) ? 4 : rootSet.has(nw) ? 3 : dolrimSet.has(nw) ? 2 : 1;
+
+  /* 시작 단어 후보 — 공격/방어/한방(끝음절 0-대응풀) 배제.
+     방어 단어는 우선 피하지만, 남은 합법 수가 방어 단어뿐이면 항복하지 않고
+     그 단어로 계속한다. */
   const legal = [];
   for (const w of getCandidates(syllableF, used, WORD_INDEX)) {
       if (!w.startsWith(syllableF)) continue;
@@ -651,11 +655,20 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
       } else if (isOneShot(w, used, WORD_INDEX)) continue;
     legal.push(w);
   }
-  if (legal.length === 0) return null;
+  if (legal.length === 0) {
+    /* 정상 후보가 전부 방어 단어이거나 응수 풀이 작아 legal에서 빠졌더라도,
+       playWord가 허용하는 단어가 하나라도 있으면 시작한다. */
+    const emergency = getCandidates(syllableF, used, WORD_INDEX)
+      .filter(w => w.startsWith(syllableF)
+        && !isAttackWord(w, ATTACK_DEPTH)
+        && !isOneShot(w, used, WORD_INDEX));
+    if (!emergency.length) return null;
+    emergency.sort((a, b) => tierOf(b) - tierOf(a) || a.localeCompare(b));
+    return emergency[0];
+  }
 
   /* 절대 지는 수 판정 + 받아칠 루트/희귀루트 수 — 응수를 낱낱이 훑지 않고 첫 글자
      요약 테이블로 O(1)에 끝낸다 */
-  const tierOf = (nw) => rareRootSet.has(nw) ? 4 : rootSet.has(nw) ? 3 : dolrimSet.has(nw) ? 2 : 1;
   const scored = [];
   for (const w of legal) {
     const nw = w;
@@ -669,7 +682,12 @@ function chooseAIStartWord(syllable, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEP
     const bias = nw.endsWith("켄") ? 25 : 0;
     scored.push({ w, nw, endBucket: endPool(nw.at(-1)) - bias, tier: tierOf(nw), rareCount });
   }
-  if (scored.length === 0) return null;
+  if (scored.length === 0) {
+    /* 응수 요약상 전부 위험으로 보였더라도 legal 자체가 비어 있지는 않으므로
+       항복하지 않고 legal 후보로 계속한다. */
+    legal.sort((a, b) => tierOf(b) - tierOf(a) || a.localeCompare(b));
+    return legal[0];
+  }
 
   /* 정밀 검증 — 후보의 실제 응수 목록을 훑어 "AI 즉시 패배 응수"가 없는지 확정한다 */
   const turn0Safe = (nw) => {
@@ -822,8 +840,8 @@ function solveWin(word, usedSet, depth, budget, WORD_INDEX) {
 /* =========================================================
    AI — 최강 전략적 단어 선택
    절대 원칙 (우선순위):
-   1. 방어 단어는 어떤 경우에도 절대 사용하지 않는다 (후보에서 제거, 전부 방어면 수를 내지 않음)
-   2. 무조건 루트/희귀 루트 단어만 사용한다 (그 외 공격/일반/돌림 단어는 두지 않는다)
+   1. 방어 단어는 우선 피하되, 남은 합법 수가 전부 방어 단어면 계속하기 위해 사용한다
+   2. 루트/희귀 루트 단어를 우선한다 (그 외 공격/일반/돌림 단어는 아래 예외에 해당할 때 사용)
       단, 아래는 예외로 허용:
      a. 즉시 승리(한방) → 루트가 아니어도 무조건 사용
      b. 강제 승리 증명 → 상대가 지는 수(꾼·늬 같은 짧은 말밭)면 무조건 사용,
@@ -882,10 +900,10 @@ function chooseAIWord(currentWord, usedWords, WORD_SET, WORD_INDEX, ATTACK_DEPTH
 
   const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 
-  /* 0. 방어 단어 절대 배제 — 어떤 경우에도 방어 단어로 받아치지 않는다.
-      전부 방어 단어뿐이면 수를 내지 않는다(= 패배). */
-  list = list.filter(i => !i.isDefense);
-  if (!list.length) return null;
+  /* 0. 방어 단어는 우선 배제하되, 전부 방어 단어뿐이면 항복하지 않고 그중에서
+     합법 수를 고른다. 공격 단어 사용자에게 말밭이 막힌 상황에서도 게임은 계속된다. */
+  const nonDefense = list.filter(i => !i.isDefense);
+  if (nonDefense.length) list = nonDefense;
 
   /* 0-2. 앞 N턴 금지 규칙 준수 — 공격 단어(isAttack)와 한방(nextCount 0) 후보를
          후보 단계에서 뺀다. 전부 금지 대상이면 금지되지 않은 일반 후보로 되돌려
