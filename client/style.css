@@ -5276,3 +5276,58 @@ html.dark .coach-tip p, html.dark .coach-stats { color: #cbd5e1; }
   body.kb-open .entry input,
   body.kb-open .chat-input-row input { scroll-margin-bottom: calc(var(--kb-offset, 0px) + 20px); }
 }
+
+/* 홈 화면 추가(PWA) 설치 유도 — 모바일 전용 인라인 카드 (하단 내비와 겹치지 않는다) */
+.install-banner { display: none; }
+
+@media (max-width: 860px) {
+  .install-banner:not(.hidden) {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 12px;
+    padding: 10px 12px;
+    background: linear-gradient(135deg, rgba(109, 40, 217, 0.12), rgba(59, 130, 246, 0.1));
+    border: 1px solid rgba(109, 40, 217, 0.28);
+    border-radius: 14px;
+    box-shadow: var(--shadow-sm);
+    color: var(--text);
+  }
+  .install-banner-icon { flex: 0 0 auto; font-size: 1.35rem; line-height: 1; }
+  .install-banner-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .install-banner-copy b { font-size: .88rem; }
+  .install-banner-copy span {
+    color: var(--text-dim);
+    font-size: .74rem;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+  .install-banner-action {
+    flex: 0 0 auto;
+    padding: 8px 12px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .install-banner-close {
+    flex: 0 0 auto;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: var(--card-soft);
+    color: var(--text-dim);
+    font-size: 1rem;
+    cursor: pointer;
+  }
+}

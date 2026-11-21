@@ -6289,3 +6289,88 @@ document.addEventListener("visibilitychange", () => {
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
   else start();
 })();
+
+/* ---------------------------------------------------------
+   홈 화면 추가(PWA) — 안드로이드는 설치 버튼, iOS는 공유 시트 안내
+--------------------------------------------------------- */
+(function initInstallBanner() {
+  const DISMISS_KEY = "kkInstallDismissedAt";
+  const SNOOZE_DAYS = 7;
+  const SNOOZE_MS = SNOOZE_DAYS * 24 * 60 * 60 * 1000;
+  const banner = document.getElementById("installBanner");
+  if (!banner) return;
+  const titleEl = document.getElementById("installTitle");
+  const hintEl = document.getElementById("installHint");
+  const actionBtn = document.getElementById("installAction");
+  const closeBtn = document.getElementById("installClose");
+  const ua = navigator.userAgent || "";
+  const ipadOs = /Macintosh/i.test(ua) && (navigator.maxTouchPoints || 0) > 1;
+  const isIOS = /iPad|iPhone|iPod/i.test(ua) || ipadOs;
+  const isAndroid = /Android/i.test(ua);
+  let deferredPrompt = null;
+
+  const isStandalone = () => navigator.standalone === true
+    || (typeof window.matchMedia === "function" && window.matchMedia("(display-mode: standalone)").matches);
+
+  const isSnoozed = () => {
+    try {
+      const at = Number(localStorage.getItem(DISMISS_KEY) || 0);
+      return at > 0 && Date.now() - at < SNOOZE_MS;
+    } catch (e) { return false; }
+  };
+  const hide = () => banner.classList.add("hidden");
+  const snooze = () => {
+    hide();
+    try { localStorage.setItem(DISMISS_KEY, String(Date.now())); } catch (e) { /* 저장 불가 환경 무시 */ }
+  };
+  const setCopy = (title, hint) => {
+    if (titleEl) titleEl.textContent = title;
+    if (hintEl) hintEl.textContent = hint;
+  };
+
+  const showAndroid = () => {
+    if (actionBtn && deferredPrompt) {
+      setCopy("앱처럼 바로 열기", "아래 설치 버튼을 누르면 홈 화면에 추가됩니다.");
+      actionBtn.classList.remove("hidden");
+    } else {
+      setCopy("앱처럼 바로 열기", "브라우저 메뉴(⋮)의 '홈 화면에 추가'로 설치할 수 있어요.");
+      if (actionBtn) actionBtn.classList.add("hidden");
+    }
+  };
+
+  const show = () => {
+    if (!isIOS && !isAndroid) return;      /* 데스크톱은 홈 화면 추가 대상이 아니다 */
+    if (isStandalone() || isSnoozed()) return;
+    if (isIOS) {
+      setCopy("홈 화면에 추가", "Safari 하단 공유(⬆️) → '홈 화면에 추가'를 선택하세요.");
+      if (actionBtn) actionBtn.classList.add("hidden");
+    } else {
+      showAndroid();
+    }
+    banner.classList.remove("hidden");
+  };
+
+  if (closeBtn) closeBtn.addEventListener("click", snooze);
+  if (actionBtn) {
+    actionBtn.addEventListener("click", async () => {
+      if (!deferredPrompt) return;
+      const prompt = deferredPrompt;
+      deferredPrompt = null;
+      actionBtn.classList.add("hidden");
+      try {
+        prompt.prompt();
+        await prompt.userChoice;
+      } catch (e) { /* 설치 창을 열 수 없는 브라우저 */ }
+      snooze();
+    });
+  }
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredPrompt = event;
+    if (isIOS) return;                     /* iOS는 자체 설치 API가 없다 */
+    show();
+    showAndroid();
+  });
+  window.addEventListener("appinstalled", snooze);
+  show();
+})();

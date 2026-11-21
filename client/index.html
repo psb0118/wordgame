@@ -7,7 +7,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <title>끝말잇기</title>
-  <link rel="stylesheet" href="style.css?v=65">
+  <link rel="stylesheet" href="style.css?v=66">
   <script>try{if(localStorage.getItem("kkTheme")==="dark")document.documentElement.classList.add("dark")}catch(e){}</script>
 </head>
 <body>
@@ -16,6 +16,17 @@
       <h1>끝말잇기</h1>
       <p>끄글 단어 목록 기반 · AI · 온라인 멀티플레이</p>
     </header>
+
+    <!-- 홈 화면 추가(PWA) 설치 유도 — 모바일 브라우저에서만 표시 -->
+    <div id="installBanner" class="install-banner hidden" role="region" aria-label="홈 화면에 추가 안내">
+      <span class="install-banner-icon" aria-hidden="true">📲</span>
+      <div class="install-banner-copy">
+        <b id="installTitle">홈 화면에 추가</b>
+        <span id="installHint"></span>
+      </div>
+      <button id="installAction" class="install-banner-action hidden" type="button">설치</button>
+      <button id="installClose" class="install-banner-close" type="button" aria-label="설치 안내 닫기">✕</button>
+    </div>
 
     <div class="app-grid">
       <div class="nav-shell">
@@ -802,7 +813,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="firebase-config.js"></script>
   <script src="live-ui.js?v=1"></script>
-  <script src="script.js?v=59"></script>
+  <script src="script.js?v=60"></script>
   <script src="firebase-auth.js?v=3"></script>
 </body>
 </html>
