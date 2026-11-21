@@ -6104,7 +6104,7 @@ document.addEventListener("visibilitychange", () => {
   /* 안드로이드 뒤로가기: 열린 패널/모달을 먼저 닫는다. */
   function initBackNavigation() {
     const specs = [
-      { sel: "#roomList", close: "#roomListClose" },
+      { sel: "#roomListPanel", close: "#roomListClose" },
       { sel: "#sideRank", close: "#sideRankClose" },
       { sel: "#friendsPanel", close: "#friendsClose" },
       { sel: "#accountPanel", close: "#accountClose" },
@@ -6236,7 +6236,7 @@ document.addEventListener("visibilitychange", () => {
     const turnEl = $one("#mhTurn");
     let frame = 0;
     const overlayOpen = () => !!document.querySelector(
-      ".modal:not(.hidden), #accountPanel:not(.hidden), #friendsPanel:not(.hidden), #chatPanel:not(.hidden), #sideRank:not(.closed), #roomList:not(.hidden)"
+      ".modal:not(.hidden), #accountPanel:not(.hidden), #friendsPanel:not(.hidden), #chatPanel:not(.hidden), #sideRank:not(.closed), #roomListPanel:not(.hidden)"
     );
     const update = () => {
       frame = 0;
