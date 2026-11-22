@@ -2,13 +2,17 @@
 
 /* 끝말잇기 오프라인 셸 — 게임 자체는 서버가 필요하지만,
    앱을 다시 열거나 단어장 화면을 확인할 수 있게 정적 자원만 캐시한다. */
-const CACHE = "kkeul-shell-v10";
+const CACHE = "kkeul-shell-v11";
 const BASE_SHELL = [
   "./offline.html",
   "./firebase-config.js",
   "./firebase-auth.js",
   "./manifest.webmanifest",
-  "./icon.svg"
+  "./icon.svg",
+  "./icon-192.png",
+  "./icon-512.png",
+  "./apple-touch-icon.png",
+  "./notification-badge.png"
 ];
 
 /* index.html이 실제로 요청하는 ?v= URL을 읽어 프리캐시한다 —
@@ -51,8 +55,9 @@ self.addEventListener("push", (event) => {
   const title = data.title || "끝말잇기";
   const options = {
     body: data.body || "",
-    icon: data.icon || "./icon.svg",
-    badge: data.badge || "./icon.svg",
+    /* 안드로이드 알림은 SVG 아이콘을 그리지 못하므로 PNG를 기본값으로 쓴다. */
+    icon: data.icon || "./icon-192.png",
+    badge: data.badge || "./notification-badge.png",
     tag: data.tag || "kkeul",
     data: { url: data.url || "/" }
   };

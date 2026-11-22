@@ -71,8 +71,9 @@ function buildPayload(input = {}) {
     body: String(input.body || "").slice(0, 180),
     url: String(input.url || "/").slice(0, 500),
     tag: String(input.tag || "kkeul").slice(0, 80),
-    icon: "/icon.svg",
-    badge: "/icon.svg"
+    /* 안드로이드 알림은 SVG를 렌더링하지 않으므로 래스터 아이콘을 쓴다. */
+    icon: "/icon-192.png",
+    badge: "/notification-badge.png"
   });
 }
 

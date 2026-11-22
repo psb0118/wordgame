@@ -3,6 +3,7 @@
   "short_name": "끝말잇기",
   "description": "끄글 단어 목록 기반 끝말잇기. AI, 온라인 멀티, 랭크 대회를 한 곳에서.",
   "lang": "ko",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

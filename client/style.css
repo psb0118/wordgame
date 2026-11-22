@@ -5310,7 +5310,8 @@ html.dark .coach-tip p, html.dark .coach-stats { color: #cbd5e1; }
   }
   .install-banner-action {
     flex: 0 0 auto;
-    padding: 8px 12px;
+    min-height: 40px;
+    padding: 8px 14px;
     border: 0;
     border-radius: 10px;
     background: var(--accent);
@@ -5320,8 +5321,9 @@ html.dark .coach-tip p, html.dark .coach-stats { color: #cbd5e1; }
   }
   .install-banner-close {
     flex: 0 0 auto;
-    width: 30px;
-    height: 30px;
+    /* 엄지 탭 영역을 40px로 키워 닫기 버튼을 놓치지 않게 한다 */
+    width: 40px;
+    height: 40px;
     padding: 0;
     border: 0;
     border-radius: 999px;
