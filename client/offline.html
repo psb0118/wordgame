@@ -37,7 +37,9 @@
   <main>
     <h1>📡 오프라인입니다</h1>
     <p>끝말잇기는 서버와 연결되어야 게임을 진행할 수 있어요.<br>단어장은 이 브라우저에 저장되어 있습니다. 연결 후 다시 열어 확인해 주세요.</p>
-    <button type="button" onclick="location.reload()">다시 연결하기</button>
+    <button type="button" id="retry">다시 연결하기</button>
+    <!-- 인라인 핸들러 대신 해시로 허용되는 인라인 스크립트를 쓴다(CSP script-src). -->
+    <script>document.getElementById("retry").addEventListener("click", function () { location.reload(); });</script>
     <small>인터넷 연결을 확인한 뒤 다시 시도해 주세요.</small>
   </main>
 </body>

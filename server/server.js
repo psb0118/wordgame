@@ -9,6 +9,7 @@ const { Server } = require("socket.io");
 const { createCluster } = require("./cluster.js");
 const { createStaticAssetHandler } = require("./static-assets.js");
 const { createSecurityHeaders } = require("./security-headers.js");
+const { createCspReportCollector } = require("./csp-report.js");
 const rankSeason = require("./rank-season.js");
 const guildWeek = require("./guild-week.js");
 const guildDuel = require("./guild-duel.js");
@@ -4816,6 +4817,17 @@ function metricsAccess(req, res, next) {
   res.status(404).json({ ok: false });
 }
 
+/* CSP Report-Only 위반 수집 — 브라우저가 보내는 리포트만 받고 204로 끝낸다.
+   강제 모드 전환 전에 실제 필요한 출처를 이 로그로 확인한다. */
+const cspReports = createCspReportCollector({ logger: console });
+app.post("/api/csp-report", express.json({
+  type: ["application/csp-report", "application/reports+json", "application/json"],
+  limit: "32kb"
+}), (req, res) => {
+  cspReports.ingest(req.body, req.ip);
+  res.status(204).end();
+});
+
 /* 운영 지표 — 방/대기열/메모리를 한 번에 볼 수 있게 한다. */
 app.get("/api/metrics", metricsAccess, (req, res) => {
   res.set("cache-control", "no-store");
@@ -4832,6 +4844,7 @@ app.get("/api/metrics", metricsAccess, (req, res) => {
     db: dbMode,
     push: pushManager.isEnabled(),
     cluster: cluster.health(),
+    csp: cspReports.snapshot(),
     memory: process.memoryUsage()
   });
 });
