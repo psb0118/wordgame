@@ -15,37 +15,66 @@ const BASE_SHELL = [
   "./notification-badge.png"
 ];
 
+const OFFLINE_URL = "./offline.html";
+
+function absoluteUrl(url) {
+  return new URL(url, self.location.href).href;
+}
+
 /* index.html이 실제로 요청하는 ?v= URL을 읽어 프리캐시한다 —
-   버전 문자열을 손으로 맞추다 어긋나는 문제를 없앤다. */
+   버전 문자열을 손으로 맞추다 어긋나는 문제를 없앤다.
+   `complete`는 HTML을 실제로 받아왔는지 — 못 받았으면 목록을 신뢰할 수 없다. */
 async function shellUrls() {
   const urls = new Set(BASE_SHELL);
+  let complete = false;
   try {
     const response = await fetch("./", { cache: "reload" });
-    const html = await response.text();
-    for (const match of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
-      const url = match[1];
-      if (!url || /^(?:[a-z]+:|\/\/|#)/i.test(url)) continue;
-      urls.add(url.startsWith("/") ? `.${url}` : `./${url.replace(/^\.\//, "")}`);
+    if (response && response.ok) {
+      const html = await response.text();
+      for (const match of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
+        const url = match[1];
+        if (!url || /^(?:[a-z]+:|\/\/|#)/i.test(url)) continue;
+        urls.add(url.startsWith("/") ? `.${url}` : `./${url.replace(/^\.\//, "")}`);
+      }
+      complete = true;
     }
   } catch (e) { /* 오프라인 설치에서는 기본 셸만 사용한다 */ }
-  return [...urls];
+  return { urls: [...urls], complete };
+}
+
+/* 배포마다 해시 URL이 바뀌므로 지난 셸의 자산이 계속 쌓인다. 현재 셸 목록에 없는
+   항목만 지우고, 오프라인 fallback 문서는 어떤 경우에도 남긴다.
+   HTML을 못 읽은 activate(오프라인)에서는 목록을 알 수 없으니 아무것도 지우지 않는다. */
+async function pruneStaleEntries(cache) {
+  const shell = await shellUrls();
+  if (!shell.complete) return;
+  const keep = new Set(shell.urls.map(absoluteUrl));
+  keep.add(absoluteUrl(OFFLINE_URL));
+  const cached = await cache.keys();
+  await Promise.all(cached.filter((entry) => !keep.has(entry.url)).map((entry) => cache.delete(entry)));
 }
 
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
-    const urls = await shellUrls();
+    const { urls } = await shellUrls();
     await Promise.all(urls.map(url => cache.add(url).catch(() => undefined)));
     await self.skipWaiting();
   })());
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(
-    caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))
-      .then(() => self.clients.claim())
-  );
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    await pruneStaleEntries(cache);
+    /* 오프라인 fallback 문서가 없으면 채워 넣는다 — 지우는 대상에는 절대 넣지 않는다. */
+    if (!(await cache.match(absoluteUrl(OFFLINE_URL)))) {
+      await cache.add(OFFLINE_URL).catch(() => undefined);
+    }
+    const keys = await caches.keys();
+    await Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)));
+    await self.clients.claim();
+  })());
 });
 
 /* 웹 푸시 — 서버가 보낸 JSON을 알림으로 표시하고, 클릭하면 해당 URL을 연다. */
