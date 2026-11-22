@@ -8,6 +8,7 @@ const express = require("express");
 const { Server } = require("socket.io");
 const { createCluster } = require("./cluster.js");
 const { createStaticAssetHandler } = require("./static-assets.js");
+const { createSecurityHeaders } = require("./security-headers.js");
 const rankSeason = require("./rank-season.js");
 const guildWeek = require("./guild-week.js");
 const guildDuel = require("./guild-duel.js");
@@ -34,6 +35,8 @@ const {
 ========================================================= */
 
 const app = express();
+/* Express 버전 노출은 공격자에게 도움만 된다. */
+app.disable("x-powered-by");
 /* Render가 주입하는 배포 커밋 — health/metrics에서 실제 배포본을 확인한다. */
 const BUILD_COMMIT = String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").slice(0, 40);
 /* Render 같은 리버스 프록시 뒤에서 req.ip가 실제 클라이언트 IP가 되게 한다.
@@ -53,6 +56,8 @@ const cluster = createCluster({
   }
 });
 app.use(cluster.middleware);
+/* JSON 파싱 실패 응답까지 헤더가 붙도록 body 파서 앞에 둔다. */
+app.use(createSecurityHeaders());
 app.use(express.json({ limit: "256kb" }));
 
 /* web 릴레이 인스턴스는 Socket.IO 엔진을 띄우지 않는다. 기존 핸들러 등록 코드가

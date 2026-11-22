@@ -3,7 +3,9 @@
 /* 정적 자산 압축·캐시 계층 — 요청/응답을 흉내 내 핸들러만 검증한다. */
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const zlib = require("node:zlib");
 const {
@@ -15,8 +17,7 @@ const {
 
 const CLIENT_DIR = path.join(__dirname, "..", "client");
 
-function run(url, headers = {}, method = "GET") {
-  const handler = createStaticAssetHandler({ rootDir: CLIENT_DIR });
+function request(handler, url, headers = {}, method = "GET") {
   const [rawPath, rawQuery = ""] = url.split("?");
   const query = {};
   for (const pair of rawQuery.split("&")) {
@@ -36,6 +37,12 @@ function run(url, headers = {}, method = "GET") {
   handler(req, res, () => { nextCalled = true; });
   return { res, nextCalled };
 }
+
+function run(url, headers = {}, method = "GET") {
+  return request(createStaticAssetHandler({ rootDir: CLIENT_DIR }), url, headers, method);
+}
+
+const contentHash = (value) => crypto.createHash("sha256").update(value).digest("hex").slice(0, 10);
 
 function pngSize(file) {
   const buf = fs.readFileSync(file);
@@ -110,4 +117,53 @@ test("the OG card is a 1200x630 PNG and index.html exposes absolute share metada
   assert.match(served, /<meta property="og:image" content="https:\/\/game\.example\.com\/og-cover\.png">/);
   assert.match(served, /<meta property="og:url" content="https:\/\/game\.example\.com\/">/);
   assert.ok(!served.includes("__PUBLIC_ORIGIN__"), "토큰이 남으면 안 됩니다");
+});
+
+test("html references carry the content hash, so no manual ?v= bump is needed", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kk-assets-"));
+  try {
+    fs.writeFileSync(
+      path.join(dir, "index.html"),
+      '<link rel="stylesheet" href="style.css?v=68">' +
+        '<script src="script.js"></script>' +
+        '<script src="https://cdn.example.com/lib.js?v=1"></script>' +
+        '<script src="/socket.io/socket.io.js"></script>'
+    );
+    fs.writeFileSync(path.join(dir, "style.css"), "body{color:red}");
+    fs.writeFileSync(path.join(dir, "script.js"), "console.log(1);");
+
+    const handler = createStaticAssetHandler({ rootDir: dir });
+    const cssHash = contentHash("body{color:red}");
+    const first = request(handler, "/");
+    const html = first.res.body.toString("utf8");
+    assert.ok(html.includes(`href="style.css?v=${cssHash}"`), html);
+    assert.match(html, /src="script\.js\?v=[0-9a-f]{10}"/);
+    /* 외부 CDN과 서버가 만드는 /socket.io 경로는 건드리지 않는다. */
+    assert.ok(html.includes('src="https://cdn.example.com/lib.js?v=1"'));
+    assert.ok(html.includes('src="/socket.io/socket.io.js"'));
+
+    /* 같은 HTML이라도 참조 자산 내용이 바뀌면 URL·ETag가 같이 바뀌어야 한다. */
+    fs.writeFileSync(path.join(dir, "style.css"), "body{color:blue}");
+    const second = request(handler, "/");
+    const updated = second.res.body.toString("utf8");
+    assert.ok(updated.includes(`href="style.css?v=${contentHash("body{color:blue}")}"`), updated);
+    assert.notEqual(second.res.headers.etag, first.res.headers.etag);
+    assert.equal(request(handler, "/", { "if-none-match": first.res.headers.etag }).res.statusCode, 200);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the real index.html serves hashed URLs for every local css/js asset", () => {
+  const html = run("/", { host: "game.example.com" }).res.body.toString("utf8");
+  const references = [...html.matchAll(/(?:src|href)="([^"]+\.(?:css|js))\?v=([0-9a-f]{10})"/g)];
+  assert.ok(references.length >= 4, `해시가 붙은 참조가 ${references.length}개뿐입니다`);
+
+  for (const [, rawPath, hash] of references) {
+    const file = path.join(CLIENT_DIR, rawPath.replace(/^\//, ""));
+    assert.equal(hash, contentHash(fs.readFileSync(file)), `${rawPath} 해시가 내용과 다릅니다`);
+  }
+  /* 버전이 빠져 있던 firebase-config.js도 자동으로 붙는다. */
+  assert.match(html, /src="firebase-config\.js\?v=[0-9a-f]{10}"/);
+  assert.ok(!/\?v=68"/.test(html), "수동 버전 값이 그대로 남았습니다");
 });
