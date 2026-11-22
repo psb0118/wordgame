@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const express = require("express");
 const { Server } = require("socket.io");
 const { createCluster } = require("./cluster.js");
+const { createStaticAssetHandler } = require("./static-assets.js");
 const rankSeason = require("./rank-season.js");
 const guildWeek = require("./guild-week.js");
 const guildDuel = require("./guild-duel.js");
@@ -4641,7 +4642,18 @@ function removePlayer(room, socketId, reason) {
    정적 파일
 ========================================================= */
 
-app.use(express.static(CLIENT_DIR));
+/* 정적 자산 — 텍스트 자산은 brotli/gzip으로 압축해 보내고,
+   ?v=가 붙은 URL은 1년 immutable로 캐시한다. 나머지 파일은 express.static이 처리한다. */
+app.use(createStaticAssetHandler({
+  rootDir: CLIENT_DIR,
+  publicOrigin: process.env.KK_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || ""
+}));
+app.use(express.static(CLIENT_DIR, {
+  setHeaders(res, filePath) {
+    /* 아이콘·이미지 등은 하루 캐시. sw.js는 위 핸들러가 no-cache로 처리한다. */
+    res.setHeader("Cache-Control", /[\\/]sw\.js$/.test(filePath) ? "no-cache" : "public, max-age=86400");
+  }
+}));
 
 app.get("/", (req, res) => {
   for (const file of [path.join(CLIENT_DIR, "index.html"), path.join(ROOT_DIR, "index.html")]) {
