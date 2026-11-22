@@ -5333,3 +5333,13 @@ html.dark .coach-tip p, html.dark .coach-stats { color: #cbd5e1; }
     cursor: pointer;
   }
 }
+
+/* 좁은 화면에서 설치 버튼까지 뜨면 한 줄에 다 들어가지 않아 안내 문구가 눌린다.
+   그때만 설치 버튼을 아래 한 줄로 내리고 문구 폭을 지킨다. */
+@media (max-width: 380px) {
+  .install-banner:not(.hidden) { flex-wrap: wrap; row-gap: 8px; }
+  .install-banner-icon { order: 1; }
+  .install-banner-copy { order: 2; flex: 1 1 150px; }
+  .install-banner-close { order: 3; }
+  .install-banner-action:not(.hidden) { order: 4; flex: 1 0 100%; min-height: 44px; }
+}
